@@ -3,6 +3,8 @@ import { ChevronRight, Copy, Check } from 'lucide-react';
 
 import { cn } from '../../../../lib/utils';
 import { copyTextToClipboard } from '../../../../utils/clipboard';
+import { getTextDirection } from '../../../../utils/textDirection';
+
 import { ToolStatusBadge } from './ToolStatusBadge';
 import type { ToolStatus } from './ToolStatusBadge';
 
@@ -74,6 +76,7 @@ export const BashCommandDisplay: React.FC<BashCommandDisplayProps> = ({
     >
       {/* Command header — clickable when there is output to expand */}
       <div
+        dir="ltr"
         role={hasOutput ? 'button' : undefined}
         tabIndex={hasOutput ? 0 : undefined}
         aria-expanded={hasOutput ? open : undefined}
@@ -100,8 +103,9 @@ export const BashCommandDisplay: React.FC<BashCommandDisplayProps> = ({
           $
         </span>
         <code
+          dir="ltr"
           className={cn(
-            'min-w-0 flex-1 font-mono text-xs text-foreground',
+            'bidi-code min-w-0 flex-1 font-mono text-xs text-foreground',
             open ? 'whitespace-pre-wrap break-all' : 'truncate',
           )}
         >
@@ -130,7 +134,7 @@ export const BashCommandDisplay: React.FC<BashCommandDisplayProps> = ({
       </div>
 
       {description && !open && (
-        <div className="truncate px-2.5 pb-1.5 pl-[2.4rem] text-[11px] italic text-muted-foreground/70">
+        <div dir={getTextDirection(description)} className="bidi-isolate truncate px-2.5 pb-1.5 pl-[2.4rem] text-[11px] italic text-muted-foreground/70">
           {description}
         </div>
       )}
@@ -139,11 +143,12 @@ export const BashCommandDisplay: React.FC<BashCommandDisplayProps> = ({
       {open && hasOutput && (
         <div className="settings-content-enter border-t border-border/50 bg-background/50">
           {description && (
-            <div className="px-3 pt-2 text-[11px] italic text-muted-foreground/70">{description}</div>
+            <div dir={getTextDirection(description)} className="bidi-isolate px-3 pt-2 text-[11px] italic text-muted-foreground/70">{description}</div>
           )}
           <pre
+            dir="ltr"
             className={cn(
-              'max-h-80 overflow-auto whitespace-pre-wrap break-all px-3 py-2 font-mono text-xs leading-relaxed',
+              'bidi-code max-h-80 overflow-auto whitespace-pre-wrap break-all px-3 py-2 font-mono text-xs leading-relaxed',
               isError ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground',
             )}
           >

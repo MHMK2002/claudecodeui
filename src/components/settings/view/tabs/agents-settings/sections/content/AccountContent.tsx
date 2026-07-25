@@ -59,6 +59,9 @@ const agentConfig: Record<AgentProvider, AgentVisualConfig> = {
 export default function AccountContent({ agent, authStatus, onLogin }: AccountContentProps) {
   const { t } = useTranslation('settings');
   const config = agentConfig[agent];
+  const usesExternalCredentials = ['api_key', 'provider_api_key', 'custom_provider'].includes(
+    authStatus.method ?? '',
+  );
 
   return (
     <div className="space-y-6">
@@ -110,7 +113,7 @@ export default function AccountContent({ agent, authStatus, onLogin }: AccountCo
             </div>
           </div>
 
-          {authStatus.method !== 'api_key' && (
+          {!usesExternalCredentials && (
             <div className="border-t border-border/50 pt-4">
               <div className="flex items-center justify-between">
                 <div>

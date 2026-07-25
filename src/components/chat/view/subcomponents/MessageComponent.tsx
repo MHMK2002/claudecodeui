@@ -12,6 +12,7 @@ import { formatUsageLimitText } from '../../utils/chatFormatting';
 import type { Project } from '../../../../types/app';
 import { ToolRenderer, shouldHideToolResult } from '../../tools';
 import { Reasoning, ReasoningTrigger, ReasoningContent } from '../../../../shared/view/ui';
+import { getTextDirection } from '../../../../utils/textDirection';
 
 import ChatMessageImages from './ChatMessageImages';
 import { Markdown } from './Markdown';
@@ -58,6 +59,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
     () => formatUsageLimitText(String(message.content || '')),
     [message.content]
   );
+  const messageDirection = useMemo(() => getTextDirection(message.content), [message.content]);
   const assistantCopyContent = message.isToolUse
     ? String(message.displayText || message.content || '')
     : formattedMessageContent;
@@ -96,7 +98,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
             )}
             {userCopyContent.trim().length > 0 || !message.images?.length ? (
               <div className="group max-w-full rounded-2xl rounded-br-md bg-blue-600 px-3 py-2 text-white shadow-sm sm:px-4">
-                <div dir="auto" className="whitespace-pre-wrap break-words font-serif text-sm">
+                <div dir={messageDirection} className="bidi-isolate whitespace-pre-wrap break-words font-serif text-sm">
                   {message.content}
                 </div>
                 <div className="mt-1 flex items-center justify-end gap-1 text-xs text-blue-100">
@@ -124,7 +126,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
         <div className="w-full">
           <div className="flex items-center gap-2 py-0.5">
             <span className={`inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full ${message.taskStatus === 'completed' ? 'bg-green-400 dark:bg-green-500' : 'bg-amber-400 dark:bg-amber-500'}`} />
-            <span className="text-xs text-gray-500 dark:text-gray-400">{message.content}</span>
+            <span dir={messageDirection} className="bidi-isolate text-xs text-gray-500 dark:text-gray-400">{message.content}</span>
           </div>
         </div>
       ) : (
@@ -261,7 +263,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
 
                       return (
                         <>
-                          <p className="mb-4 text-sm text-amber-800 dark:text-amber-200">
+                          <p dir={getTextDirection(questionLine)} className="bidi-isolate mb-4 text-sm text-amber-800 dark:text-amber-200">
                             {questionLine}
                           </p>
 
@@ -283,7 +285,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                                     }`}>
                                     {option.number}
                                   </span>
-                                  <span className="flex-1 text-sm font-medium sm:text-base">
+                                  <span dir={getTextDirection(option.text)} className="bidi-isolate flex-1 text-sm font-medium sm:text-base">
                                     {option.text}
                                   </span>
                                   {option.isSelected && (
@@ -322,13 +324,13 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                 </ReasoningContent>
               </Reasoning>
             ) : (
-              <div dir="auto" className="text-sm text-gray-700 dark:text-gray-300">
+              <div className="text-sm text-gray-700 dark:text-gray-300">
                 {/* Reasoning accordion */}
                 {showThinking && message.reasoning && (
                   <Reasoning className="mb-3" defaultOpen={false}>
                     <ReasoningTrigger />
                     <ReasoningContent>
-                      <div className="whitespace-pre-wrap">
+                      <div dir={getTextDirection(message.reasoning)} className="bidi-isolate whitespace-pre-wrap">
                         {message.reasoning}
                       </div>
                     </ReasoningContent>
@@ -355,8 +357,8 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                             <span className="font-medium">{t('json.response')}</span>
                           </div>
                           <div className="overflow-hidden rounded-lg border border-border bg-muted">
-                            <pre className="overflow-x-auto p-4">
-                              <code className="block whitespace-pre font-mono text-sm text-foreground">
+                            <pre dir="ltr" className="bidi-code overflow-x-auto p-4">
+                              <code dir="ltr" className="bidi-code block whitespace-pre font-mono text-sm text-foreground">
                                 {formatted}
                               </code>
                             </pre>
@@ -374,7 +376,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                       {content}
                     </Markdown>
                   ) : (
-                    <div className="whitespace-pre-wrap">
+                    <div dir={getTextDirection(content)} className="bidi-isolate whitespace-pre-wrap">
                       {content}
                     </div>
                   );
@@ -401,4 +403,3 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
 });
 
 export default MessageComponent;
-

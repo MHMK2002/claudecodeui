@@ -308,6 +308,27 @@ export const sessionsDb = {
   },
 
   /**
+   * Returns active sessions whose latest recorded activity is on or after the
+   * supplied UTC timestamp. One global query keeps the recent-chat sidebar
+   * independent from per-project pagination limits.
+   */
+  getSessionsUpdatedSince(since: string): SessionRow[] {
+    const db = getConnection();
+    const rows = db
+      .prepare(
+        `SELECT ${SESSION_ROW_COLUMNS}
+         FROM sessions
+         WHERE isArchived = 0
+           AND project_path IS NOT NULL
+           AND datetime(COALESCE(updated_at, created_at)) >= datetime(?)
+         ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC`
+      )
+      .all(since) as SessionRow[];
+
+    return normalizeSessionRows(rows);
+  },
+
+  /**
    * Archived rows are intentionally queried separately so the caller can render
    * them in a dedicated view without reintroducing them into active session lists.
    */

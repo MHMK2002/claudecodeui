@@ -404,7 +404,10 @@ export default function ChatComposer({
 
           <PromptInputBody>
             <div ref={inputHighlightRef} aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden rounded-xl">
-              <div className="chat-input-placeholder block w-full whitespace-pre-wrap break-words px-4 py-2 text-sm leading-6 text-transparent">
+              <div
+                dir="auto"
+                className="bidi-plaintext chat-input-placeholder block w-full whitespace-pre-wrap break-words px-4 py-2 text-sm leading-6 text-transparent"
+              >
                 {renderInputWithMentions(input)}
               </div>
             </div>
@@ -412,6 +415,7 @@ export default function ChatComposer({
             <PromptInputTextarea
               ref={textareaRef}
               dir="auto"
+              className="bidi-plaintext"
               value={input}
               onChange={onInputChange}
               onClick={onTextareaClick}

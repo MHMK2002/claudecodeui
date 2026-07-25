@@ -239,6 +239,40 @@
 }
 
 @layer utilities {
+  /* Mixed-direction chat content. Keep each prose block isolated so Persian
+     punctuation and embedded paths/identifiers do not reorder neighboring UI. */
+  .bidi-isolate {
+    unicode-bidi: isolate;
+    text-align: start;
+  }
+
+  .bidi-plaintext {
+    unicode-bidi: plaintext;
+    text-align: start;
+  }
+
+  .bidi-code {
+    direction: ltr;
+    unicode-bidi: isolate;
+    text-align: left;
+  }
+
+  .bidi-isolate:dir(rtl),
+  .bidi-plaintext:dir(rtl),
+  .chat-markdown [dir="rtl"] {
+    font-family: "Vazirmatn", Tahoma, "Segoe UI", sans-serif;
+  }
+
+  .chat-markdown-blockquote {
+    border-inline-start-width: 4px;
+    padding-inline-start: 1rem;
+  }
+
+  .chat-markdown :where(ul, ol) {
+    padding-inline-start: 1.625em;
+    padding-inline-end: 0;
+  }
+
   /* Smooth hover transitions for interactive elements */
   button:hover,
   a:hover,

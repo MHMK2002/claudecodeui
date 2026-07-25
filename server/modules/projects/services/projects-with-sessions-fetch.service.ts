@@ -18,6 +18,7 @@ type SessionSummary = {
 type SessionRepositoryRow = {
   provider: string;
   session_id: string;
+  project_path?: string | null;
   custom_name?: string | null;
   updated_at?: string | null;
   created_at?: string | null;
@@ -53,6 +54,26 @@ type GetProjectsWithSessionsOptions = {
   sessionsOffset?: number;
 };
 
+type GetRecentProjectsWithSessionsOptions = {
+  skipSynchronization?: boolean;
+  windowMinutes?: number;
+  now?: Date;
+};
+
+type RecentProjectRepositoryRow = {
+  project_id: string;
+  project_path: string;
+  custom_project_name?: string | null;
+  isStarred?: number;
+};
+
+type RecentProjectsDependencies = {
+  synchronizeSessions: () => Promise<unknown>;
+  readProjectRows: () => RecentProjectRepositoryRow[];
+  readSessionRows: (since: string) => SessionRepositoryRow[];
+  resolveDisplayName: (projectName: string, actualProjectDir: string | null) => Promise<string>;
+};
+
 type SessionPaginationOptions = {
   limit?: number;
   offset?: number;
@@ -75,6 +96,8 @@ export type ProjectSessionsPageApiView = {
 
 const DEFAULT_PROJECT_SESSIONS_PAGE_SIZE = 20;
 const MAX_PROJECT_SESSIONS_PAGE_SIZE = 200;
+export const DEFAULT_RECENT_SESSIONS_WINDOW_MINUTES = 60;
+export const MAX_RECENT_SESSIONS_WINDOW_MINUTES = 7 * 24 * 60;
 
 /**
  * Generate better display name from path.
@@ -238,6 +261,98 @@ export async function getProjectsWithSessions(
   });
 
   return projects;
+}
+
+/**
+ * Reads recent active sessions in one global DB query, then groups them under
+ * their active projects. Projects without activity inside the requested
+ * window are deliberately omitted from this compact sidebar view.
+ */
+export async function getRecentProjectsWithSessions(
+  options: GetRecentProjectsWithSessionsOptions = {},
+  dependencies: RecentProjectsDependencies = {
+    synchronizeSessions: () => sessionSynchronizerService.synchronizeSessions(),
+    readProjectRows: () => projectsDb.getProjectPaths() as RecentProjectRepositoryRow[],
+    readSessionRows: (since) => sessionsDb.getSessionsUpdatedSince(since) as SessionRepositoryRow[],
+    resolveDisplayName: generateDisplayName,
+  },
+): Promise<ProjectListItem[]> {
+  if (!options.skipSynchronization) {
+    await dependencies.synchronizeSessions();
+  }
+
+  const requestedWindow = options.windowMinutes ?? DEFAULT_RECENT_SESSIONS_WINDOW_MINUTES;
+  if (!Number.isInteger(requestedWindow) || requestedWindow < 1 || requestedWindow > MAX_RECENT_SESSIONS_WINDOW_MINUTES) {
+    throw new AppError(
+      `windowMinutes must be an integer between 1 and ${MAX_RECENT_SESSIONS_WINDOW_MINUTES}`,
+      {
+        code: 'INVALID_RECENT_SESSIONS_WINDOW',
+        statusCode: 400,
+      },
+    );
+  }
+
+  const now = options.now ?? new Date();
+  if (Number.isNaN(now.getTime())) {
+    throw new AppError('now must be a valid date', {
+      code: 'INVALID_RECENT_SESSIONS_NOW',
+      statusCode: 400,
+    });
+  }
+
+  const since = new Date(now.getTime() - requestedWindow * 60_000).toISOString();
+  const recentRows = dependencies.readSessionRows(since);
+  const rowsByProjectPath = new Map<string, SessionRepositoryRow[]>();
+
+  for (const sessionRow of recentRows) {
+    if (!sessionRow.project_path) {
+      continue;
+    }
+
+    const projectSessions = rowsByProjectPath.get(sessionRow.project_path) ?? [];
+    projectSessions.push(sessionRow);
+    rowsByProjectPath.set(sessionRow.project_path, projectSessions);
+  }
+
+  const projectRows = dependencies.readProjectRows();
+  const projects: ProjectListItem[] = [];
+
+  for (const projectRow of projectRows) {
+    const sessionRows = rowsByProjectPath.get(projectRow.project_path);
+    if (!sessionRows || sessionRows.length === 0) {
+      continue;
+    }
+
+    const displayName =
+      projectRow.custom_project_name && projectRow.custom_project_name.trim().length > 0
+        ? projectRow.custom_project_name
+        : await dependencies.resolveDisplayName(
+          path.basename(projectRow.project_path) || projectRow.project_path,
+          projectRow.project_path,
+        );
+    const sessions = sessionRows
+      .map(mapSessionRowToSummary)
+      .sort((left, right) => right.lastActivity.localeCompare(left.lastActivity));
+
+    projects.push({
+      projectId: projectRow.project_id,
+      path: projectRow.project_path,
+      displayName,
+      fullPath: projectRow.project_path,
+      isStarred: Boolean(projectRow.isStarred),
+      sessions,
+      sessionMeta: {
+        hasMore: false,
+        total: sessions.length,
+      },
+    });
+  }
+
+  return projects.sort((left, right) => {
+    const leftActivity = left.sessions[0]?.lastActivity ?? '';
+    const rightActivity = right.sessions[0]?.lastActivity ?? '';
+    return rightActivity.localeCompare(leftActivity);
+  });
 }
 
 /**

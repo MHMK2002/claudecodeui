@@ -1,5 +1,7 @@
 import React from 'react';
 
+import { getTextDirection } from '../../../../../utils/textDirection';
+
 interface TaskItem {
   id: string;
   subject: string;
@@ -76,7 +78,7 @@ export const TaskListContent: React.FC<TaskListContentProps> = ({ content }) => 
   // If we couldn't parse any tasks, fall back to text display
   if (tasks.length === 0) {
     return (
-      <pre className="whitespace-pre-wrap font-mono text-[11px] text-gray-600 dark:text-gray-400">
+      <pre dir="ltr" className="bidi-code whitespace-pre-wrap font-mono text-[11px] text-gray-600 dark:text-gray-400">
         {content}
       </pre>
     );
@@ -110,7 +112,7 @@ export const TaskListContent: React.FC<TaskListContentProps> = ({ content }) => 
               <span className="flex-shrink-0 font-mono text-[11px] text-gray-400 dark:text-gray-500">
                 #{task.id}
               </span>
-              <span className={`flex-1 truncate text-xs ${config.textClass}`}>
+              <span dir={getTextDirection(task.subject)} className={`bidi-isolate flex-1 truncate text-xs ${config.textClass}`}>
                 {task.subject}
               </span>
               <span className={`flex-shrink-0 rounded border px-1 py-px text-[10px] ${config.badgeClass}`}>

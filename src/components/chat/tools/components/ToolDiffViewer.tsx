@@ -43,7 +43,7 @@ export const ToolDiffViewer: React.FC<ToolDiffViewerProps> = ({
   );
 
   return (
-    <div className="overflow-hidden rounded border border-gray-200/60 dark:border-gray-700/50">
+    <div dir="ltr" className="bidi-code overflow-hidden rounded border border-gray-200/60 dark:border-gray-700/50">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-gray-200/60 bg-gray-50/80 px-2.5 py-1 dark:border-gray-700/50 dark:bg-gray-800/40">
         {onFileClick ? (

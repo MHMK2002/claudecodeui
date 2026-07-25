@@ -1,5 +1,5 @@
 import { type ReactNode } from 'react';
-import { Activity, Archive, Folder, MessageSquare, RotateCcw, Search, Trash2 } from 'lucide-react';
+import { Activity, Archive, Clock3, Folder, MessageSquare, RotateCcw, Search, Trash2 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { ScrollArea } from '../../../../shared/view/ui';
@@ -116,6 +116,10 @@ type SidebarContentProps = {
   isMobile: boolean;
   isLoading: boolean;
   projects: Project[];
+  recentProjects: Project[];
+  recentSessionsCount: number;
+  recentSessionsWindowMinutes: number;
+  isRecentProjectsLoading: boolean;
   runningSessionsCount: number;
   archivedProjects: ArchivedProjectListItem[];
   archivedSessions: ArchivedSessionListItem[];
@@ -156,6 +160,10 @@ export default function SidebarContent({
   isMobile,
   isLoading,
   projects,
+  recentProjects,
+  recentSessionsCount,
+  recentSessionsWindowMinutes,
+  isRecentProjectsLoading,
   runningSessionsCount,
   archivedProjects,
   archivedSessions,
@@ -314,6 +322,62 @@ export default function SidebarContent({
               ))}
             </div>
           ) : null
+        ) : searchMode === 'recent' ? (
+          isRecentProjectsLoading ? (
+            <div className="px-4 py-12 text-center md:py-8">
+              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-muted md:mb-3">
+                <div className="h-6 w-6 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
+              </div>
+              <p className="text-sm text-muted-foreground">
+                {t('recent.loading', 'Loading recent chats...')}
+              </p>
+            </div>
+          ) : projectListProps.filteredProjects.length === 0 ? (
+            <div className="px-4 py-12 text-center md:py-8">
+              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg border border-border/70 bg-muted/50 md:mb-3">
+                <Clock3 className="h-6 w-6 text-muted-foreground" />
+              </div>
+              <h3 className="mb-2 text-base font-medium text-foreground md:mb-1">
+                {recentSessionsCount > 0
+                  ? t('recent.noMatchingChats', 'No recent chats match this search')
+                  : t('recent.emptyTitle', 'No chats in the last hour')}
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                {recentSessionsCount > 0
+                  ? t('recent.tryDifferentSearch', 'Try a different search term.')
+                  : t('recent.emptyDescription', 'Chats will appear here as soon as they become active.')}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div className="mx-2 flex items-center justify-between rounded-lg border border-border/60 bg-card/50 px-3 py-2 shadow-sm">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary">
+                    <Clock3 className="h-3.5 w-3.5" />
+                  </span>
+                  <span className="truncate text-xs font-normal text-foreground">
+                    {t('recent.title', 'Chats from the last hour')}
+                  </span>
+                </div>
+                <span
+                  className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-normal text-primary"
+                  title={t('recent.windowMinutes', {
+                    defaultValue: '{{count}} minute window',
+                    count: recentSessionsWindowMinutes,
+                  })}
+                >
+                  {recentSessionsCount}
+                </span>
+              </div>
+              <SidebarProjectList
+                {...projectListProps}
+                projects={recentProjects}
+                isLoading={false}
+                loadingProgress={null}
+                forceExpanded
+              />
+            </div>
+          )
         ) : searchMode === 'running' ? (
           projectListProps.filteredProjects.length === 0 ? (
             <div className="px-4 py-12 text-center md:py-8">

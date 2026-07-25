@@ -4,7 +4,13 @@ import { createProject, updateProjectDisplayName } from '@/modules/projects/serv
 import { startCloneProject } from '@/modules/projects/services/project-clone.service.js';
 import { getProjectTaskMaster } from '@/modules/projects/services/projects-has-taskmaster.service.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
-import { getArchivedProjectsWithSessions, getProjectSessionsPage, getProjectsWithSessions } from '@/modules/projects/services/projects-with-sessions-fetch.service.js';
+import {
+  DEFAULT_RECENT_SESSIONS_WINDOW_MINUTES,
+  getArchivedProjectsWithSessions,
+  getProjectSessionsPage,
+  getProjectsWithSessions,
+  getRecentProjectsWithSessions,
+} from '@/modules/projects/services/projects-with-sessions-fetch.service.js';
 import { deleteOrArchiveProject, restoreArchivedProject } from '@/modules/projects/services/project-delete.service.js';
 import { applyLegacyStarredProjectIds, toggleProjectStar } from '@/modules/projects/services/project-star.service.js';
 
@@ -87,6 +93,25 @@ router.get(
   asyncHandler(async (_req, res) => {
     const projects = await getArchivedProjectsWithSessions();
     res.json(createApiSuccessResponse({ projects }));
+  }),
+);
+
+router.get(
+  '/recent',
+  asyncHandler(async (req, res) => {
+    const skipSynchronization =
+      readQueryStringValue(req.query.skipSynchronization).trim() === '1' ||
+      readQueryStringValue(req.query.skipSync).trim() === '1';
+    const windowMinutes = parseNonNegativeIntQuery(
+      req.query.windowMinutes,
+      'windowMinutes',
+      DEFAULT_RECENT_SESSIONS_WINDOW_MINUTES,
+    );
+    const projects = await getRecentProjectsWithSessions({
+      skipSynchronization,
+      windowMinutes,
+    });
+    res.json(projects);
   }),
 );
 

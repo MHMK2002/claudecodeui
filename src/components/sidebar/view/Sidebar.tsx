@@ -78,6 +78,10 @@ function Sidebar({
     sessionDeleteConfirmation,
     showVersionModal,
     filteredProjects,
+    recentProjects,
+    recentSessionsCount,
+    recentSessionsWindowMinutes,
+    isRecentProjectsLoading,
     archivedProjects,
     archivedSessions,
     archivedSessionsCount,
@@ -165,7 +169,7 @@ function Sidebar({
     loadingMoreProjects,
     activeSessions,
     attentionSessionIds,
-    forceExpanded: searchMode === 'running',
+    forceExpanded: searchMode === 'running' || searchMode === 'recent',
     isProjectStarred,
     onEditingNameChange: setEditingName,
     onToggleProject: toggleProject,
@@ -237,6 +241,10 @@ function Sidebar({
             isMobile={isMobile}
             isLoading={isLoading}
             projects={projects}
+            recentProjects={recentProjects}
+            recentSessionsCount={recentSessionsCount}
+            recentSessionsWindowMinutes={recentSessionsWindowMinutes}
+            isRecentProjectsLoading={isRecentProjectsLoading}
             runningSessionsCount={runningSessionsCount}
             archivedProjects={archivedProjects}
             archivedSessions={archivedSessions}
@@ -248,7 +256,7 @@ function Sidebar({
             searchMode={searchMode}
             onSearchModeChange={(mode) => {
               setSearchMode(mode);
-              if (mode === 'projects') clearConversationResults();
+              if (mode !== 'conversations') clearConversationResults();
             }}
             conversationResults={conversationResults}
             isSearching={isSearching}

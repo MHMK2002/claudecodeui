@@ -20,6 +20,7 @@ import { notifyRunFailed, notifyRunStopped } from './services/notification-orche
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
+import { CODEX_MODEL_PROVIDER_ID } from './modules/providers/list/codex/codex-runtime.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
 
 const activeCodexSessions = new Map();
@@ -257,7 +258,11 @@ export async function queryCodex(command, options = {}, ws) {
   const abortController = new AbortController();
 
   try {
-    codex = new Codex();
+    codex = new Codex({
+      config: {
+        model_provider: CODEX_MODEL_PROVIDER_ID,
+      },
+    });
 
     const threadOptions = {
       workingDirectory,

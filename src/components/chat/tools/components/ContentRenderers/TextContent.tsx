@@ -1,5 +1,7 @@
 import React from 'react';
 
+import { getTextDirection } from '../../../../../utils/textDirection';
+
 interface TextContentProps {
   content: string;
   format?: 'plain' | 'json' | 'code';
@@ -26,7 +28,7 @@ export const TextContent: React.FC<TextContentProps> = ({
     }
 
     return (
-      <pre className={`mt-1 overflow-x-auto rounded bg-gray-900 p-2.5 font-mono text-xs text-gray-100 dark:bg-gray-950 ${className}`}>
+      <pre dir="ltr" className={`bidi-code mt-1 overflow-x-auto rounded bg-gray-900 p-2.5 font-mono text-xs text-gray-100 dark:bg-gray-950 ${className}`}>
         {formattedJson}
       </pre>
     );
@@ -34,7 +36,7 @@ export const TextContent: React.FC<TextContentProps> = ({
 
   if (format === 'code') {
     return (
-      <pre className={`mt-1 overflow-hidden whitespace-pre-wrap break-words rounded border border-gray-200/50 bg-gray-50 p-2 font-mono text-xs text-gray-700 dark:border-gray-700/50 dark:bg-gray-800/50 dark:text-gray-300 ${className}`}>
+      <pre dir="ltr" className={`bidi-code mt-1 overflow-hidden whitespace-pre-wrap break-words rounded border border-gray-200/50 bg-gray-50 p-2 font-mono text-xs text-gray-700 dark:border-gray-700/50 dark:bg-gray-800/50 dark:text-gray-300 ${className}`}>
         {content}
       </pre>
     );
@@ -42,7 +44,7 @@ export const TextContent: React.FC<TextContentProps> = ({
 
   // Plain text
   return (
-    <div className={`mt-1 whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300 ${className}`}>
+    <div dir={getTextDirection(content)} className={`bidi-isolate mt-1 whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300 ${className}`}>
       {content}
     </div>
   );

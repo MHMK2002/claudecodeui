@@ -16,12 +16,16 @@ import type {
 } from '../types/types';
 import {
   clearLegacyStarredProjectIds,
+  filterRecentProjects,
   filterProjects,
   getAllSessions,
+  mergeRecentProjectSnapshots,
   readLegacyStarredProjectIds,
   readProjectSortOrder,
   sortProjects,
 } from '../utils/utils';
+
+const RECENT_SESSIONS_WINDOW_MINUTES = 60;
 
 type SnippetHighlight = {
   start: number;
@@ -132,7 +136,9 @@ export function useSidebarController({
   const [deleteConfirmation, setDeleteConfirmation] = useState<DeleteProjectConfirmation | null>(null);
   const [sessionDeleteConfirmation, setSessionDeleteConfirmation] = useState<SessionDeleteConfirmation | null>(null);
   const [showVersionModal, setShowVersionModal] = useState(false);
-  const [searchMode, setSearchMode] = useState<SidebarSearchMode>('projects');
+  const [searchMode, setSearchMode] = useState<SidebarSearchMode>('recent');
+  const [recentProjectSnapshots, setRecentProjectSnapshots] = useState<Project[]>([]);
+  const [isRecentProjectsLoading, setIsRecentProjectsLoading] = useState(true);
   const [conversationResults, setConversationResults] = useState<ConversationSearchResults | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [searchProgress, setSearchProgress] = useState<SearchProgress | null>(null);
@@ -226,6 +232,27 @@ export function useSidebarController({
     onRefreshRef.current = onRefresh;
   }, [onRefresh]);
 
+  const fetchRecentProjects = useCallback(async () => {
+    setIsRecentProjectsLoading(true);
+
+    try {
+      const response = await api.recentProjects({
+        windowMinutes: RECENT_SESSIONS_WINDOW_MINUTES,
+        skipSynchronization: true,
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to load recent sessions: ${response.status}`);
+      }
+
+      const payload = (await response.json()) as unknown;
+      setRecentProjectSnapshots(Array.isArray(payload) ? payload as Project[] : []);
+    } catch (error) {
+      console.error('[Sidebar] Failed to load recent sessions:', error);
+    } finally {
+      setIsRecentProjectsLoading(false);
+    }
+  }, []);
+
   const fetchArchivedSessions = useCallback(async () => {
     setIsArchivedSessionsLoading(true);
 
@@ -289,6 +316,16 @@ export function useSidebarController({
   useEffect(() => {
     void fetchArchivedSessions();
   }, [fetchArchivedSessions]);
+
+  useEffect(() => {
+    if (searchMode !== 'recent' || isLoading) {
+      return;
+    }
+
+    // The main project request performs provider synchronization first. The
+    // recent endpoint can therefore use its cheap DB-only path here.
+    void fetchRecentProjects();
+  }, [fetchRecentProjects, isLoading, searchMode]);
 
   useEffect(() => {
     if (searchMode !== 'archived') {
@@ -587,6 +624,16 @@ export function useSidebarController({
     [projectSortOrder, projectsWithResolvedStarState],
   );
 
+  const recentProjects = useMemo(
+    () => mergeRecentProjectSnapshots(
+      projectsWithResolvedStarState,
+      recentProjectSnapshots,
+      currentTime,
+      RECENT_SESSIONS_WINDOW_MINUTES,
+    ),
+    [currentTime, projectsWithResolvedStarState, recentProjectSnapshots],
+  );
+
   const runningProjects = useMemo(() => {
     if (activeSessionIds.size === 0) {
       return [];
@@ -613,10 +660,13 @@ export function useSidebarController({
     }, []);
   }, [activeSessionIds, sortedProjects]);
 
-  const filteredProjects = useMemo(
-    () => filterProjects(searchMode === 'running' ? runningProjects : sortedProjects, debouncedSearchQuery),
-    [debouncedSearchQuery, runningProjects, searchMode, sortedProjects],
-  );
+  const filteredProjects = useMemo(() => {
+    if (searchMode === 'recent') {
+      return filterRecentProjects(recentProjects, debouncedSearchQuery);
+    }
+
+    return filterProjects(searchMode === 'running' ? runningProjects : sortedProjects, debouncedSearchQuery);
+  }, [debouncedSearchQuery, recentProjects, runningProjects, searchMode, sortedProjects]);
 
   const filteredArchivedSessions = useMemo(() => {
     const normalizedSearch = debouncedSearchQuery.trim().toLowerCase();
@@ -737,7 +787,10 @@ export function useSidebarController({
 
       if (response.ok) {
         onSessionDelete?.(sessionId);
-        await fetchArchivedSessions();
+        await Promise.all([
+          fetchArchivedSessions(),
+          fetchRecentProjects(),
+        ]);
       } else {
         const errorText = await response.text();
         console.error('[Sidebar] Failed to delete session:', {
@@ -750,7 +803,7 @@ export function useSidebarController({
       console.error('[Sidebar] Error deleting session:', error);
       alert(t('messages.deleteSessionError'));
     }
-  }, [fetchArchivedSessions, onSessionDelete, sessionDeleteConfirmation, t]);
+  }, [fetchArchivedSessions, fetchRecentProjects, onSessionDelete, sessionDeleteConfirmation, t]);
 
   const requestProjectDelete = useCallback(
     (project: Project) => {
@@ -779,6 +832,7 @@ export function useSidebarController({
 
       if (response.ok) {
         onProjectDelete?.(project.projectId);
+        await fetchRecentProjects();
       } else {
         const data = (await response.json()) as { error?: string | { message?: string } };
         const err = data.error;
@@ -796,7 +850,7 @@ export function useSidebarController({
         return next;
       });
     }
-  }, [deleteConfirmation, onProjectDelete, t]);
+  }, [deleteConfirmation, fetchRecentProjects, onProjectDelete, t]);
 
   const handleProjectSelect = useCallback(
     (project: Project) => {
@@ -880,14 +934,17 @@ export function useSidebarController({
   const refreshProjects = useCallback(async () => {
     setIsRefreshing(true);
     try {
+      // Let the full refresh synchronize provider sessions before reading the
+      // lightweight DB-only recent view.
+      await Promise.resolve(onRefresh());
       await Promise.all([
-        Promise.resolve(onRefresh()),
+        fetchRecentProjects(),
         fetchArchivedSessions(),
       ]);
     } finally {
       setIsRefreshing(false);
     }
-  }, [fetchArchivedSessions, onRefresh]);
+  }, [fetchArchivedSessions, fetchRecentProjects, onRefresh]);
 
   const updateSessionSummary = useCallback(
     // `_projectId` and `_provider` are preserved for compatibility with
@@ -903,6 +960,7 @@ export function useSidebarController({
         const response = await api.renameSession(sessionId, trimmed);
         if (response.ok) {
           await onRefresh();
+          await fetchRecentProjects();
         } else {
           console.error('[Sidebar] Failed to rename session:', response.status);
           alert(t('messages.renameSessionFailed'));
@@ -915,7 +973,7 @@ export function useSidebarController({
         setEditingSessionName('');
       }
     },
-    [onRefresh, t],
+    [fetchRecentProjects, onRefresh, t],
   );
 
   const collapseSidebar = useCallback(() => {
@@ -945,6 +1003,10 @@ export function useSidebarController({
     sessionDeleteConfirmation,
     showVersionModal,
     filteredProjects,
+    recentProjects,
+    recentSessionsCount: recentProjects.reduce((count, project) => count + (project.sessions?.length ?? 0), 0),
+    recentSessionsWindowMinutes: RECENT_SESSIONS_WINDOW_MINUTES,
+    isRecentProjectsLoading,
     runningSessionsCount,
     archivedProjects: filteredArchivedProjects,
     archivedSessions: filteredArchivedSessions,

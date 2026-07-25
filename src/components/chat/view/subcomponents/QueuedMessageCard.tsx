@@ -1,6 +1,8 @@
 import { useTranslation } from 'react-i18next';
 import { PencilIcon, XIcon } from 'lucide-react';
 
+import { getTextDirection } from '../../../../utils/textDirection';
+
 interface QueuedMessageCardProps {
   content: string;
   imageCount?: number;
@@ -23,7 +25,7 @@ export default function QueuedMessageCard({ content, imageCount = 0, onEdit, onD
               · {t('input.queue.willSend', { defaultValue: 'Will send when this finishes' })}
             </span>
           </div>
-          <p className="mt-0.5 line-clamp-2 break-words text-sm text-foreground/90">{content}</p>
+          <p dir={getTextDirection(content)} className="bidi-isolate mt-0.5 line-clamp-2 break-words text-sm text-foreground/90">{content}</p>
           {imageCount > 0 && (
             <p className="mt-0.5 text-xs text-muted-foreground">
               {imageCount} {imageCount === 1 ? 'image' : 'images'} attached

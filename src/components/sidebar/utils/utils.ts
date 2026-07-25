@@ -58,7 +58,7 @@ const getCreatedTimestamp = (session: SessionWithProvider): string => {
 };
 
 const getUpdatedTimestamp = (session: SessionWithProvider): string => {
-  return String(session.lastActivity || '');
+  return String(session.lastActivity || session.updated_at || '');
 };
 
 const getSessionProvider = (session: ProjectSession): LLMProvider => {
@@ -159,6 +159,107 @@ export const filterProjects = (projects: Project[], searchFilter: string): Proje
     const searchPath = (project.path || project.fullPath || '').toLowerCase();
     return displayName.includes(normalizedSearch) || searchPath.includes(normalizedSearch);
   });
+};
+
+export const mergeRecentProjectSnapshots = (
+  projects: Project[],
+  recentSnapshots: Project[],
+  currentTime: Date,
+  windowMinutes: number,
+): Project[] => {
+  const cutoffTimestamp = currentTime.getTime() - windowMinutes * 60_000;
+  const liveProjectsById = new Map(projects.map((project) => [project.projectId, project]));
+  const snapshotsByProjectId = new Map(recentSnapshots.map((project) => [project.projectId, project]));
+  const projectIds = new Set([...snapshotsByProjectId.keys(), ...liveProjectsById.keys()]);
+  const mergedProjects: Project[] = [];
+
+  const isInsideWindow = (session: SessionWithProvider): boolean => {
+    const timestamp = getSessionDate(session).getTime();
+    return Number.isFinite(timestamp) && timestamp >= cutoffTimestamp;
+  };
+
+  for (const projectId of projectIds) {
+    const liveProject = liveProjectsById.get(projectId);
+    if (!liveProject) {
+      continue;
+    }
+
+    const sessionsById = new Map<string, SessionWithProvider>();
+    const snapshot = snapshotsByProjectId.get(projectId);
+    for (const session of snapshot ? getAllSessions(snapshot) : []) {
+      if (isInsideWindow(session)) {
+        sessionsById.set(String(session.id), session);
+      }
+    }
+
+    // Live project data carries websocket upserts, so it wins over the API
+    // snapshot when both contain the same session id.
+    for (const session of getAllSessions(liveProject)) {
+      if (isInsideWindow(session)) {
+        sessionsById.set(String(session.id), session);
+      }
+    }
+
+    const sessions = [...sessionsById.values()].sort(
+      (left, right) => getSessionDate(right).getTime() - getSessionDate(left).getTime(),
+    );
+    if (sessions.length === 0) {
+      continue;
+    }
+
+    mergedProjects.push({
+      ...liveProject,
+      sessions,
+      sessionMeta: {
+        ...liveProject.sessionMeta,
+        total: sessions.length,
+        hasMore: false,
+      },
+    });
+  }
+
+  return mergedProjects.sort(
+    (left, right) => getProjectLastActivity(right).getTime() - getProjectLastActivity(left).getTime(),
+  );
+};
+
+/**
+ * Recent-chat search keeps project groups intact when the project itself
+ * matches, otherwise it narrows each group to matching conversation rows.
+ */
+export const filterRecentProjects = (projects: Project[], searchFilter: string): Project[] => {
+  const normalizedSearch = searchFilter.trim().toLowerCase();
+  if (!normalizedSearch) {
+    return projects;
+  }
+
+  return projects.reduce<Project[]>((matchingProjects, project) => {
+    const projectMatches = [project.displayName, project.path || project.fullPath || '']
+      .some((value) => value.toLowerCase().includes(normalizedSearch));
+    if (projectMatches) {
+      matchingProjects.push(project);
+      return matchingProjects;
+    }
+
+    const sessions = getAllSessions(project).filter((session) => [
+      String(session.summary || session.name || ''),
+      String(session.id),
+      session.__provider,
+    ].some((value) => value.toLowerCase().includes(normalizedSearch)));
+    if (sessions.length > 0) {
+      matchingProjects.push({
+        ...project,
+        sessions,
+        sessionMeta: {
+          ...project.sessionMeta,
+          total: sessions.length,
+          hasMore: false,
+        },
+      });
+    }
+
+    return matchingProjects;
+  }, []);
 };
 
 export const getTaskIndicatorStatus = (

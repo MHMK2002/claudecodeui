@@ -2,17 +2,48 @@ import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import TOML from '@iarna/toml';
 import spawn from 'cross-spawn';
 
+import { CODEX_MODEL_PROVIDER_ID } from '@/modules/providers/list/codex/codex-runtime.js';
 import type { IProviderAuth } from '@/shared/interfaces.js';
 import type { ProviderAuthStatus } from '@/shared/types.js';
 import { readObjectRecord, readOptionalString } from '@/shared/utils.js';
 
-type CodexCredentialsStatus = {
+export type CodexCredentialsStatus = {
   authenticated: boolean;
   email: string | null;
   method: string | null;
   error?: string;
+};
+
+export const readCodexCustomProviderCredentials = (
+  configValue: unknown,
+  env: NodeJS.ProcessEnv,
+): CodexCredentialsStatus | null => {
+  const config = readObjectRecord(configValue);
+  const providers = readObjectRecord(config?.model_providers);
+  const provider = readObjectRecord(providers?.[CODEX_MODEL_PROVIDER_ID]);
+  if (!provider || provider.requires_openai_auth === true) {
+    return null;
+  }
+
+  const providerName = readOptionalString(provider.name) ?? CODEX_MODEL_PROVIDER_ID;
+  const envKey = readOptionalString(provider.env_key);
+  if (envKey && !readOptionalString(env[envKey])) {
+    return {
+      authenticated: false,
+      email: null,
+      method: 'provider_api_key',
+      error: `${envKey} is not set for Codex provider "${CODEX_MODEL_PROVIDER_ID}"`,
+    };
+  }
+
+  return {
+    authenticated: true,
+    email: envKey ? `${providerName} API Key` : providerName,
+    method: envKey ? 'provider_api_key' : 'custom_provider',
+  };
 };
 
 export class CodexProviderAuth implements IProviderAuth {
@@ -20,12 +51,8 @@ export class CodexProviderAuth implements IProviderAuth {
    * Checks whether Codex is available to the server runtime.
    */
   private checkInstalled(): boolean {
-    try {
-      spawn.sync('codex', ['--version'], { stdio: 'ignore', timeout: 5000 });
-      return true;
-    } catch {
-      return false;
-    }
+    const result = spawn.sync('codex', ['--version'], { stdio: 'ignore', timeout: 5000 });
+    return !result.error && result.status === 0;
   }
 
   /**
@@ -49,6 +76,17 @@ export class CodexProviderAuth implements IProviderAuth {
    * Reads Codex auth.json and checks OAuth tokens or an API key fallback.
    */
   private async checkCredentials(): Promise<CodexCredentialsStatus> {
+    try {
+      const configPath = path.join(os.homedir(), '.codex', 'config.toml');
+      const config = TOML.parse(await readFile(configPath, 'utf8'));
+      const customProviderCredentials = readCodexCustomProviderCredentials(config, process.env);
+      if (customProviderCredentials) {
+        return customProviderCredentials;
+      }
+    } catch {
+      // Fall through to Codex's persisted OpenAI credentials.
+    }
+
     try {
       const authPath = path.join(os.homedir(), '.codex', 'auth.json');
       const content = await readFile(authPath, 'utf8');

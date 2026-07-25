@@ -34,6 +34,18 @@
     "loading": "Loading...",
     "showMore": "Show more sessions"
   },
+  "recent": {
+    "modeLabel": "Recent",
+    "title": "Chats from the last hour",
+    "loading": "Loading recent chats...",
+    "searchPlaceholder": "Search recent chats...",
+    "emptyTitle": "No chats in the last hour",
+    "emptyDescription": "Chats will appear here as soon as they become active.",
+    "noMatchingChats": "No recent chats match this search",
+    "tryDifferentSearch": "Try a different search term.",
+    "windowMinutes_one": "{{count}} minute window",
+    "windowMinutes_other": "{{count}} minute window"
+  },
   "tooltips": {
     "viewEnvironments": "View Environments",
     "hideSidebar": "Hide sidebar",

@@ -65,6 +65,14 @@ export const api = {
   // After the projectName → projectId migration the path/query identifier is
   // the DB-assigned `projectId`; parameter names reflect that for clarity.
   projects: () => authenticatedFetch('/api/projects'),
+  recentProjects: ({ windowMinutes = 60, skipSynchronization = true } = {}) => {
+    const params = new URLSearchParams();
+    params.set('windowMinutes', String(windowMinutes));
+    if (skipSynchronization) {
+      params.set('skipSynchronization', '1');
+    }
+    return authenticatedFetch(`/api/projects/recent?${params.toString()}`);
+  },
   archivedProjects: () => authenticatedFetch('/api/projects/archived'),
   projectSessions: (projectId, { limit = 20, offset = 0 } = {}) => {
     const params = new URLSearchParams();
