@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { MutableRefObject } from 'react';
 
-import { authenticatedFetch } from '../../../utils/api';
+import { api, authenticatedFetch } from '../../../utils/api';
 import type { MarkSessionIdle, SessionActivityMap } from '../../../hooks/useSessionProtection';
 import type { Project, ProjectSession, LLMProvider } from '../../../types/app';
 import type { SessionStore, NormalizedMessage } from '../../../stores/useSessionStore';
@@ -302,6 +302,56 @@ export function useChatSessionState({
   }, [activeSessionId, sessionStore]);
 
   const rewindMessages = useCallback((count: number) => setViewHiddenCount(count), []);
+
+  /* ---------------------------------------------------------------- */
+  /*  Rewind modal                                                     */
+  /* ---------------------------------------------------------------- */
+
+  const [rewindTarget, setRewindTarget] = useState<{
+    messageId: string;
+    preview: string;
+    truncatedAt?: string;
+    pending: boolean;
+    error?: string;
+  } | null>(null);
+
+  const requestRewind = useCallback((messageId: string) => {
+    if (!activeSessionId) return;
+    const slot = sessionStore.getSessionSlot(activeSessionId);
+    const messages = slot?.merged ?? [];
+    const target = messages.find((m) => m.id === messageId);
+    const preview =
+      target?.content?.slice(0, 200) ||
+      target?.displayText?.slice(0, 200) ||
+      '';
+    setRewindTarget({
+      messageId,
+      preview: preview.length === target?.content?.length ? preview : `${preview}…`,
+      pending: false,
+    });
+  }, [activeSessionId, sessionStore]);
+
+  const cancelRewind = useCallback(() => {
+    setRewindTarget((current) => (current ? { ...current, pending: false, error: undefined } : current));
+  }, []);
+
+  const confirmRewind = useCallback(async () => {
+    if (!activeSessionId || !rewindTarget) return;
+    setRewindTarget((current) => (current ? { ...current, pending: true, error: undefined } : current));
+    try {
+      await api.rewindSession(activeSessionId, /** @type {{ messageId: string; keepMessage: boolean }} */ ({
+        messageId: rewindTarget.messageId,
+        keepMessage: true,
+      }));
+      // The server broadcasts session.rewound; the realtime handler will
+      // refresh the slot. Close the modal optimistically — the listener
+      // will dedupe any double refresh.
+      setRewindTarget(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setRewindTarget((current) => (current ? { ...current, pending: false, error: message } : current));
+    }
+  }, [activeSessionId, rewindTarget]);
 
   const scrollToBottom = useCallback(() => {
     const container = scrollContainerRef.current;
@@ -831,6 +881,10 @@ export function useChatSessionState({
     addMessage,
     clearMessages,
     rewindMessages,
+    requestRewind,
+    rewindTarget,
+    confirmRewind,
+    cancelRewind,
     sessionActivity,
     isProcessing,
     canAbortSession,

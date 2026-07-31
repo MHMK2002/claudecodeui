@@ -1,0 +1,4 @@
+interface:
+  display_name: "Software Delivery Team Final Arbiter"
+  short_description: "Make final accept revise reject decision"
+  default_prompt: "Use $software-delivery-team-final-arbiter to make the final accept, revise, or reject decision for this run."

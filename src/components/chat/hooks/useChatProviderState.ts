@@ -9,6 +9,7 @@ import type {
   ProviderModelOption,
   ProviderModelsCacheInfo,
   ProviderModelsDefinition,
+  ClaudeProviderProfilePublic,
 } from '../../../types/app';
 import {
   DEFAULT_EFFORT_VALUE,
@@ -24,12 +25,23 @@ const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
 };
 
 const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode'];
+const CLAUDE_PROFILE_STORAGE_KEY = 'claude-provider-profile-id';
 
 const readStoredProvider = (): LLMProvider => {
   const storedProvider = localStorage.getItem('selected-provider');
   return PROVIDERS.includes(storedProvider as LLMProvider)
     ? storedProvider as LLMProvider
     : 'claude';
+};
+
+const readStoredClaudeProfileId = (): number | null => {
+  const storedProfileId = localStorage.getItem(CLAUDE_PROFILE_STORAGE_KEY);
+  if (!storedProfileId || storedProfileId === 'local') {
+    return null;
+  }
+
+  const parsed = /^\d+$/.test(storedProfileId) ? Number(storedProfileId) : NaN;
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 };
 
 /**
@@ -87,6 +99,13 @@ type ChangeActiveModelApiResponse = {
   };
 };
 
+type ClaudeProviderProfilesApiResponse = {
+  success?: boolean;
+  data?: {
+    profiles?: ClaudeProviderProfilePublic[];
+  };
+};
+
 export function useChatProviderState({ selectedSession, selectedProject: _selectedProject }: UseChatProviderStateArgs) {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
@@ -109,6 +128,11 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const [opencodeModel, setOpenCodeModel] = useState<string>(() => {
     return localStorage.getItem('opencode-model') || FALLBACK_DEFAULT_MODEL.opencode;
   });
+  const [claudeProfiles, setClaudeProfiles] = useState<ClaudeProviderProfilePublic[]>([]);
+  const [claudeProfilesLoading, setClaudeProfilesLoading] = useState(true);
+  const [selectedClaudeProfileId, setSelectedClaudeProfileIdState] = useState<number | null>(
+    readStoredClaudeProfileId,
+  );
 
   /**
    * Backend-owned capability matrix keyed by provider. Drives the permission
@@ -131,6 +155,62 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const [providerModelsRefreshing, setProviderModelsRefreshing] = useState(false);
 
   const providerModelsRequestIdRef = useRef(0);
+
+  const setSelectedClaudeProfileId = useCallback((profileId: number | null) => {
+    setSelectedClaudeProfileIdState(profileId);
+    localStorage.setItem(
+      CLAUDE_PROFILE_STORAGE_KEY,
+      profileId === null ? 'local' : String(profileId),
+    );
+  }, []);
+
+  const loadClaudeProfiles = useCallback(async () => {
+    try {
+      setClaudeProfilesLoading(true);
+      const response = await authenticatedFetch('/api/providers/claude/profiles');
+      const body = (await response.json()) as ClaudeProviderProfilesApiResponse;
+      if (!response.ok || !body.success) {
+        return;
+      }
+      setClaudeProfiles(body.data?.profiles ?? []);
+    } catch (error) {
+      console.error('Error loading Claude provider profiles:', error);
+    } finally {
+      setClaudeProfilesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadClaudeProfiles();
+  }, [loadClaudeProfiles]);
+
+  useEffect(() => {
+    const handleProfilesUpdated = () => {
+      void loadClaudeProfiles();
+    };
+
+    window.addEventListener('claude-provider-profiles-updated', handleProfilesUpdated);
+    return () => {
+      window.removeEventListener('claude-provider-profiles-updated', handleProfilesUpdated);
+    };
+  }, [loadClaudeProfiles]);
+
+  useEffect(() => {
+    if (selectedClaudeProfileId === null) {
+      const hasStoredSelection = localStorage.getItem(CLAUDE_PROFILE_STORAGE_KEY) !== null;
+      const defaultProfile = claudeProfiles.find((profile) => profile.isDefault && profile.isActive);
+      if (!hasStoredSelection && defaultProfile) {
+        setSelectedClaudeProfileIdState(defaultProfile.id);
+        localStorage.setItem(CLAUDE_PROFILE_STORAGE_KEY, String(defaultProfile.id));
+      }
+      return;
+    }
+
+    const selectedProfile = claudeProfiles.find((profile) => profile.id === selectedClaudeProfileId);
+    if (!selectedProfile || !selectedProfile.isActive) {
+      setSelectedClaudeProfileId(null);
+    }
+  }, [claudeProfiles, selectedClaudeProfileId, setSelectedClaudeProfileId]);
 
   const setStoredProviderModel = useCallback((targetProvider: LLMProvider, model: string) => {
     if (targetProvider === 'claude') {
@@ -580,6 +660,11 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     providerModelCacheCatalog,
     providerModelsLoading,
     providerModelsRefreshing,
+    claudeProfiles,
+    claudeProfilesLoading,
+    selectedClaudeProfileId,
+    setSelectedClaudeProfileId,
+    reloadClaudeProfiles: loadClaudeProfiles,
     hardRefreshProviderModels: () => loadProviderModels({ bypassCache: true }),
     selectProviderModel,
     setStoredProviderEffort,

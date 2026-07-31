@@ -101,6 +101,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
           const taskNotif = parseTaskNotification(content);
           if (taskNotif) {
             converted.push({
+              id: msg.id,
               type: 'assistant',
               content: taskNotif.summary,
               timestamp: msg.timestamp,
@@ -112,6 +113,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
             // markdown displays correctly instead of leaking raw XML.
             if (taskNotif.result) {
               converted.push({
+                id: msg.id,
                 type: 'assistant',
                 content: formatUsageLimitText(unescapeWithMathProtection(decodeHtmlEntities(taskNotif.result))),
                 timestamp: msg.timestamp,
@@ -120,6 +122,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
             }
           } else {
             converted.push({
+              id: msg.id,
               type: 'user',
               content: unescapeWithMathProtection(decodeHtmlEntities(content)),
               timestamp: msg.timestamp,
@@ -132,6 +135,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
           text = unescapeWithMathProtection(text);
           text = formatUsageLimitText(text);
           converted.push({
+            id: msg.id,
             type: 'assistant',
             content: text,
             timestamp: msg.timestamp,
@@ -286,6 +290,16 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
 
       default:
         break;
+    }
+  }
+
+  // Tag the last user-authored row so the message bubble can show the edit
+  // pencil affordance only on the most recent turn (rewind is still offered
+  // for any historical user message).
+  for (let i = converted.length - 1; i >= 0; i--) {
+    if (converted[i].type === 'user') {
+      converted[i] = { ...converted[i], isLastUserMessage: true };
+      break;
     }
   }
 

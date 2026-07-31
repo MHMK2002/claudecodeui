@@ -54,7 +54,7 @@ export const QuestionAnswerContent: React.FC<QuestionAnswerContentProps> = ({
             <button
               type="button"
               onClick={() => setExpandedIdx(isExpanded ? null : idx)}
-              className="flex w-full items-start gap-2.5 px-3 py-2 text-left transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/50"
+              className="flex w-full items-start gap-2.5 px-3 py-2 text-start transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/50"
             >
               <div className={`mt-0.5 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full ${
                 answerLabels.length > 0
@@ -83,7 +83,7 @@ export const QuestionAnswerContent: React.FC<QuestionAnswerContentProps> = ({
                     </span>
                   )}
                 </div>
-                <div className="mt-0.5 text-xs leading-snug text-gray-600 dark:text-gray-400">
+                <div dir="auto" className="bidi-plaintext mt-0.5 text-xs leading-snug text-gray-600 dark:text-gray-400">
                   {q.question}
                 </div>
 
@@ -94,7 +94,8 @@ export const QuestionAnswerContent: React.FC<QuestionAnswerContentProps> = ({
                       return (
                         <span
                           key={lbl}
-                          className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+                          dir="auto"
+                          className="bidi-plaintext inline-flex items-center gap-1 rounded-md bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
                         >
                           {lbl}
                           {isCustom && (
@@ -148,7 +149,7 @@ export const QuestionAnswerContent: React.FC<QuestionAnswerContentProps> = ({
                             </svg>
                           )}
                         </div>
-                        <div className="min-w-0 flex-1">
+                        <div dir="auto" className="bidi-plaintext min-w-0 flex-1">
                           <span className={wasSelected ? 'font-medium text-gray-900 dark:text-gray-100' : ''}>
                             {opt.label}
                           </span>

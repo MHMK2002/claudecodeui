@@ -1,5 +1,6 @@
 import express, { type Request, type Response } from 'express';
 
+import { providerProfilesDb } from '@/modules/database/index.js';
 import { providerAuthService } from '@/modules/providers/services/provider-auth.service.js';
 import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
 import { providerMcpService } from '@/modules/providers/services/mcp.service.js';
@@ -9,6 +10,7 @@ import { sessionConversationsSearchService } from '@/modules/providers/services/
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import type {
   LLMProvider,
+  ClaudeProviderProfileAuthType,
   McpScope,
   McpTransport,
   ProviderChangeActiveModelInput,
@@ -84,6 +86,32 @@ const parseOptionalBooleanQuery = (value: unknown, name: string): boolean | unde
   });
 };
 
+type AuthenticatedProviderRequest = Request & {
+  user?: {
+    id?: unknown;
+    userId?: unknown;
+  };
+};
+
+const readAuthenticatedUserId = (req: Request): number => {
+  const user = (req as AuthenticatedProviderRequest).user;
+  const rawUserId = user?.id ?? user?.userId;
+  const parsed = typeof rawUserId === 'number'
+    ? rawUserId
+    : typeof rawUserId === 'string'
+      ? (/^\d+$/.test(rawUserId.trim()) ? Number(rawUserId.trim()) : NaN)
+      : NaN;
+
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new AppError('Authenticated user is required.', {
+      code: 'AUTHENTICATED_USER_REQUIRED',
+      statusCode: 401,
+    });
+  }
+
+  return parsed;
+};
+
 const parseMcpScope = (value: unknown): McpScope | undefined => {
   if (value === undefined) {
     return undefined;
@@ -102,6 +130,160 @@ const parseMcpScope = (value: unknown): McpScope | undefined => {
     code: 'INVALID_MCP_SCOPE',
     statusCode: 400,
   });
+};
+
+const parseProviderProfileId = (value: unknown): number => {
+  const rawValue = readPathParam(value, 'profileId').trim();
+  const parsed = /^\d+$/.test(rawValue) ? Number(rawValue) : NaN;
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new AppError('Invalid profileId.', {
+      code: 'INVALID_PROVIDER_PROFILE_ID',
+      statusCode: 400,
+    });
+  }
+  return parsed;
+};
+
+const parseOptionalProviderProfileId = (value: unknown): number | null => {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+
+  const parsed = typeof value === 'number'
+    ? value
+    : typeof value === 'string'
+      ? (/^\d+$/.test(value.trim()) ? Number(value.trim()) : NaN)
+      : NaN;
+
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new AppError('providerProfileId must be a positive integer.', {
+      code: 'INVALID_PROVIDER_PROFILE_ID',
+      statusCode: 400,
+    });
+  }
+
+  return parsed;
+};
+
+const parseClaudeProfileAuthType = (value: unknown): ClaudeProviderProfileAuthType => {
+  if (value === undefined || value === null || value === '') {
+    return 'auth_token';
+  }
+
+  if (value === 'auth_token' || value === 'api_key') {
+    return value;
+  }
+
+  throw new AppError('authType must be "auth_token" or "api_key".', {
+    code: 'INVALID_PROVIDER_PROFILE_AUTH_TYPE',
+    statusCode: 400,
+  });
+};
+
+const readOptionalBodyString = (body: Record<string, unknown>, key: string): string | undefined => {
+  const value = body[key];
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== 'string') {
+    throw new AppError(`${key} must be a string.`, {
+      code: 'INVALID_REQUEST_BODY',
+      statusCode: 400,
+    });
+  }
+  return value.trim();
+};
+
+const parseClaudeProfileBaseUrl = (value: string | undefined): string | null | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      throw new Error('Unsupported protocol.');
+    }
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    throw new AppError('baseUrl must be a valid http(s) URL.', {
+      code: 'INVALID_PROVIDER_PROFILE_BASE_URL',
+      statusCode: 400,
+    });
+  }
+};
+
+const readClaudeProfileSecret = (body: Record<string, unknown>): string | undefined => (
+  readOptionalBodyString(body, 'secretValue')
+  ?? readOptionalBodyString(body, 'token')
+  ?? readOptionalBodyString(body, 'secret')
+);
+
+const parseClaudeProfileCreatePayload = (payload: unknown) => {
+  if (!payload || typeof payload !== 'object') {
+    throw new AppError('Request body must be an object.', {
+      code: 'INVALID_REQUEST_BODY',
+      statusCode: 400,
+    });
+  }
+
+  const body = payload as Record<string, unknown>;
+  const title = readOptionalBodyString(body, 'title');
+  const secretValue = readClaudeProfileSecret(body);
+  if (!title) {
+    throw new AppError('title is required.', {
+      code: 'PROVIDER_PROFILE_TITLE_REQUIRED',
+      statusCode: 400,
+    });
+  }
+  if (!secretValue) {
+    throw new AppError('token is required.', {
+      code: 'PROVIDER_PROFILE_TOKEN_REQUIRED',
+      statusCode: 400,
+    });
+  }
+
+  return {
+    title,
+    baseUrl: parseClaudeProfileBaseUrl(readOptionalBodyString(body, 'baseUrl')) ?? null,
+    authType: parseClaudeProfileAuthType(body.authType),
+    secretValue,
+    isDefault: body.isDefault === true,
+    isActive: body.isActive !== false,
+  };
+};
+
+const parseClaudeProfileUpdatePayload = (payload: unknown) => {
+  if (!payload || typeof payload !== 'object') {
+    throw new AppError('Request body must be an object.', {
+      code: 'INVALID_REQUEST_BODY',
+      statusCode: 400,
+    });
+  }
+
+  const body = payload as Record<string, unknown>;
+  const title = readOptionalBodyString(body, 'title');
+  const baseUrl = parseClaudeProfileBaseUrl(readOptionalBodyString(body, 'baseUrl'));
+  const secretValue = readClaudeProfileSecret(body);
+
+  if (title !== undefined && !title) {
+    throw new AppError('title must not be empty.', {
+      code: 'PROVIDER_PROFILE_TITLE_REQUIRED',
+      statusCode: 400,
+    });
+  }
+
+  return {
+    ...(title !== undefined ? { title } : {}),
+    ...(baseUrl !== undefined ? { baseUrl } : {}),
+    ...(body.authType !== undefined ? { authType: parseClaudeProfileAuthType(body.authType) } : {}),
+    ...(secretValue ? { secretValue } : {}),
+    ...(body.isDefault !== undefined ? { isDefault: body.isDefault === true } : {}),
+    ...(body.isActive !== undefined ? { isActive: body.isActive === true } : {}),
+  };
 };
 
 const parseMcpTransport = (value: unknown): McpTransport => {
@@ -380,7 +562,112 @@ router.get(
   asyncHandler(async (req: Request, res: Response) => {
     const provider = parseProvider(req.params.provider);
     const status = await providerAuthService.getProviderAuthStatus(provider);
+    if (provider === 'claude' && status.installed && !status.authenticated) {
+      const userId = readAuthenticatedUserId(req);
+      if (providerProfilesDb.countActiveClaudeProfiles(userId) > 0) {
+        res.json(createApiSuccessResponse({
+          ...status,
+          authenticated: true,
+          email: 'Configured profile',
+          method: 'custom_provider',
+          error: undefined,
+        }));
+        return;
+      }
+    }
     res.json(createApiSuccessResponse(status));
+  }),
+);
+
+router.get(
+  '/:provider/profiles',
+  asyncHandler(async (req: Request, res: Response) => {
+    const provider = parseProvider(req.params.provider);
+    if (provider !== 'claude') {
+      throw new AppError('Provider profiles are currently supported for Claude only.', {
+        code: 'PROVIDER_PROFILES_UNSUPPORTED',
+        statusCode: 404,
+      });
+    }
+
+    const userId = readAuthenticatedUserId(req);
+    res.json(createApiSuccessResponse({
+      provider,
+      profiles: providerProfilesDb.listClaudeProfiles(userId),
+    }));
+  }),
+);
+
+router.post(
+  '/:provider/profiles',
+  asyncHandler(async (req: Request, res: Response) => {
+    const provider = parseProvider(req.params.provider);
+    if (provider !== 'claude') {
+      throw new AppError('Provider profiles are currently supported for Claude only.', {
+        code: 'PROVIDER_PROFILES_UNSUPPORTED',
+        statusCode: 404,
+      });
+    }
+
+    const userId = readAuthenticatedUserId(req);
+    const profile = providerProfilesDb.createClaudeProfile(
+      userId,
+      parseClaudeProfileCreatePayload(req.body),
+    );
+    res.status(201).json(createApiSuccessResponse({ provider, profile }));
+  }),
+);
+
+router.patch(
+  '/:provider/profiles/:profileId',
+  asyncHandler(async (req: Request, res: Response) => {
+    const provider = parseProvider(req.params.provider);
+    if (provider !== 'claude') {
+      throw new AppError('Provider profiles are currently supported for Claude only.', {
+        code: 'PROVIDER_PROFILES_UNSUPPORTED',
+        statusCode: 404,
+      });
+    }
+
+    const userId = readAuthenticatedUserId(req);
+    const profileId = parseProviderProfileId(req.params.profileId);
+    const profile = providerProfilesDb.updateClaudeProfile(
+      userId,
+      profileId,
+      parseClaudeProfileUpdatePayload(req.body),
+    );
+    if (!profile) {
+      throw new AppError('Provider profile not found.', {
+        code: 'PROVIDER_PROFILE_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    res.json(createApiSuccessResponse({ provider, profile }));
+  }),
+);
+
+router.delete(
+  '/:provider/profiles/:profileId',
+  asyncHandler(async (req: Request, res: Response) => {
+    const provider = parseProvider(req.params.provider);
+    if (provider !== 'claude') {
+      throw new AppError('Provider profiles are currently supported for Claude only.', {
+        code: 'PROVIDER_PROFILES_UNSUPPORTED',
+        statusCode: 404,
+      });
+    }
+
+    const userId = readAuthenticatedUserId(req);
+    const profileId = parseProviderProfileId(req.params.profileId);
+    if (!providerProfilesDb.deleteClaudeProfile(userId, profileId)) {
+      throw new AppError('Provider profile not found.', {
+        code: 'PROVIDER_PROFILE_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    res.json(createApiSuccessResponse({ provider, deleted: true }));
   }),
 );
 
@@ -535,7 +822,26 @@ router.post(
     const body = (req.body ?? {}) as Record<string, unknown>;
     const provider = parseProvider(body.provider);
     const projectPath = typeof body.projectPath === 'string' ? body.projectPath : '';
-    const result = sessionsService.createAppSession(provider, projectPath);
+    const providerProfileId = parseOptionalProviderProfileId(body.providerProfileId);
+    if (providerProfileId !== null && provider !== 'claude') {
+      throw new AppError('providerProfileId is currently supported for Claude sessions only.', {
+        code: 'PROVIDER_PROFILE_UNSUPPORTED',
+        statusCode: 400,
+      });
+    }
+
+    if (providerProfileId !== null) {
+      const userId = readAuthenticatedUserId(req);
+      const profile = providerProfilesDb.getClaudeProfileForRuntime(userId, providerProfileId);
+      if (!profile) {
+        throw new AppError('Provider profile not found or inactive.', {
+          code: 'PROVIDER_PROFILE_NOT_FOUND',
+          statusCode: 404,
+        });
+      }
+    }
+
+    const result = sessionsService.createAppSession(provider, projectPath, { providerProfileId });
     res.status(201).json(createApiSuccessResponse(result));
   }),
 );
@@ -585,6 +891,57 @@ router.put(
     const sessionId = parseSessionId(req.params.sessionId);
     const summary = parseSessionRenameSummary(req.body);
     const result = sessionsService.renameSessionById(sessionId, summary);
+    res.json(createApiSuccessResponse(result));
+  }),
+);
+
+router.post(
+  '/sessions/:sessionId/rewind',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const messageId = typeof body.messageId === 'string' ? body.messageId.trim() : '';
+    if (!messageId) {
+      throw new AppError('messageId is required.', {
+        code: 'INVALID_REQUEST_BODY',
+        statusCode: 400,
+      });
+    }
+
+    const keepMessage = body.keepMessage === undefined
+      ? true
+      : body.keepMessage === true || body.keepMessage === 'true';
+
+    const result = await sessionsService.rewindSession(sessionId, { messageId, keepMessage });
+    res.json(createApiSuccessResponse(result));
+  }),
+);
+
+router.patch(
+  '/sessions/:sessionId/messages/:messageId',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const messageId = typeof req.params.messageId === 'string' ? req.params.messageId.trim() : '';
+    if (!messageId) {
+      throw new AppError('messageId is required.', {
+        code: 'INVALID_REQUEST_BODY',
+        statusCode: 400,
+      });
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const content = typeof body.content === 'string' ? body.content : '';
+    if (!content.trim()) {
+      throw new AppError('content is required.', {
+        code: 'INVALID_REQUEST_BODY',
+        statusCode: 400,
+      });
+    }
+    const images = Array.isArray(body.images) ? (body.images as unknown[]) : [];
+    const result = await sessionsService.editUserMessage(sessionId, {
+      messageId,
+      content,
+      images,
+    });
     res.json(createApiSuccessResponse(result));
   }),
 );

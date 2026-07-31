@@ -1,4 +1,4 @@
-import { Activity, Archive, Clock3, Folder, FolderPlus, MessageSquare, Plus, RefreshCw, Search, X, PanelLeftClose } from 'lucide-react';
+import { Activity, Clock3, Folder, FolderPlus, Plus, RefreshCw, Search, X, PanelLeftClose } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { Button, Input, Tooltip } from '../../../../shared/view/ui';
@@ -18,8 +18,6 @@ type SidebarHeaderProps = {
   isLoading: boolean;
   projectsCount: number;
   runningSessionsCount: number;
-  archivedSessionsCount: number;
-  isArchivedSessionsLoading: boolean;
   searchFilter: string;
   onSearchFilterChange: (value: string) => void;
   onClearSearchFilter: () => void;
@@ -38,8 +36,6 @@ export default function SidebarHeader({
   isLoading,
   projectsCount,
   runningSessionsCount,
-  archivedSessionsCount,
-  isArchivedSessionsLoading,
   searchFilter,
   onSearchFilterChange,
   onClearSearchFilter,
@@ -51,16 +47,12 @@ export default function SidebarHeader({
   onCollapseSidebar,
   t,
 }: SidebarHeaderProps) {
-  const showSearchTools = (projectsCount > 0 || runningSessionsCount > 0 || archivedSessionsCount > 0 || isArchivedSessionsLoading) && !isLoading;
+  const showSearchTools = (projectsCount > 0 || runningSessionsCount > 0) && !isLoading;
   const searchPlaceholder = searchMode === 'recent'
     ? t('recent.searchPlaceholder', 'Search recent chats...')
-    : searchMode === 'conversations'
-      ? t('search.conversationsPlaceholder')
-      : searchMode === 'archived'
-        ? t('search.archivedPlaceholder', 'Search archived sessions...')
-        : searchMode === 'running'
-          ? t('search.runningPlaceholder', 'Search running sessions...')
-          : t('projects.searchPlaceholder');
+    : searchMode === 'running'
+      ? t('search.runningPlaceholder', 'Search running sessions...')
+      : t('projects.searchPlaceholder');
   const runningBadgeText = runningSessionsCount > 99 ? '99+' : String(runningSessionsCount);
 
   const LogoBlock = () => (
@@ -80,7 +72,7 @@ export default function SidebarHeader({
   );
 
   const SearchModeToggle = () => (
-    <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto_auto_auto] rounded-lg bg-muted/50 p-0.5">
+    <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] rounded-lg bg-muted/50 p-0.5">
       <button
         onClick={() => onSearchModeChange('recent')}
         aria-pressed={searchMode === 'recent'}
@@ -107,22 +99,6 @@ export default function SidebarHeader({
         <Folder className="h-3 w-3 flex-shrink-0" />
         <span className="truncate">{t('search.modeProjects')}</span>
       </button>
-      <Tooltip content={t('search.modeConversations')} position="top">
-        <button
-          onClick={() => onSearchModeChange('conversations')}
-          aria-pressed={searchMode === 'conversations'}
-          aria-label={t('search.modeConversations')}
-          title={t('search.modeConversations')}
-          className={cn(
-            'flex items-center justify-center rounded-md px-2.5 py-1.5 text-xs font-normal transition-all',
-            searchMode === 'conversations'
-              ? 'bg-background text-foreground shadow-sm'
-              : 'text-muted-foreground hover:text-foreground',
-          )}
-        >
-          <MessageSquare className="h-3 w-3" />
-        </button>
-      </Tooltip>
       <Tooltip content={t('search.runningTooltip', 'Running sessions')} position="top">
         <button
           onClick={() => onSearchModeChange('running')}
@@ -144,22 +120,6 @@ export default function SidebarHeader({
               </span>
             )}
           </span>
-        </button>
-      </Tooltip>
-      <Tooltip content={t('search.archiveOnlyTooltip', 'Archive only')} position="top">
-        <button
-          onClick={() => onSearchModeChange('archived')}
-          aria-pressed={searchMode === 'archived'}
-          aria-label={t('search.archiveOnlyTooltip', 'Archive only')}
-          title={t('search.archiveOnlyTooltip', 'Archive only')}
-          className={cn(
-            'flex items-center justify-center rounded-md px-2.5 py-1.5 text-xs font-normal transition-all',
-            searchMode === 'archived'
-              ? 'bg-background text-foreground shadow-sm'
-              : 'text-muted-foreground hover:text-foreground',
-          )}
-        >
-          <Archive className="h-3 w-3" />
         </button>
       </Tooltip>
     </div>

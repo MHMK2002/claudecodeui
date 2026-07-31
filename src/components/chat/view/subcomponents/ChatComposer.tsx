@@ -15,6 +15,8 @@ import { ImageIcon, MessageSquareIcon, XIcon, Loader2, ChevronDown, Check, Arrow
 
 import { useVoiceInput } from '../../hooks/useVoiceInput';
 import { useVoiceAvailable } from '../../hooks/useVoiceAvailable';
+import { useHoldToTalk } from '../../hooks/useHoldToTalk';
+import { useUiPreferences } from '../../../../hooks/useUiPreferences';
 import type { QueuedDraft } from '../../hooks/useChatComposerState';
 import type { SessionActivity } from '../../../../hooks/useSessionProtection';
 import type { PendingPermissionRequest, PermissionMode } from '../../types/types';
@@ -100,7 +102,9 @@ interface ChatComposerProps {
   renderInputWithMentions: (text: string) => ReactNode;
   textareaRef: RefObject<HTMLTextAreaElement>;
   input: string;
-  onVoiceTranscript?: (text: string, send?: boolean) => void;
+  onVoiceTranscript?: (text: string, send?: boolean, origin?: unknown) => void;
+  /** Snapshots the session a recording commits to, captured at each stop/send press. */
+  onVoiceCommit?: () => unknown;
   onInputChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
   onTextareaClick: (event: MouseEvent<HTMLTextAreaElement>) => void;
   onTextareaKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
@@ -159,6 +163,7 @@ export default function ChatComposer({
   textareaRef,
   input,
   onVoiceTranscript,
+  onVoiceCommit,
   onInputChange,
   onTextareaClick,
   onTextareaKeyDown,
@@ -198,9 +203,26 @@ export default function ChatComposer({
     if (voiceErrorTimer.current) clearTimeout(voiceErrorTimer.current);
   }, []);
   const noopTranscript = useCallback(() => {}, []);
-  const { state: voiceState, toggle: voiceToggle, stop: voiceStop } = useVoiceInput(
+  const { state: voiceState, stop: voiceStop, start: voiceStart } = useVoiceInput(
     onVoiceTranscript ?? noopTranscript,
     handleVoiceError,
+  );
+  // Every stop/send press snapshots the session being viewed right now (via
+  // onVoiceCommit) and binds it to the recording, so a transcript that resolves
+  // after the user switches sessions is still delivered to where it was dictated.
+  const voiceStopCommit = useCallback(
+    (opts?: { send?: boolean }) => voiceStop({ send: opts?.send, origin: onVoiceCommit?.() }),
+    [voiceStop, onVoiceCommit],
+  );
+  const voiceToggle = useCallback(() => {
+    if (voiceState === 'recording') voiceStopCommit({ send: false });
+    else if (voiceState === 'idle') voiceStart();
+  }, [voiceState, voiceStopCommit, voiceStart]);
+  const { preferences } = useUiPreferences();
+  useHoldToTalk(
+    !!voiceAvailable && !!preferences.voiceEnabled && !!preferences.voiceHoldToTalk,
+    () => voiceStart(),
+    voiceStopCommit,
   );
   const isRecording = voiceState === 'recording';
   const isTranscribing = voiceState === 'transcribing';
@@ -595,7 +617,7 @@ export default function ChatComposer({
                     : isRecording
                       ? (e: MouseEvent<HTMLButtonElement>) => {
                           e.preventDefault();
-                          voiceStop({ send: true });
+                          voiceStopCommit({ send: true });
                         }
                       : undefined
               }

@@ -46,6 +46,7 @@ interface UseChatComposerStateArgs {
   codexModel: string;
   currentProviderEffort: string;
   opencodeModel: string;
+  selectedClaudeProfileId: number | null;
   isLoading: boolean;
   canAbortSession: boolean;
   tokenBudget: Record<string, unknown> | null;
@@ -161,6 +162,17 @@ export type QueuedDraft = {
   options?: QueuedSendOptions;
 };
 
+/**
+ * Which session a voice recording is committed to, snapshotted at stop/send time.
+ * `key` is the target session id (null for a brand-new, not-yet-created session);
+ * `options` are that session's send settings captured before any session switch, so
+ * a transcript that resolves after the user moves away still dispatches correctly.
+ */
+export type VoiceOrigin = {
+  key: string | null;
+  options: QueuedSendOptions;
+};
+
 const restoreQueuedDraft = (sessionKey: string): QueuedDraft | null => {
   const saved = readQueuedMessage(sessionKey);
   // Image attachments can't survive a reload; only text and options persist.
@@ -196,9 +208,10 @@ export function useChatComposerState({
   cursorModel,
   claudeModel,
   codexModel,
-  currentProviderEffort,
-  opencodeModel,
-  isLoading,
+    currentProviderEffort,
+    opencodeModel,
+    selectedClaudeProfileId,
+    isLoading,
   canAbortSession,
   tokenBudget,
   sendMessage,
@@ -762,6 +775,7 @@ export function useChatComposerState({
             body: JSON.stringify({
               provider,
               projectPath: resolvedProjectPath,
+              providerProfileId: provider === 'claude' ? selectedClaudeProfileId : null,
             }),
           });
           if (!response.ok) {
@@ -852,6 +866,7 @@ export function useChatComposerState({
       onSessionProcessing,
       onSessionEstablished,
       provider,
+      selectedClaudeProfileId,
       resetCommandMenuState,
       scrollToBottom,
       selectedProject,
@@ -927,16 +942,57 @@ export function useChatComposerState({
     setQueuedDraft(null);
   }, []);
 
+  // Snapshot which session a recording commits to, taken at stop/send time (while
+  // the composer still points at that session). Threaded through useVoiceInput and
+  // handed back to handleVoiceTranscript so a transcript that resolves after the
+  // user switches sessions still lands where it was dictated.
+  const captureVoiceOrigin = useCallback((): VoiceOrigin => ({
+    key: selectedSession?.id || currentSessionId || null,
+    options: buildSendOptions(''),
+  }), [selectedSession, currentSessionId, buildSendOptions]);
+
   // A voice transcript either fills the input (to edit before sending) or, when the
   // user tapped "stop and send", is submitted straight away. Mirror the value into
   // inputValueRef synchronously so handleSubmit reads the new text, not the stale state.
-  const handleVoiceTranscript = useCallback((text: string, send?: boolean) => {
+  const handleVoiceTranscript = useCallback((text: string, send?: boolean, origin?: unknown) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    const activeKey = selectedSession?.id || currentSessionId || null;
+    const voiceOrigin = origin as VoiceOrigin | undefined;
+
+    // The recording was committed in a session that is no longer open. Route the
+    // transcript to that origin session out-of-band instead of the composer's now-
+    // stale current-session path — this both stops a switched-away transcript from
+    // hijacking the open session and lets a fresh recording start here undisturbed.
+    if (voiceOrigin?.key && voiceOrigin.key !== activeKey) {
+      if (send) {
+        // Same session-addressed dispatch the app-level auto-send uses; the backend
+        // resolves provider/path from the session row. No optimistic addMessage — the
+        // user message surfaces when they reopen the origin session.
+        sendMessage({
+          type: 'chat.send',
+          sessionId: voiceOrigin.key,
+          content: trimmed,
+          options: { ...(voiceOrigin.options ?? {}), images: [] },
+        });
+        onSessionProcessing?.(voiceOrigin.key, { statusText: null, canInterrupt: true });
+      } else {
+        // "Fill the box" for a session we've left: stash it as that session's queued
+        // draft so it's waiting in the composer when the user returns.
+        writeQueuedMessage(voiceOrigin.key, { content: trimmed, options: voiceOrigin.options });
+      }
+      return;
+    }
+
+    // Origin is the open session (or unknown / brand-new): fill the box inline and,
+    // when the user tapped "stop and send", submit straight away.
     const base = inputValueRef.current.trim();
-    const next = base ? `${base} ${text}` : text;
+    const next = base ? `${base} ${trimmed}` : trimmed;
     setInput(next);
     inputValueRef.current = next;
     if (send) handleSubmitRef.current?.(createFakeSubmitEvent());
-  }, [setInput]);
+  }, [selectedSession, currentSessionId, sendMessage, onSessionProcessing, setInput]);
 
   useEffect(() => {
     inputValueRef.current = input;
@@ -1203,6 +1259,7 @@ export function useChatComposerState({
     editQueuedDraft,
     deleteQueuedDraft,
     handleVoiceTranscript,
+    captureVoiceOrigin,
     handleInputChange,
     handleKeyDown,
     handlePaste,
@@ -1218,5 +1275,6 @@ export function useChatComposerState({
     commandModalPayload,
     closeCommandModal,
     showCostModal,
+    buildSendOptions,
   };
 }

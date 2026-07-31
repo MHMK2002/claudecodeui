@@ -128,6 +128,33 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ summary }),
     }),
+  /**
+   * Truncates the session JSONL at the row that produced the user message
+   * with `messageId`. `keepMessage: true` (default) keeps the target row;
+   * `false` deletes it too.
+   *
+   * @param {string} sessionId
+   * @param {{ messageId: string; keepMessage?: boolean }} options
+   */
+  rewindSession: (sessionId, { messageId, keepMessage = true } = /** @type {{ messageId: string; keepMessage?: boolean }} */ ({})) =>
+    authenticatedFetch(`/api/providers/sessions/${sessionId}/rewind`, {
+      method: 'POST',
+      body: JSON.stringify({ messageId, keepMessage }),
+    }),
+  /**
+   * Edit a user message and resubmit. Truncates the transcript at the line
+   * before the targeted user message; the client is expected to follow up
+   * with a fresh `chat.send` carrying the new content.
+   *
+   * @param {string} sessionId
+   * @param {string} messageId
+   * @param {{ content: string; images?: unknown[] }} payload
+   */
+  editUserMessage: (sessionId, messageId, { content, images = [] } = /** @type {{ content: string; images?: unknown[] }} */ ({})) =>
+    authenticatedFetch(`/api/providers/sessions/${sessionId}/messages/${messageId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ content, images }),
+    }),
   // `hardDelete` => server `?force=true` (remove DB row + Claude *.jsonl + sessions rows for path).
   deleteProject: (projectId, hardDelete = false) => {
     const params = new URLSearchParams();

@@ -5,6 +5,7 @@ import {
   LAST_SCANNED_AT_SQL,
   NOTIFICATION_CHANNEL_ENDPOINTS_TABLE_SCHEMA_SQL,
   PROJECTS_TABLE_SCHEMA_SQL,
+  PROVIDER_PROFILES_TABLE_SCHEMA_SQL,
   PUSH_SUBSCRIPTIONS_TABLE_SCHEMA_SQL,
   SESSIONS_TABLE_SCHEMA_SQL,
   USER_NOTIFICATION_PREFERENCES_TABLE_SCHEMA_SQL,
@@ -287,6 +288,10 @@ const rebuildSessionsTableWithProjectSchema = (db: Database): void => {
     ? 'jsonl_path'
     : 'NULL';
 
+  const providerProfileIdExpression = columnNames.includes('provider_profile_id')
+    ? 'provider_profile_id'
+    : 'NULL';
+
   const isArchivedExpression = columnNames.includes('isArchived')
     ? 'COALESCE(isArchived, 0)'
     : '0';
@@ -310,6 +315,7 @@ const rebuildSessionsTableWithProjectSchema = (db: Database): void => {
         custom_name TEXT,
         project_path TEXT,
         jsonl_path TEXT,
+        provider_profile_id INTEGER,
         isArchived BOOLEAN DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -327,6 +333,7 @@ const rebuildSessionsTableWithProjectSchema = (db: Database): void => {
           ${customNameExpression} AS custom_name,
           ${projectPathExpression} AS project_path,
           ${jsonlPathExpression} AS jsonl_path,
+          ${providerProfileIdExpression} AS provider_profile_id,
           ${isArchivedExpression} AS isArchived,
           ${createdAtExpression} AS created_at,
           ${updatedAtExpression} AS updated_at,
@@ -341,6 +348,7 @@ const rebuildSessionsTableWithProjectSchema = (db: Database): void => {
           custom_name,
           project_path,
           jsonl_path,
+          provider_profile_id,
           isArchived,
           created_at,
           updated_at,
@@ -356,6 +364,7 @@ const rebuildSessionsTableWithProjectSchema = (db: Database): void => {
         custom_name,
         project_path,
         jsonl_path,
+        provider_profile_id,
         isArchived,
         created_at,
         updated_at
@@ -366,6 +375,7 @@ const rebuildSessionsTableWithProjectSchema = (db: Database): void => {
         custom_name,
         project_path,
         jsonl_path,
+        provider_profile_id,
         isArchived,
         created_at,
         updated_at
@@ -395,11 +405,19 @@ const addProviderSessionIdMapping = (db: Database): void => {
   const columnNames = sessionsTableInfo.map((column) => column.name);
 
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'provider_session_id', 'TEXT');
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'provider_profile_id', 'INTEGER');
   db.exec(`
     UPDATE sessions
     SET provider_session_id = session_id
     WHERE provider_session_id IS NULL
   `);
+};
+
+const ensureProviderProfilesSchema = (db: Database): void => {
+  db.exec(PROVIDER_PROFILES_TABLE_SCHEMA_SQL);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_provider_profiles_user_provider ON provider_profiles(user_id, provider)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_provider_profiles_active ON provider_profiles(provider, is_active)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_provider_profiles_default ON provider_profiles(user_id, provider, is_default)');
 };
 
 const ensureProjectsForSessionPaths = (db: Database): void => {
@@ -444,6 +462,7 @@ export const runMigrations = (db: Database) => {
     db.exec(NOTIFICATION_CHANNEL_ENDPOINTS_TABLE_SCHEMA_SQL);
     db.exec('CREATE INDEX IF NOT EXISTS idx_notification_channel_endpoints_user_channel ON notification_channel_endpoints(user_id, channel)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_notification_channel_endpoints_enabled ON notification_channel_endpoints(enabled)');
+    ensureProviderProfilesSchema(db);
 
     db.exec(PROJECTS_TABLE_SCHEMA_SQL);
     rebuildProjectsTableWithPrimaryKeySchema(db);

@@ -8,11 +8,13 @@ import type {
   ProjectSession,
   LLMProvider,
   ProviderModelsDefinition,
+  ClaudeProviderProfilePublic,
 } from '../../../../types/app';
 import { getIntrinsicMessageKey } from '../../utils/messageKeys';
 import { groupConsecutiveTools, isToolGroupItem } from '../../utils/toolGrouping';
 
 import MessageComponent from './MessageComponent';
+import MessageEditComposer from './MessageEditComposer';
 import ProviderSelectionEmptyState from './ProviderSelectionEmptyState';
 import ToolGroupContainer from './ToolGroupContainer';
 import LoadAllMessagesOverlay from './LoadAllMessagesOverlay';
@@ -42,6 +44,10 @@ interface ChatMessagesPaneProps {
   setOpenCodeModel: (model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
   providerModelsLoading: boolean;
+  claudeProfiles: ClaudeProviderProfilePublic[];
+  claudeProfilesLoading: boolean;
+  selectedClaudeProfileId: number | null;
+  setSelectedClaudeProfileId: (profileId: number | null) => void;
   tasksEnabled: boolean;
   isTaskMasterInstalled: boolean | null;
   onShowAllTasks?: (() => void) | null;
@@ -62,6 +68,28 @@ interface ChatMessagesPaneProps {
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
   onShowSettings?: () => void;
   onGrantToolPermission: (suggestion: { entry: string; toolName: string }) => { success: boolean };
+  /**
+   * Per-message rewind handler. Forwarded to `MessageComponent`; only user
+   * turns with a server-persisted uuid render the affordance.
+   */
+  onRequestRewind?: (messageId: string) => void;
+  /**
+   * Per-message edit handler for the LAST user turn. Truncates the
+   * transcript at the line before the targeted user message and resubmits
+   * via `chat.send`. The pencil affordance only renders on the most recent
+   * user turn.
+   */
+  onRequestEdit?: (messageId: string, content: string, images: import('../../types/types').ChatImage[]) => void;
+  /**
+   * Currently-editing user message. When set, the matching bubble is
+   * replaced with `MessageEditComposer` instead of the normal render.
+   */
+  editingMessageId?: string | null;
+  editInitialContent?: string;
+  editPending?: boolean;
+  editError?: string | null;
+  onConfirmEdit?: (nextContent: string, nextImages: import('../../types/types').ChatImage[]) => void | Promise<void>;
+  onCancelEdit?: () => void;
   showRawParameters?: boolean;
   showThinking?: boolean;
   selectedProject: Project;
@@ -90,6 +118,10 @@ function ChatMessagesPane({
   setOpenCodeModel,
   providerModelCatalog,
   providerModelsLoading,
+  claudeProfiles,
+  claudeProfilesLoading,
+  selectedClaudeProfileId,
+  setSelectedClaudeProfileId,
   tasksEnabled,
   isTaskMasterInstalled,
   onShowAllTasks,
@@ -110,6 +142,14 @@ function ChatMessagesPane({
   onFileOpen,
   onShowSettings,
   onGrantToolPermission,
+  onRequestRewind,
+  onRequestEdit,
+  editingMessageId,
+  editInitialContent,
+  editPending,
+  editError,
+  onConfirmEdit,
+  onCancelEdit,
   showRawParameters,
   showThinking,
   selectedProject,
@@ -189,6 +229,10 @@ function ChatMessagesPane({
           setOpenCodeModel={setOpenCodeModel}
           providerModelCatalog={providerModelCatalog}
           providerModelsLoading={providerModelsLoading}
+          claudeProfiles={claudeProfiles}
+          claudeProfilesLoading={claudeProfilesLoading}
+          selectedClaudeProfileId={selectedClaudeProfileId}
+          setSelectedClaudeProfileId={setSelectedClaudeProfileId}
           tasksEnabled={tasksEnabled}
           isTaskMasterInstalled={isTaskMasterInstalled}
           onShowAllTasks={onShowAllTasks}
@@ -272,6 +316,38 @@ function ChatMessagesPane({
               const messagePrevMessage = prevMessage;
               prevMessage = item;
 
+              // While editing, replace the user bubble with the inline
+              // composer. The user message skeleton (right-aligned, same
+              // padding) is preserved so the surrounding layout doesn't jump.
+              if (
+                editingMessageId
+                && item.type === 'user'
+                && typeof item.id === 'string'
+                && item.id.startsWith(editingMessageId)
+                && onConfirmEdit
+                && onCancelEdit
+              ) {
+                return (
+                  <div
+                    key={getMessageKey(item)}
+                    className="chat-message user flex justify-end px-3 sm:px-0"
+                  >
+                    <div className="flex w-full items-end space-x-0 sm:w-auto sm:max-w-[85%] sm:space-x-3 md:max-w-md lg:max-w-lg xl:max-w-xl">
+                      <div className="flex min-w-0 flex-1 flex-col items-end gap-2 sm:flex-initial">
+                        <MessageEditComposer
+                          initialContent={editInitialContent ?? String(item.content ?? '')}
+                          initialImages={item.images ?? []}
+                          pending={Boolean(editPending)}
+                          error={editError ?? null}
+                          onSubmit={onConfirmEdit}
+                          onCancel={onCancelEdit}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
               return (
                 <MessageComponent
                   key={getMessageKey(item)}
@@ -281,6 +357,8 @@ function ChatMessagesPane({
                   onFileOpen={onFileOpen}
                   onShowSettings={onShowSettings}
                   onGrantToolPermission={onGrantToolPermission}
+                  onRequestRewind={onRequestRewind}
+                  onRequestEdit={onRequestEdit}
                   showRawParameters={showRawParameters}
                   showThinking={showThinking}
                   selectedProject={selectedProject}

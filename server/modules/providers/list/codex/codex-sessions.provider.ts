@@ -306,7 +306,10 @@ export class CodexSessionsProvider implements IProviderSessions {
    */
   private normalizeHistoryEntry(raw: AnyRecord, sessionId: string | null): NormalizedMessage[] {
     const ts = raw.timestamp || new Date().toISOString();
-    const baseId = raw.uuid || generateMessageId('codex');
+    // Codex rollout rows carry no uuid. Use the timestamp (epoch ms) so the
+    // id is stable across reloads AND round-trips back to a locatable row
+    // for rewind/edit (see sessions.service rewindSession).
+    const baseId = raw.uuid || `codex_ts_${Date.parse(ts) || Date.now()}`;
 
     if (raw.type === 'thinking' || raw.isReasoning) {
       const thinkingContent = typeof raw.message?.content === 'string'
@@ -416,7 +419,8 @@ export class CodexSessionsProvider implements IProviderSessions {
     }
 
     const ts = raw.timestamp || new Date().toISOString();
-    const baseId = raw.uuid || generateMessageId('codex');
+    // Match normalizeHistoryEntry: stable timestamp-derived id when no uuid.
+    const baseId = raw.uuid || `codex_ts_${Date.parse(ts) || Date.now()}`;
 
     if (raw.type === 'item') {
       switch (raw.itemType) {

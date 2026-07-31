@@ -335,9 +335,57 @@ export const chatRunRegistry = {
   },
 
   /**
+   * Cancels one active run from outside the websocket protocol (e.g. the
+   * rewind HTTP route). Idempotent: a missing or already-completed run is a
+   * no-op. Returns true when a cancellation was actually dispatched.
+   *
+   * Note: this only emits the terminal `complete` event so the writer stops
+   * streaming the rest of the response to clients. It does not kill the
+   * provider process — that hookup lives in `chat-websocket.service.ts` and
+   * is reachable through the `chat.abort` WS message. The rewind path does
+   * not need to kill the process: it just needs the writer to stop emitting
+   * before the file is truncated, and `completeRun` covers that.
+   */
+  cancelRun(appSessionId: string): boolean {
+    const run = runs.get(appSessionId);
+    if (!run || run.status !== 'running') {
+      return false;
+    }
+
+    run.writer.sendComplete({ exitCode: 0, aborted: true });
+    return true;
+  },
+
+  /**
    * Test-only escape hatch: clears every tracked run.
    */
   clearAll(): void {
     runs.clear();
   },
 };
+
+/**
+ * Broadcasts a `session.rewound` event to every connected websocket client so
+ * tabs that are not the originator of the rewind can refresh their history.
+ *
+ * Lives next to `broadcastCanonicalSessionUpsert` because they share the
+ * `connectedClients` fan-out pattern; centralising the connection list means
+ * we never have to add a new "broadcast helper" to every service that needs
+ * one.
+ */
+export function broadcastSessionRewound(
+  appSessionId: string,
+  payload: { truncatedAt: string; backupPath: string | null },
+): void {
+  const body = JSON.stringify({
+    kind: 'session.rewound',
+    sessionId: appSessionId,
+    ...payload,
+  });
+
+  connectedClients.forEach((client) => {
+    if (client.readyState === WS_OPEN_STATE) {
+      client.send(body);
+    }
+  });
+}

@@ -11,11 +11,14 @@ import { useChatProviderState } from '../hooks/useChatProviderState';
 import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '../hooks/useChatComposerState';
+import { useEditLastUserMessage } from '../hooks/useEditLastUserMessage';
 import { useSessionStore } from '../../../stores/useSessionStore';
 
 import ChatMessagesPane from './subcomponents/ChatMessagesPane';
 import ChatComposer from './subcomponents/ChatComposer';
 import CommandResultModal from './subcomponents/CommandResultModal';
+import RewindConfirmModal from './subcomponents/RewindConfirmModal';
+import MessageEditComposer from './subcomponents/MessageEditComposer';
 
 function ChatInterface({
   selectedProject,
@@ -81,6 +84,10 @@ function ChatInterface({
     providerModelCacheCatalog,
     providerModelsLoading,
     providerModelsRefreshing,
+    claudeProfiles,
+    claudeProfilesLoading,
+    selectedClaudeProfileId,
+    setSelectedClaudeProfileId,
     hardRefreshProviderModels,
     selectProviderModel,
     setStoredProviderEffort,
@@ -93,6 +100,10 @@ function ChatInterface({
   const {
     chatMessages,
     addMessage,
+    requestRewind,
+    rewindTarget,
+    confirmRewind,
+    cancelRewind,
     sessionActivity,
     isProcessing,
     canAbortSession,
@@ -176,6 +187,7 @@ function ChatInterface({
     editQueuedDraft,
     deleteQueuedDraft,
     handleVoiceTranscript,
+    captureVoiceOrigin,
     handleInputChange,
     handleKeyDown,
     handlePaste,
@@ -191,6 +203,7 @@ function ChatInterface({
     commandModalPayload,
     closeCommandModal,
     showCostModal,
+    buildSendOptions,
   } = useChatComposerState({
     selectedProject,
     selectedSession,
@@ -203,6 +216,7 @@ function ChatInterface({
     codexModel,
     currentProviderEffort,
     opencodeModel,
+    selectedClaudeProfileId,
     isLoading: isProcessing,
     canAbortSession,
     tokenBudget,
@@ -218,6 +232,20 @@ function ChatInterface({
     setIsUserScrolledUp,
     setPendingPermissionRequests,
     resolvePermissionModeForProvider,
+  });
+
+  // Edit-and-resubmit for the LAST user message. The hook owns the inline
+  // edit modal state and orchestrates: PATCH → truncate (atomic, server-side
+  // rewind) → fresh `chat.send` against the truncated transcript.
+  const editController = useEditLastUserMessage({
+    activeSessionId: currentSessionId || selectedSession?.id || null,
+    sendMessage,
+    buildSendOptions: (content) => buildSendOptions(content) as Record<string, unknown>,
+    onSessionProcessing,
+    scrollToBottom,
+    setIsUserScrolledUp,
+    reportError: (message) =>
+      addMessage({ type: 'error', content: message, timestamp: new Date() }),
   });
 
   // On WebSocket reconnect, re-fetch the current session's messages from the
@@ -341,6 +369,10 @@ function ChatInterface({
           setOpenCodeModel={setOpenCodeModel}
           providerModelCatalog={providerModelCatalog}
           providerModelsLoading={providerModelsLoading}
+          claudeProfiles={claudeProfiles}
+          claudeProfilesLoading={claudeProfilesLoading}
+          selectedClaudeProfileId={selectedClaudeProfileId}
+          setSelectedClaudeProfileId={setSelectedClaudeProfileId}
           tasksEnabled={tasksEnabled}
           isTaskMasterInstalled={isTaskMasterInstalled}
           onShowAllTasks={onShowAllTasks}
@@ -361,6 +393,14 @@ function ChatInterface({
           onFileOpen={onFileOpen}
           onShowSettings={onShowSettings}
           onGrantToolPermission={handleGrantToolPermission}
+          onRequestRewind={requestRewind}
+          onRequestEdit={(messageId, content, images) => editController.beginEdit(messageId, content, images)}
+          editingMessageId={editController.target?.messageId ?? null}
+          editInitialContent={editController.target?.initialContent ?? ''}
+          editPending={editController.pending}
+          editError={editController.error}
+          onConfirmEdit={editController.confirmEdit}
+          onCancelEdit={editController.cancelEdit}
           showRawParameters={showRawParameters}
           showThinking={showThinking}
           selectedProject={selectedProject}
@@ -430,6 +470,7 @@ function ChatInterface({
           textareaRef={textareaRef}
           input={input}
           onVoiceTranscript={handleVoiceTranscript}
+          onVoiceCommit={captureVoiceOrigin}
           onInputChange={handleInputChange}
           onTextareaClick={handleTextareaClick}
           onTextareaKeyDown={handleKeyDown}
@@ -465,6 +506,12 @@ function ChatInterface({
         onHardRefreshProviderModels={hardRefreshProviderModels}
         currentSessionId={currentSessionId || selectedSession?.id || null}
         onSelectProviderModel={selectProviderModel}
+      />
+
+      <RewindConfirmModal
+        target={rewindTarget}
+        onConfirm={confirmRewind}
+        onCancel={cancelRewind}
       />
     </PermissionContext.Provider>
   );

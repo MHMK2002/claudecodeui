@@ -6,6 +6,7 @@ import type {
   ProjectSession,
   LLMProvider,
   ProviderModelsDefinition,
+  ClaudeProviderProfilePublic,
 } from "../../../../types/app";
 import SessionProviderLogo from "../../../llm-logo-provider/SessionProviderLogo";
 import { NextTaskBanner } from "../../../task-master";
@@ -60,6 +61,10 @@ type ProviderSelectionEmptyStateProps = {
   setOpenCodeModel: (model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
   providerModelsLoading: boolean;
+  claudeProfiles: ClaudeProviderProfilePublic[];
+  claudeProfilesLoading: boolean;
+  selectedClaudeProfileId: number | null;
+  setSelectedClaudeProfileId: (profileId: number | null) => void;
   tasksEnabled: boolean;
   isTaskMasterInstalled: boolean | null;
   onShowAllTasks?: (() => void) | null;
@@ -69,6 +74,7 @@ type ProviderSelectionEmptyStateProps = {
 type ProviderGroup = {
   id: LLMProvider;
   name: string;
+  profileId?: number | null;
   models: { value: string; label: string; description?: string }[];
 };
 
@@ -117,6 +123,10 @@ export default function ProviderSelectionEmptyState({
   setOpenCodeModel,
   providerModelCatalog,
   providerModelsLoading,
+  claudeProfiles,
+  claudeProfilesLoading,
+  selectedClaudeProfileId,
+  setSelectedClaudeProfileId,
   tasksEnabled,
   isTaskMasterInstalled,
   onShowAllTasks,
@@ -126,12 +136,34 @@ export default function ProviderSelectionEmptyState({
   const [dialogOpen, setDialogOpen] = useState(false);
 
   const visibleProviderGroups = useMemo<ProviderGroup[]>(() => {
-    return PROVIDER_META.map((p) => ({
-      id: p.id,
-      name: p.name,
-      models: providerModelCatalog[p.id]?.OPTIONS ?? [],
-    }));
-  }, [providerModelCatalog]);
+    return PROVIDER_META.flatMap((p) => {
+      const models = providerModelCatalog[p.id]?.OPTIONS ?? [];
+      if (p.id !== "claude") {
+        return [{
+          id: p.id,
+          name: p.name,
+          models,
+        }];
+      }
+
+      const localGroup: ProviderGroup = {
+        id: "claude",
+        name: "Claude - Local CLI",
+        profileId: null,
+        models,
+      };
+      const profileGroups = claudeProfiles
+        .filter((profile) => profile.isActive)
+        .map<ProviderGroup>((profile) => ({
+          id: "claude",
+          name: `Claude - ${profile.title}`,
+          profileId: profile.id,
+          models,
+        }));
+
+      return [localGroup, ...profileGroups];
+    });
+  }, [claudeProfiles, providerModelCatalog]);
 
   const nextTaskPrompt = t("tasks.nextTaskPrompt", {
     defaultValue: "Start the next task",
@@ -153,6 +185,15 @@ export default function ProviderSelectionEmptyState({
     return found?.label || currentModel;
   }, [provider, currentModel, providerModelCatalog]);
 
+  const currentProviderLabel = useMemo(() => {
+    if (provider !== "claude") {
+      return getProviderDisplayName(provider);
+    }
+
+    const profile = claudeProfiles.find((entry) => entry.id === selectedClaudeProfileId);
+    return `Claude - ${profile?.title ?? "Local CLI"}`;
+  }, [claudeProfiles, provider, selectedClaudeProfileId]);
+
   const setModelForProvider = useCallback(
     (providerId: LLMProvider, modelValue: string) => {
       if (providerId === "claude") {
@@ -173,14 +214,17 @@ export default function ProviderSelectionEmptyState({
   );
 
   const handleModelSelect = useCallback(
-    (providerId: LLMProvider, modelValue: string) => {
+    (providerId: LLMProvider, modelValue: string, profileId: number | null = null) => {
       setProvider(providerId);
       localStorage.setItem("selected-provider", providerId);
+      if (providerId === "claude") {
+        setSelectedClaudeProfileId(profileId);
+      }
       setModelForProvider(providerId, modelValue);
       setDialogOpen(false);
       setTimeout(() => textareaRef.current?.focus(), 100);
     },
-    [setProvider, setModelForProvider, textareaRef],
+    [setProvider, setModelForProvider, setSelectedClaudeProfileId, textareaRef],
   );
 
   if (!selectedSession && !currentSessionId) {
@@ -211,7 +255,7 @@ export default function ProviderSelectionEmptyState({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1">
                       <span className="text-xs font-semibold text-foreground">
-                        {getProviderDisplayName(provider)}
+                        {currentProviderLabel}
                       </span>
                       <span className="text-xs text-muted-foreground">·</span>
                       <span className="truncate text-xs text-foreground">
@@ -248,7 +292,7 @@ export default function ProviderSelectionEmptyState({
                   </CommandEmpty>
                   {visibleProviderGroups.map((group, idx) => (
                     <CommandGroup
-                      key={group.id}
+                      key={`${group.id}-${group.profileId ?? "local"}`}
                       className={
                         idx > 0
                           ? "border-t border-border/40 [&_[cmdk-group-heading]]:mt-1 [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wider"
@@ -261,18 +305,22 @@ export default function ProviderSelectionEmptyState({
                         </span>
                       }
                     >
-                      {group.models.length === 0 && providerModelsLoading ? (
+                      {group.models.length === 0 && (providerModelsLoading || (group.id === "claude" && claudeProfilesLoading)) ? (
                         <CommandItem disabled className="ml-4 border-l border-border/40 pl-4 text-muted-foreground">
                           {t("providerSelection.loadingModels", { defaultValue: "Loading models…" })}
                         </CommandItem>
                       ) : null}
                       {group.models.map((model) => {
-                        const isSelected = provider === group.id && currentModel === model.value;
+                        const groupProfileId = group.profileId ?? null;
+                        const isSelected =
+                          provider === group.id &&
+                          currentModel === model.value &&
+                          (group.id !== "claude" || selectedClaudeProfileId === groupProfileId);
                         return (
                           <CommandItem
-                            key={`${group.id}-${model.value}`}
+                            key={`${group.id}-${groupProfileId ?? "local"}-${model.value}`}
                             value={`${group.name} ${model.label} ${model.description || ''}`}
-                            onSelect={() => handleModelSelect(group.id, model.value)}
+                            onSelect={() => handleModelSelect(group.id, model.value, groupProfileId)}
                             className="ml-4 border-l border-border/40 pl-4"
                           >
                             <div className="min-w-0 flex-1">

@@ -164,6 +164,20 @@ export function useChatRealtimeHandlers({
         case 'loading_progress':
           return;
 
+        // Server-side rewind completed. Drop the slot's in-memory history so
+        // a `refreshFromServer` reload lands in a clean state — otherwise
+        // realtime rows for the dropped turns would reconcile against a
+        // server list that no longer contains their ids.
+        case 'session.rewound': {
+          const rewindSessionId = typeof (msg as { sessionId?: unknown }).sessionId === 'string'
+            ? (msg as { sessionId: string }).sessionId
+            : null;
+          if (rewindSessionId && sessionStore.applyRewindFromEvent) {
+            void sessionStore.applyRewindFromEvent(rewindSessionId);
+          }
+          return;
+        }
+
         default:
           break;
       }

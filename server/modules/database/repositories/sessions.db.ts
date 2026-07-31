@@ -6,6 +6,7 @@ type SessionRow = {
   session_id: string;
   provider: string;
   provider_session_id: string | null;
+  provider_profile_id: number | null;
   project_path: string | null;
   jsonl_path: string | null;
   custom_name: string | null;
@@ -15,7 +16,7 @@ type SessionRow = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, provider_profile_id, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -119,8 +120,8 @@ export const sessionsDb = {
     // keyed by the provider-native id for both columns. The ON CONFLICT path
     // covers legacy rows that predate the provider_session_id mapping.
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, jsonl_path, isArchived, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
+      `INSERT INTO sessions (session_id, provider, provider_session_id, provider_profile_id, custom_name, project_path, jsonl_path, isArchived, created_at, updated_at)
+       VALUES (?, ?, ?, NULL, ?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
        ON CONFLICT(session_id) DO UPDATE SET
          provider = excluded.provider,
          provider_session_id = excluded.provider_session_id,
@@ -151,16 +152,21 @@ export const sessionsDb = {
    * stays NULL until the provider runtime announces its own id and
    * `assignProviderSessionId` records the mapping.
    */
-  createAppSession(sessionId: string, provider: string, projectPath: string): string {
+  createAppSession(
+    sessionId: string,
+    provider: string,
+    projectPath: string,
+    providerProfileId: number | null = null
+  ): string {
     const db = getConnection();
     const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);
 
     projectsDb.createProjectPath(normalizedProjectPath);
 
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, jsonl_path, isArchived, created_at, updated_at)
-       VALUES (?, ?, NULL, NULL, ?, NULL, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
-    ).run(sessionId, provider, normalizedProjectPath);
+      `INSERT INTO sessions (session_id, provider, provider_session_id, provider_profile_id, custom_name, project_path, jsonl_path, isArchived, created_at, updated_at)
+       VALUES (?, ?, NULL, ?, NULL, ?, NULL, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+    ).run(sessionId, provider, providerProfileId, normalizedProjectPath);
 
     return sessionId;
   },
@@ -218,6 +224,20 @@ export const sessionsDb = {
        SET custom_name = ?
        WHERE session_id = ?`
     ).run(customName, sessionId);
+  },
+
+  /**
+   * Bumps only `updated_at` so the sidebar re-sorts the session to the top.
+   * Used by the rewind path — we want a visible sidebar bump without writing
+   * any other field that would trigger the synchronizer to re-index the file.
+   */
+  bumpSessionUpdatedAt(sessionId: string): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE sessions
+       SET updated_at = CURRENT_TIMESTAMP
+       WHERE session_id = ?`
+    ).run(sessionId);
   },
 
   getSessionById(sessionId: string): SessionRow | null {
@@ -428,6 +448,20 @@ export const sessionsDb = {
       .get(sessionId, provider) as { custom_name: string | null } | undefined;
 
     return row?.custom_name ?? null;
+  },
+
+  /**
+   * Bumps the row's `updated_at` so the sidebar re-sorts the session to the
+   * top of its recent list. Used by rewind-style operations that mutate the
+   * transcript without spawning a new run.
+   */
+  touchSession(sessionId: string): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE sessions
+       SET updated_at = CURRENT_TIMESTAMP
+       WHERE session_id = ?`
+    ).run(sessionId);
   },
 
   /**

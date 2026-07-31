@@ -39,6 +39,23 @@ CREATE TABLE IF NOT EXISTS user_credentials (
 );
 `;
 
+export const PROVIDER_PROFILES_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS provider_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    title TEXT NOT NULL,
+    base_url TEXT,
+    auth_type TEXT NOT NULL DEFAULT 'auth_token',
+    secret_value TEXT NOT NULL,
+    is_default BOOLEAN DEFAULT 0,
+    is_active BOOLEAN DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+`;
+
 export const USER_NOTIFICATION_PREFERENCES_TABLE_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS user_notification_preferences (
     user_id INTEGER PRIMARY KEY,
@@ -106,6 +123,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- \`provider_session_id\` is filled in once the provider announces its own
     -- id mid-run, or equals \`session_id\` for sessions discovered on disk.
     provider_session_id TEXT,
+    provider_profile_id INTEGER,
     custom_name TEXT,
     project_path TEXT,
     jsonl_path TEXT,
@@ -152,6 +170,11 @@ ${USER_CREDENTIALS_TABLE_SCHEMA_SQL}
 CREATE INDEX IF NOT EXISTS idx_user_credentials_user_id ON user_credentials(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_credentials_type ON user_credentials(credential_type);
 CREATE INDEX IF NOT EXISTS idx_user_credentials_active ON user_credentials(is_active);
+
+${PROVIDER_PROFILES_TABLE_SCHEMA_SQL}
+CREATE INDEX IF NOT EXISTS idx_provider_profiles_user_provider ON provider_profiles(user_id, provider);
+CREATE INDEX IF NOT EXISTS idx_provider_profiles_active ON provider_profiles(provider, is_active);
+CREATE INDEX IF NOT EXISTS idx_provider_profiles_default ON provider_profiles(user_id, provider, is_default);
 
 ${USER_NOTIFICATION_PREFERENCES_TABLE_SCHEMA_SQL}
 CREATE INDEX IF NOT EXISTS idx_user_notification_preferences_user_id ON user_notification_preferences(user_id);

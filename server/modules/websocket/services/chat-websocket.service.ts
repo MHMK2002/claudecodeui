@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import type { WebSocket } from 'ws';
 
-import { sessionsDb } from '@/modules/database/index.js';
+import { providerProfilesDb, sessionsDb } from '@/modules/database/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
 import { getGlobalImageAssetsDir, normalizeImageDescriptors } from '@/shared/image-attachments.js';
@@ -106,6 +106,16 @@ function sendJson(ws: WebSocket, payload: unknown): void {
   }
 }
 
+function readNumericUserId(userId: string | number | null): number | null {
+  const parsed = typeof userId === 'number'
+    ? userId
+    : typeof userId === 'string'
+      ? (/^\d+$/.test(userId.trim()) ? Number(userId.trim()) : NaN)
+      : NaN;
+
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
 /**
  * Reports a protocol-level failure to the requesting client.
  *
@@ -168,6 +178,34 @@ async function handleChatSend(
     return;
   }
 
+  let claudeProviderProfile: AnyRecord | null = null;
+  if (provider === 'claude' && session.provider_profile_id) {
+    const numericUserId = readNumericUserId(userId);
+    if (!numericUserId) {
+      sendProtocolError(
+        ws,
+        'PROVIDER_PROFILE_AUTH_REQUIRED',
+        'A signed-in user is required to use this Claude provider profile.',
+        sessionId
+      );
+      return;
+    }
+
+    claudeProviderProfile = providerProfilesDb.getClaudeProfileForRuntime(
+      numericUserId,
+      Number(session.provider_profile_id),
+    );
+    if (!claudeProviderProfile) {
+      sendProtocolError(
+        ws,
+        'PROVIDER_PROFILE_NOT_FOUND',
+        'The Claude provider profile for this session was not found or is inactive.',
+        sessionId
+      );
+      return;
+    }
+  }
+
   const run = chatRunRegistry.startRun({
     appSessionId: sessionId,
     provider,
@@ -202,6 +240,7 @@ async function handleChatSend(
     resume: Boolean(session.provider_session_id),
     cwd: clientOptions.cwd ?? session.project_path ?? undefined,
     projectPath: session.project_path ?? clientOptions.projectPath,
+    claudeProviderProfile: claudeProviderProfile ?? undefined,
   };
 
   try {

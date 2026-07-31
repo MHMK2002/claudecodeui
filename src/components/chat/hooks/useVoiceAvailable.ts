@@ -60,7 +60,15 @@ export function useVoiceAvailable(): boolean {
         setAvailable(false);
         return;
       }
-      if (readVoiceConfig().baseUrl.trim()) {
+      const cfg = readVoiceConfig();
+      // A custom OpenAI-compatible base URL is callable directly from the browser.
+      if (cfg.baseUrl.trim()) {
+        setAvailable(true);
+        return;
+      }
+      // Soniox runs server-side (key in env or sent per-request); it needs no
+      // OpenAI-style backend, so treat selecting it as "available".
+      if (cfg.sttProvider === 'soniox') {
         setAvailable(true);
         return;
       }

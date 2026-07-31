@@ -24,6 +24,21 @@ export type ProviderModelsCacheInfo = {
   source: 'memory' | 'disk' | 'fresh';
 };
 
+export type ClaudeProviderProfileAuthType = 'auth_token' | 'api_key';
+
+export type ClaudeProviderProfilePublic = {
+  id: number;
+  provider: 'claude';
+  title: string;
+  baseUrl: string | null;
+  authType: ClaudeProviderProfileAuthType;
+  isDefault: boolean;
+  isActive: boolean;
+  hasSecret: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'browser' | `plugin:${string}`;
 
 export interface ProjectSession {
@@ -38,6 +53,8 @@ export interface ProjectSession {
   messageCount?: number;
   provider?: LLMProvider;
   __provider?: LLMProvider;
+  providerProfileId?: number | null;
+  __providerProfileId?: number | null;
   // Tags the session with the owning project's DB `projectId` so UI handlers
   // (session switching, sidebar focus, etc.) can match against selectedProject.
   __projectId?: string;

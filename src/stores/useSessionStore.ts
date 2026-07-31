@@ -654,6 +654,30 @@ export function useSessionStore() {
   }, [getSlot, notify]);
 
   /**
+   * Handle a server-side `session.rewound` notification by clearing local
+   * realtime rows (the JSONL has been truncated, so any in-flight stream
+   * references the deleted file) and forcing a fresh history fetch.
+   *
+   * The reset is hard on purpose: realtime rows for the dropped turns would
+   * otherwise be reconciled back into `merged` against a server list that no
+   * longer contains their ids, producing ghost bubbles for messages the user
+   * just removed.
+   */
+  const applyRewindFromEvent = useCallback(async (
+    sessionId: string,
+  ) => {
+    const slot = getSlot(sessionId);
+    slot.realtimeMessages = [];
+    slot.serverMessages = [];
+    slot.total = 0;
+    slot.hasMore = false;
+    slot.offset = 0;
+    recomputeMergedIfNeeded(slot);
+    notify(sessionId);
+    await refreshFromServer(sessionId);
+  }, [getSlot, notify, refreshFromServer]);
+
+  /**
    * Update session status.
    */
   const setStatus = useCallback((sessionId: string, status: SessionStatus) => {
@@ -754,6 +778,7 @@ export function useSessionStore() {
     appendRealtime,
     appendRealtimeBatch,
     refreshFromServer,
+    applyRewindFromEvent,
     setActiveSession,
     setStatus,
     isStale,
@@ -764,7 +789,7 @@ export function useSessionStore() {
     getSessionSlot,
   }), [
     getSlot, has, fetchFromServer, fetchMore,
-    appendRealtime, appendRealtimeBatch, refreshFromServer,
+    appendRealtime, appendRealtimeBatch, refreshFromServer, applyRewindFromEvent,
     setActiveSession, setStatus, isStale, updateStreaming, finalizeStreaming,
     clearRealtime, getMessages, getSessionSlot,
   ]);

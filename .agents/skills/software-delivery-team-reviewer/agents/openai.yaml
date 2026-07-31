@@ -1,0 +1,4 @@
+interface:
+  display_name: "Software Delivery Team Reviewer"
+  short_description: "Find grounded issues in target changes"
+  default_prompt: "Use $software-delivery-team-reviewer to review this diff for grounded bugs, regressions, and risks."

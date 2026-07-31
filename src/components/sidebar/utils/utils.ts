@@ -218,9 +218,17 @@ export const mergeRecentProjectSnapshots = (
     });
   }
 
-  return mergedProjects.sort(
-    (left, right) => getProjectLastActivity(right).getTime() - getProjectLastActivity(left).getTime(),
-  );
+  // Sort starred-first, then alphabetically. A date-based sort here made the
+  // Recent list reshuffle on every incoming message; alphabetical keeps the
+  // order stable so users can locate projects by name.
+  return mergedProjects.sort((projectA, projectB) => {
+    const aStarred = Boolean(projectA.isStarred);
+    const bStarred = Boolean(projectB.isStarred);
+    if (aStarred !== bStarred) {
+      return aStarred ? -1 : 1;
+    }
+    return (projectA.displayName || projectA.projectId).localeCompare(projectB.displayName || projectB.projectId);
+  });
 };
 
 /**

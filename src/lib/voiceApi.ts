@@ -1,5 +1,5 @@
 import { authenticatedFetch } from '../utils/api';
-import { readVoiceConfig, voiceConfigHeaders } from '../hooks/useVoiceConfig';
+import { DEFAULT_CLEANUP_PROMPT, readVoiceConfig, voiceConfigHeaders } from '../hooks/useVoiceConfig';
 
 function directUrl(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/$/, '')}${path}`;
@@ -12,6 +12,17 @@ export function voiceConfigSignature(): string {
 export function transcribeVoice(blob: Blob, filename: string): Promise<Response> {
   const config = readVoiceConfig();
   const body = new FormData();
+
+  // Soniox is a fixed SaaS backend (no user baseUrl); always go through the
+  // server proxy, which holds the API key and runs the async flow.
+  if (config.sttProvider === 'soniox') {
+    body.append('audio', blob, filename);
+    return authenticatedFetch('/api/voice/soniox-transcribe', {
+      method: 'POST',
+      headers: voiceConfigHeaders(),
+      body,
+    });
+  }
 
   if (config.baseUrl.trim()) {
     body.append('file', blob, filename);
@@ -57,4 +68,54 @@ export function synthesizeVoice(text: string, signal: AbortSignal): Promise<Resp
     headers: voiceConfigHeaders(),
     signal,
   });
+}
+
+/**
+ * Optional transcript cleanup: runs the raw STT text through the backend's
+ * /chat/completions endpoint with the user's configurable cleanup prompt. No-op
+ * (returns the input unchanged) when cleanup is disabled. Fails soft — any
+ * network/model error returns the original text so dictation is never blocked.
+ */
+export async function cleanupVoiceTranscript(text: string): Promise<string> {
+  const config = readVoiceConfig();
+  if (!config.cleanupEnabled) return text;
+
+  const prompt = config.cleanupPrompt.trim() || DEFAULT_CLEANUP_PROMPT;
+  const model = config.cleanupModel.trim() || 'gpt-4o-mini';
+
+  try {
+    if (config.baseUrl.trim()) {
+      const res = await fetch(directUrl(config.baseUrl.trim(), '/chat/completions'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: prompt },
+            { role: 'user', content: text },
+          ],
+          temperature: 0,
+        }),
+      });
+      if (!res.ok) throw new Error(`cleanup ${res.status}`);
+      const data = await res.json();
+      const cleaned = String(data?.choices?.[0]?.message?.content ?? '').trim();
+      return cleaned || text;
+    }
+
+    const res = await authenticatedFetch('/api/voice/cleanup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...voiceConfigHeaders() },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) throw new Error(`cleanup ${res.status}`);
+    const data = await res.json();
+    const cleaned = String(data?.text ?? '').trim();
+    return cleaned || text;
+  } catch {
+    return text;
+  }
 }

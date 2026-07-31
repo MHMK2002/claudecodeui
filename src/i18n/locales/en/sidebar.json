@@ -36,10 +36,17 @@
   },
   "recent": {
     "modeLabel": "Recent",
-    "title": "Chats from the last hour",
+    "title": "Recent chats",
+    "windowLabel": "Time window",
+    "window": {
+      "60": "1h",
+      "360": "6h",
+      "720": "12h",
+      "2880": "2d"
+    },
     "loading": "Loading recent chats...",
     "searchPlaceholder": "Search recent chats...",
-    "emptyTitle": "No chats in the last hour",
+    "emptyTitle": "No recent chats",
     "emptyDescription": "Chats will appear here as soon as they become active.",
     "noMatchingChats": "No recent chats match this search",
     "tryDifferentSearch": "Try a different search term.",

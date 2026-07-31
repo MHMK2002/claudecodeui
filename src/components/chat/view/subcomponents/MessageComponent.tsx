@@ -1,8 +1,10 @@
 import { memo, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Pencil } from 'lucide-react';
 
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
 import type {
+  ChatImage,
   ChatMessage,
   ClaudePermissionSuggestion,
   PermissionGrantResult,
@@ -32,6 +34,19 @@ type MessageComponentProps = {
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
   onShowSettings?: () => void;
   onGrantToolPermission?: (suggestion: ClaudePermissionSuggestion) => PermissionGrantResult | null | undefined;
+  /**
+   * Optional rewind callback. When supplied, user turns whose id is a real
+   * server-side uuid (rather than the optimistic `local_*` id used for
+   * sent-but-not-yet-persisted messages) show a rewind affordance.
+   */
+  onRequestRewind?: (messageId: string) => void;
+  /**
+   * Optional edit-and-resubmit callback. When supplied, the LAST user turn
+   * whose id is a real server-side uuid shows a pencil affordance that
+   * truncates the transcript at the line BEFORE this user message and
+   * resubmits the new content via `chat.send`.
+   */
+  onRequestEdit?: (messageId: string, content: string, images: ChatImage[]) => void;
   showRawParameters?: boolean;
   showThinking?: boolean;
   selectedProject?: Project | null;
@@ -46,7 +61,34 @@ type InteractiveOption = {
 
 const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
 
-const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, showRawParameters, showThinking, selectedProject, provider }: MessageComponentProps) => {
+/**
+ * Heuristic: server-persisted messages carry the provider runtime's uuid
+ * (e.g. `f47ac10b-58cc-4372-a567-0e02b2c3d479`). Optimistic local rows use
+ * `local_*` ids generated on the client. We only offer rewind for the
+ * former — the server has no JSONL entry to locate otherwise.
+ *
+ * Claude rows are uuid-keyed; the normalized id is the uuid plus a per-part
+ * suffix (`<uuid>_text_0`, `<uuid>_tr_<toolid>` …), so we match a uuid PREFIX
+ * then strip back to the bare 36-char uuid.
+ *
+ * Codex rollout rows carry no uuid; their id is `codex_ts_<epochMs>`. The
+ * whole token is the rewind/edit identifier (server matches on timestamp).
+ */
+const SERVER_MESSAGE_ID_PREFIX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+const UUID_LENGTH = 36;
+
+const extractRewindIdentifier = (id: string): string | null => {
+  if (SERVER_MESSAGE_ID_PREFIX.test(id)) {
+    const uuid = id.slice(0, UUID_LENGTH);
+    return SERVER_MESSAGE_ID_PREFIX.test(uuid) ? uuid : null;
+  }
+  // Codex timestamp id may also carry a part suffix like `codex_ts_<ms>_text`.
+  const match = /^codex_ts_\d+/.exec(id);
+  if (match) return match[0];
+  return null;
+};
+
+const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, onRequestRewind, onRequestEdit, showRawParameters, showThinking, selectedProject, provider }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
   const isGrouped = prevMessage && prevMessage.type === message.type &&
     ((prevMessage.type === 'assistant') ||
@@ -59,7 +101,11 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
     () => formatUsageLimitText(String(message.content || '')),
     [message.content]
   );
-  const messageDirection = useMemo(() => getTextDirection(message.content), [message.content]);
+  // Plain (non-isolated) content. Direction is handled natively by dir="auto"
+  // on the container plus the .bidi-isolate CSS class; the Markdown renderer
+  // additionally sets per-block dir. Wrapping the string with FSI/PDI here used
+  // to break Persian markdown headings/lists (marker + space folded apart).
+  const plainContent = String(message.content || '');
   const assistantCopyContent = message.isToolUse
     ? String(message.displayText || message.content || '')
     : formattedMessageContent;
@@ -71,6 +117,19 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
     assistantCopyContent.trim().length > 0 &&
     !isCommandOrFileEditToolResponse &&
     !message.isThinking;
+  const messageId = typeof message.id === 'string' ? message.id : '';
+  const rewindIdentifier = messageId ? extractRewindIdentifier(messageId) : null;
+  const shouldShowRewindButton = Boolean(
+    onRequestRewind
+    && message.type === 'user'
+    && rewindIdentifier !== null,
+  );
+  const shouldShowEditButton = Boolean(
+    onRequestEdit
+    && message.type === 'user'
+    && rewindIdentifier !== null
+    && message.isLastUserMessage === true,
+  );
 
 
   const formattedTime = useMemo(() => new Date(message.timestamp).toLocaleTimeString(), [message.timestamp]);
@@ -98,12 +157,39 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
             )}
             {userCopyContent.trim().length > 0 || !message.images?.length ? (
               <div className="group max-w-full rounded-2xl rounded-br-md bg-blue-600 px-3 py-2 text-white shadow-sm sm:px-4">
-                <div dir={messageDirection} className="bidi-isolate whitespace-pre-wrap break-words font-serif text-sm">
-                  {message.content}
+                <div dir="auto" className="bidi-isolate whitespace-pre-wrap break-words font-serif text-sm">
+                  {plainContent}
                 </div>
                 <div className="mt-1 flex items-center justify-end gap-1 text-xs text-blue-100">
                   {shouldShowUserCopyControl && (
                     <MessageCopyControl content={userCopyContent} messageType="user" />
+                  )}
+                  {shouldShowEditButton && (
+                    <button
+                      type="button"
+                      data-edit-trigger="true"
+                      onClick={() => onRequestEdit?.(rewindIdentifier as string, userCopyContent, message.images ?? [])}
+                      className="rounded p-1 text-blue-100 transition hover:bg-blue-500 hover:text-white focus:outline-none focus:ring-1 focus:ring-white/40"
+                      title={t('rewind.edit', { defaultValue: 'Edit & resubmit' })}
+                      aria-label={t('rewind.edit', { defaultValue: 'Edit & resubmit' })}
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                  {shouldShowRewindButton && (
+                    <button
+                      type="button"
+                      data-rewind-trigger="true"
+                      onClick={() => onRequestRewind?.(rewindIdentifier as string)}
+                      className="rounded p-1 text-blue-100 transition hover:bg-blue-500 hover:text-white focus:outline-none focus:ring-1 focus:ring-white/40"
+                      title={t('rewind.toHere', { defaultValue: 'Rewind to here' })}
+                      aria-label={t('rewind.toHere', { defaultValue: 'Rewind to here' })}
+                    >
+                      <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="1 4 1 10 7 10" />
+                        <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+                      </svg>
+                    </button>
                   )}
                   <span>{formattedTime}</span>
                 </div>
@@ -126,7 +212,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
         <div className="w-full">
           <div className="flex items-center gap-2 py-0.5">
             <span className={`inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full ${message.taskStatus === 'completed' ? 'bg-green-400 dark:bg-green-500' : 'bg-amber-400 dark:bg-amber-500'}`} />
-            <span dir={messageDirection} className="bidi-isolate text-xs text-gray-500 dark:text-gray-400">{message.content}</span>
+            <span dir="auto" className="bidi-isolate text-xs text-gray-500 dark:text-gray-400">{plainContent}</span>
           </div>
         </div>
       ) : (
@@ -316,7 +402,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                 <ReasoningTrigger />
                 <ReasoningContent>
                   <Markdown className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert">
-                    {message.content}
+                    {plainContent}
                   </Markdown>
                   <div className="mt-3 flex items-center text-[11px]">
                     <MessageCopyControl content={String(message.content || '')} messageType="assistant" />

@@ -208,7 +208,7 @@ export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
           )}
 
           {/* Question text */}
-          <p className="text-[14px] font-medium leading-snug text-gray-900 dark:text-gray-100">
+          <p dir="auto" className="bidi-plaintext text-[14px] font-medium leading-snug text-gray-900 dark:text-gray-100">
             {q.question}
           </p>
           {multi && (
@@ -226,7 +226,7 @@ export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
                   key={opt.label}
                   type="button"
                   onClick={() => toggleOption(currentStep, opt.label, multi)}
-                  className={`group flex w-full items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition-all duration-150 ${
+                  className={`group flex w-full items-center gap-2.5 rounded-lg border px-3 py-2 text-start transition-all duration-150 ${
                     isSelected
                       ? 'border-blue-300 bg-blue-50/80 ring-1 ring-blue-200/50 dark:border-blue-600 dark:bg-blue-900/25 dark:ring-blue-700/30'
                       : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50/60 dark:border-gray-700/60 dark:hover:border-gray-600 dark:hover:bg-gray-700/40'
@@ -241,7 +241,7 @@ export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
                     {optIdx + 1}
                   </kbd>
 
-                  <div className="min-w-0 flex-1">
+                  <div dir="auto" className="bidi-plaintext min-w-0 flex-1">
                     <div className={`text-[13px] leading-tight transition-colors duration-150 ${
                       isSelected
                         ? 'font-medium text-gray-900 dark:text-gray-100'
@@ -274,7 +274,7 @@ export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
             <button
               type="button"
               onClick={() => toggleOther(currentStep, multi)}
-              className={`group flex w-full items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition-all duration-150 ${
+              className={`group flex w-full items-center gap-2.5 rounded-lg border px-3 py-2 text-start transition-all duration-150 ${
                 isOtherOn
                   ? 'border-blue-300 bg-blue-50/80 ring-1 ring-blue-200/50 dark:border-blue-600 dark:bg-blue-900/25 dark:ring-blue-700/30'
                   : 'border-dashed border-gray-200 hover:border-gray-300 hover:bg-gray-50/60 dark:border-gray-700/60 dark:hover:border-gray-600 dark:hover:bg-gray-700/40'

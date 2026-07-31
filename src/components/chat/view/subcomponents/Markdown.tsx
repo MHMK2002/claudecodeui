@@ -87,8 +87,17 @@ const CodeBlock = ({ node, inline, className, children, ...props }: CodeBlockPro
   const match = /language-(\w+)/.exec(className || '');
   const language = match ? match[1] : 'text';
 
+  // A bare ``` fence (no language) is often used by models to wrap Persian
+  // prose/plans, not real code. Forcing LTR there left-aligns Persian and
+  // reads wrong. For untagged fences with strong RTL content, switch to
+  // plaintext bidi so each line auto-directs (Persian lines RTL, path/code
+  // lines stay LTR). Real tagged code (```python, ```ts, …) keeps forced LTR.
+  // 'text' covers both a bare ``` fence (default) and an explicit ```text fence.
+  const isPlainTextFence = language === 'text';
+  const isRtlProse = isPlainTextFence && getTextDirection(raw) === 'rtl';
+
   return (
-    <div dir="ltr" className="bidi-code group relative my-2">
+    <div dir={isRtlProse ? 'auto' : 'ltr'} className={`${isRtlProse ? 'bidi-plaintext' : 'bidi-code'} group relative my-2`}>
       {language && language !== 'text' && (
         <div className="absolute left-3 top-2 z-10 text-xs font-medium uppercase text-gray-400">{language}</div>
       )}
@@ -145,8 +154,10 @@ const CodeBlock = ({ node, inline, className, children, ...props }: CodeBlockPro
           borderRadius: '0.75rem',
           fontSize: '0.875rem',
           padding: language && language !== 'text' ? '2rem 1rem 1rem 1rem' : '1rem',
-          direction: 'ltr',
-          textAlign: 'left',
+          // RTL prose fence: per-line auto direction. Real code: forced LTR.
+          ...(isRtlProse
+            ? { unicodeBidi: 'plaintext' as const, textAlign: 'start' as const }
+            : { direction: 'ltr' as const, textAlign: 'left' as const }),
           // ChatGPT-style soft grey block in light mode; keep oneDark's own bg in dark.
           ...(isDarkMode ? {} : { background: 'hsl(var(--muted))' }),
         }}

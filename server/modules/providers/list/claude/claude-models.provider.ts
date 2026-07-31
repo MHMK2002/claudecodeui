@@ -76,7 +76,7 @@ export const CLAUDE_FALLBACK_MODELS: ProviderModelsDefinition = {
     {
       value: 'opus',
       label: 'Opus',
-      description: 'Opus 4.8 · Best for everyday, complex tasks · ~2× usage vs Sonnet',
+      description: 'Opus 5 · Best for everyday, complex tasks · requires Claude Code 2.1.219+',
       effort: {
         default: 'high',
         values: [
@@ -90,8 +90,8 @@ export const CLAUDE_FALLBACK_MODELS: ProviderModelsDefinition = {
     },
     {
       value: 'opus[1m]',
-      label: 'Opus 4.8 (1M context)',
-      description: 'Opus 4.8 with 1M context · Most capable for complex work · $5/$25 per Mtok',
+      label: 'Opus 5 (1M context)',
+      description: 'Opus 5 with 1M context · Most capable for complex work · requires Claude Code 2.1.219+',
       effort: {
         default: 'high',
         values: [

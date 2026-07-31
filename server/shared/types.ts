@@ -117,6 +117,43 @@ export type ProviderModelsResult = {
 };
 
 // ---------------------------
+//----------------- PROVIDER PROFILE TYPES ------------
+/**
+ * Auth environment shape used by Claude-compatible gateways.
+ *
+ * `auth_token` maps to ANTHROPIC_AUTH_TOKEN and is the gateway-friendly option
+ * used by OpenRouter-style integrations. `api_key` maps to ANTHROPIC_API_KEY
+ * for direct Anthropic API key usage.
+ */
+export type ClaudeProviderProfileAuthType = 'auth_token' | 'api_key';
+
+/**
+ * Safe Claude provider profile view returned to the browser.
+ *
+ * Secrets are write-only. APIs return `hasSecret` so the UI can show whether a
+ * profile is runnable without exposing the stored token.
+ */
+export type ClaudeProviderProfilePublic = {
+  id: number;
+  provider: 'claude';
+  title: string;
+  baseUrl: string | null;
+  authType: ClaudeProviderProfileAuthType;
+  isDefault: boolean;
+  isActive: boolean;
+  hasSecret: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/**
+ * Runtime-only Claude profile shape. This must not be serialized to clients.
+ */
+export type ClaudeProviderProfileRuntime = ClaudeProviderProfilePublic & {
+  secretValue: string;
+};
+
+// ---------------------------
 //----------------- PROVIDER ACTIVE MODEL TYPES ------------
 /**
  * Provider-neutral result for the model that is actively driving a session or
