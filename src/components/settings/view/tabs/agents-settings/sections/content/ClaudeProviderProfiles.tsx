@@ -5,15 +5,16 @@ import { useTranslation } from 'react-i18next';
 import { authenticatedFetch } from '../../../../../../../utils/api';
 import { Badge, Button, Input } from '../../../../../../../shared/view/ui';
 import type {
-  ClaudeProviderProfileAuthType,
-  ClaudeProviderProfilePublic,
+  ProviderProfileAuthType,
+  ProviderProfileProvider,
+  ProviderProfilePublic,
 } from '../../../../../../../types/app';
 
 type ClaudeProfilesApiResponse = {
   success?: boolean;
   data?: {
-    profile?: ClaudeProviderProfilePublic;
-    profiles?: ClaudeProviderProfilePublic[];
+    profile?: ProviderProfilePublic;
+    profiles?: ProviderProfilePublic[];
   };
   error?: string | {
     message?: string;
@@ -24,22 +25,30 @@ type ProfileDraft = {
   title: string;
   baseUrl: string;
   token: string;
-  authType: ClaudeProviderProfileAuthType;
+  authType: ProviderProfileAuthType;
   isDefault: boolean;
   isActive: boolean;
 };
 
-const emptyDraft = (): ProfileDraft => ({
+type ProviderProfilesProps = {
+  provider: ProviderProfileProvider;
+  displayName: string;
+};
+
+const emptyDraft = (provider: ProviderProfileProvider): ProfileDraft => ({
   title: '',
   baseUrl: '',
   token: '',
-  authType: 'auth_token',
+  authType: provider === 'codex' ? 'api_key' : 'auth_token',
   isDefault: false,
   isActive: true,
 });
 
-function notifyProfilesUpdated() {
-  window.dispatchEvent(new CustomEvent('claude-provider-profiles-updated'));
+function notifyProfilesUpdated(provider: ProviderProfileProvider) {
+  window.dispatchEvent(new CustomEvent(`${provider}-provider-profiles-updated`));
+  window.dispatchEvent(new CustomEvent('provider-profiles-updated', {
+    detail: { provider },
+  }));
 }
 
 async function readApiError(response: Response, fallback: string): Promise<string> {
@@ -50,16 +59,17 @@ async function readApiError(response: Response, fallback: string): Promise<strin
   return payload?.error?.message || fallback;
 }
 
-export default function ClaudeProviderProfiles() {
+export default function ProviderProfiles({ provider, displayName }: ProviderProfilesProps) {
   const { t } = useTranslation('settings');
-  const [profiles, setProfiles] = useState<ClaudeProviderProfilePublic[]>([]);
+  const isCodex = provider === 'codex';
+  const [profiles, setProfiles] = useState<ProviderProfilePublic[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [showCreateToken, setShowCreateToken] = useState(false);
-  const [createDraft, setCreateDraft] = useState<ProfileDraft>(emptyDraft);
+  const [createDraft, setCreateDraft] = useState<ProfileDraft>(() => emptyDraft(provider));
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [editDraft, setEditDraft] = useState<ProfileDraft>(emptyDraft);
+  const [editDraft, setEditDraft] = useState<ProfileDraft>(() => emptyDraft(provider));
   const [showEditToken, setShowEditToken] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -72,22 +82,33 @@ export default function ClaudeProviderProfiles() {
     try {
       setLoading(true);
       setError(null);
-      const response = await authenticatedFetch('/api/providers/claude/profiles');
+      const response = await authenticatedFetch(`/api/providers/${provider}/profiles`);
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Failed to load Claude profiles.'));
+        throw new Error(await readApiError(response, `Failed to load ${displayName} profiles.`));
       }
       const body = (await response.json()) as ClaudeProfilesApiResponse;
       setProfiles(body.data?.profiles ?? []);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Failed to load Claude profiles.');
+      setError(loadError instanceof Error ? loadError.message : `Failed to load ${displayName} profiles.`);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [displayName, provider]);
 
   useEffect(() => {
     void fetchProfiles();
   }, [fetchProfiles]);
+
+  useEffect(() => {
+    setProfiles([]);
+    setError(null);
+    setShowCreateForm(false);
+    setShowCreateToken(false);
+    setCreateDraft(emptyDraft(provider));
+    setEditingId(null);
+    setEditDraft(emptyDraft(provider));
+    setShowEditToken(false);
+  }, [provider]);
 
   const saveProfile = useCallback(async (
     method: 'POST' | 'PATCH',
@@ -99,8 +120,8 @@ export default function ClaudeProviderProfiles() {
       setError(null);
       const response = await authenticatedFetch(
         profileId
-          ? `/api/providers/claude/profiles/${profileId}`
-          : '/api/providers/claude/profiles',
+          ? `/api/providers/${provider}/profiles/${profileId}`
+          : `/api/providers/${provider}/profiles`,
         {
           method,
           body: JSON.stringify({
@@ -114,23 +135,23 @@ export default function ClaudeProviderProfiles() {
         },
       );
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Failed to save Claude profile.'));
+        throw new Error(await readApiError(response, `Failed to save ${displayName} profile.`));
       }
 
       await fetchProfiles();
-      notifyProfilesUpdated();
+      notifyProfilesUpdated(provider);
       setShowCreateForm(false);
-      setCreateDraft(emptyDraft());
+      setCreateDraft(emptyDraft(provider));
       setEditingId(null);
-      setEditDraft(emptyDraft());
+      setEditDraft(emptyDraft(provider));
       setShowCreateToken(false);
       setShowEditToken(false);
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Failed to save Claude profile.');
+      setError(saveError instanceof Error ? saveError.message : `Failed to save ${displayName} profile.`);
     } finally {
       setSaving(false);
     }
-  }, [fetchProfiles]);
+  }, [displayName, fetchProfiles, provider]);
 
   const patchProfile = useCallback(async (
     profileId: number,
@@ -139,23 +160,23 @@ export default function ClaudeProviderProfiles() {
     try {
       setSaving(true);
       setError(null);
-      const response = await authenticatedFetch(`/api/providers/claude/profiles/${profileId}`, {
+      const response = await authenticatedFetch(`/api/providers/${provider}/profiles/${profileId}`, {
         method: 'PATCH',
         body: JSON.stringify(payload),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Failed to update Claude profile.'));
+        throw new Error(await readApiError(response, `Failed to update ${displayName} profile.`));
       }
       await fetchProfiles();
-      notifyProfilesUpdated();
+      notifyProfilesUpdated(provider);
     } catch (patchError) {
-      setError(patchError instanceof Error ? patchError.message : 'Failed to update Claude profile.');
+      setError(patchError instanceof Error ? patchError.message : `Failed to update ${displayName} profile.`);
     } finally {
       setSaving(false);
     }
-  }, [fetchProfiles]);
+  }, [displayName, fetchProfiles, provider]);
 
-  const deleteProfile = useCallback(async (profile: ClaudeProviderProfilePublic) => {
+  const deleteProfile = useCallback(async (profile: ProviderProfilePublic) => {
     if (!window.confirm(t('agents.providerProfiles.confirmDelete', {
       title: profile.title,
       defaultValue: `Delete "${profile.title}"?`,
@@ -166,22 +187,22 @@ export default function ClaudeProviderProfiles() {
     try {
       setSaving(true);
       setError(null);
-      const response = await authenticatedFetch(`/api/providers/claude/profiles/${profile.id}`, {
+      const response = await authenticatedFetch(`/api/providers/${provider}/profiles/${profile.id}`, {
         method: 'DELETE',
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Failed to delete Claude profile.'));
+        throw new Error(await readApiError(response, `Failed to delete ${displayName} profile.`));
       }
       await fetchProfiles();
-      notifyProfilesUpdated();
+      notifyProfilesUpdated(provider);
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : 'Failed to delete Claude profile.');
+      setError(deleteError instanceof Error ? deleteError.message : `Failed to delete ${displayName} profile.`);
     } finally {
       setSaving(false);
     }
-  }, [fetchProfiles, t]);
+  }, [displayName, fetchProfiles, provider, t]);
 
-  const startEdit = useCallback((profile: ClaudeProviderProfilePublic) => {
+  const startEdit = useCallback((profile: ProviderProfilePublic) => {
     setEditingId(profile.id);
     setShowEditToken(false);
     setEditDraft({
@@ -206,36 +227,42 @@ export default function ClaudeProviderProfiles() {
     },
   ) => {
     const isCreate = options.mode === 'create';
-    const canSubmit = draft.title.trim().length > 0 && (!isCreate || draft.token.trim().length > 0);
+    const canSubmit = draft.title.trim().length > 0
+      && (!isCreate || draft.token.trim().length > 0)
+      && (!isCodex || draft.baseUrl.trim().length > 0);
 
     return (
       <div className="space-y-3 rounded-lg border bg-card p-4">
-        <div className="grid gap-3 md:grid-cols-2">
+        <div className={isCodex ? 'grid gap-3' : 'grid gap-3 md:grid-cols-2'}>
           <Input
             placeholder={t('agents.providerProfiles.form.title', { defaultValue: 'Title' })}
             value={draft.title}
             onChange={(event) => setDraft({ ...draft, title: event.target.value })}
           />
-          <select
-            value={draft.authType}
-            onChange={(event) => setDraft({
-              ...draft,
-              authType: event.target.value as ClaudeProviderProfileAuthType,
-            })}
-            className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
-          >
-            <option value="auth_token">
-              {t('agents.providerProfiles.form.authToken', { defaultValue: 'Auth token / gateway' })}
-            </option>
-            <option value="api_key">
-              {t('agents.providerProfiles.form.apiKey', { defaultValue: 'API key / Anthropic' })}
-            </option>
-          </select>
+          {!isCodex && (
+            <select
+              value={draft.authType}
+              onChange={(event) => setDraft({
+                ...draft,
+                authType: event.target.value as ProviderProfileAuthType,
+              })}
+              className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+            >
+              <option value="auth_token">
+                {t('agents.providerProfiles.form.authToken', { defaultValue: 'Auth token / gateway' })}
+              </option>
+              <option value="api_key">
+                {t('agents.providerProfiles.form.apiKey', { defaultValue: 'API key / Anthropic' })}
+              </option>
+            </select>
+          )}
         </div>
 
         <Input
           placeholder={t('agents.providerProfiles.form.baseUrl', {
-            defaultValue: 'Base URL, e.g. https://openrouter.ai/api/anthropic',
+            defaultValue: isCodex
+              ? 'Base URL, e.g. https://openrouter.ai/api/v1'
+              : 'Base URL, e.g. https://openrouter.ai/api/anthropic',
           })}
           value={draft.baseUrl}
           onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })}
@@ -316,7 +343,8 @@ export default function ClaudeProviderProfiles() {
             <p className="text-xs text-muted-foreground">
               {t('agents.providerProfiles.subtitle', {
                 count: activeProfilesCount,
-                defaultValue: '{{count}} active Claude-compatible profiles',
+                provider: displayName,
+                defaultValue: '{{count}} active {{provider}} provider profiles',
               })}
             </p>
           </div>
@@ -340,7 +368,7 @@ export default function ClaudeProviderProfiles() {
         onSubmit: () => saveProfile('POST', createDraft),
         onCancel: () => {
           setShowCreateForm(false);
-          setCreateDraft(emptyDraft());
+          setCreateDraft(emptyDraft(provider));
           setShowCreateToken(false);
         },
       })}
@@ -348,7 +376,10 @@ export default function ClaudeProviderProfiles() {
       <div className="space-y-2">
         {profiles.length === 0 ? (
           <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-            {t('agents.providerProfiles.empty', { defaultValue: 'No Claude provider profiles yet.' })}
+            {t('agents.providerProfiles.empty', {
+              provider: displayName,
+              defaultValue: 'No {{provider}} provider profiles yet.',
+            })}
           </div>
         ) : profiles.map((profile) => (
           <div key={profile.id} className="rounded-lg border bg-card p-3">
@@ -360,7 +391,7 @@ export default function ClaudeProviderProfiles() {
                 onSubmit: () => saveProfile('PATCH', editDraft, profile.id),
                 onCancel: () => {
                   setEditingId(null);
-                  setEditDraft(emptyDraft());
+                  setEditDraft(emptyDraft(provider));
                   setShowEditToken(false);
                 },
               })
@@ -381,7 +412,10 @@ export default function ClaudeProviderProfiles() {
                     </Badge>
                   </div>
                   <div className="mt-1 truncate text-xs text-muted-foreground">
-                    {profile.baseUrl || t('agents.providerProfiles.localEndpoint', { defaultValue: 'Claude default endpoint' })}
+                    {profile.baseUrl || t('agents.providerProfiles.localEndpoint', {
+                      provider: displayName,
+                      defaultValue: '{{provider}} default endpoint',
+                    })}
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">
                     {profile.authType === 'api_key'

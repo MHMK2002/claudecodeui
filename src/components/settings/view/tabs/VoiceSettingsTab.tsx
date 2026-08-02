@@ -5,6 +5,7 @@ import SettingsSection from '../SettingsSection';
 import SettingsToggle from '../SettingsToggle';
 import { useUiPreferences } from '../../../../hooks/useUiPreferences';
 import { DEFAULT_CLEANUP_PROMPT, useVoiceConfig } from '../../../../hooks/useVoiceConfig';
+import { useAudioInputDevices } from '../../../../hooks/useAudioInputDevices';
 
 const inputClass =
   'w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring';
@@ -31,7 +32,10 @@ export default function VoiceSettingsTab() {
   const { t } = useTranslation('settings');
   const { preferences, setPreference } = useUiPreferences();
   const { config, update } = useVoiceConfig();
+  const mic = useAudioInputDevices();
   const voiceEnabled = preferences.voiceEnabled;
+  const savedMicMissing =
+    !!config.micDeviceId && !mic.devices.some((device) => device.deviceId === config.micDeviceId);
 
   return (
     <div className="space-y-8">
@@ -121,6 +125,61 @@ export default function VoiceSettingsTab() {
             </div>
             <p className="text-xs text-muted-foreground">{t('voiceSettings.note')}</p>
           </div>
+        </SettingsSection>
+
+        <SettingsSection
+          title={t('voiceSettings.microphoneTitle', { defaultValue: 'Microphone' })}
+          description={t('voiceSettings.microphoneDescription', {
+            defaultValue: 'Choose which input device dictation records from.',
+          })}
+        >
+          {mic.supported ? (
+            <div className="space-y-2">
+              <select
+                className={inputClass}
+                value={config.micDeviceId}
+                onChange={(e) => update({ micDeviceId: e.target.value })}
+                aria-label={t('voiceSettings.microphoneTitle', { defaultValue: 'Microphone' })}
+              >
+                <option value="">{t('voiceSettings.micDefault', { defaultValue: 'System default' })}</option>
+                {mic.devices.map((device, index) => (
+                  <option key={device.deviceId || index} value={device.deviceId}>
+                    {device.label || `Microphone ${index + 1}`}
+                  </option>
+                ))}
+                {savedMicMissing && (
+                  <option value={config.micDeviceId}>
+                    {t('voiceSettings.micUnavailable', { defaultValue: 'Saved microphone (unavailable)' })}
+                  </option>
+                )}
+              </select>
+              {mic.needsPermission && (
+                <button
+                  type="button"
+                  className="text-xs text-primary hover:underline"
+                  onClick={() => {
+                    void mic.requestPermission();
+                  }}
+                >
+                  {t('voiceSettings.micGrantAccess', {
+                    defaultValue: 'Allow microphone access to show device names',
+                  })}
+                </button>
+              )}
+              <p className="text-xs text-muted-foreground">
+                {t('voiceSettings.micNote', {
+                  defaultValue:
+                    'If the selected microphone is unavailable, recording falls back to the system default.',
+                })}
+              </p>
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              {t('voiceSettings.micUnsupported', {
+                defaultValue: 'Microphone selection is not supported in this browser.',
+              })}
+            </p>
+          )}
         </SettingsSection>
 
         <SettingsSection title={t('voiceSettings.holdToTalkTitle')} description={t('voiceSettings.holdToTalkDescription')}>

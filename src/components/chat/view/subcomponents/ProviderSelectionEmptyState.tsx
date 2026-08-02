@@ -7,6 +7,7 @@ import type {
   LLMProvider,
   ProviderModelsDefinition,
   ClaudeProviderProfilePublic,
+  CodexProviderProfilePublic,
 } from "../../../../types/app";
 import SessionProviderLogo from "../../../llm-logo-provider/SessionProviderLogo";
 import { NextTaskBanner } from "../../../task-master";
@@ -65,6 +66,10 @@ type ProviderSelectionEmptyStateProps = {
   claudeProfilesLoading: boolean;
   selectedClaudeProfileId: number | null;
   setSelectedClaudeProfileId: (profileId: number | null) => void;
+  codexProfiles: CodexProviderProfilePublic[];
+  codexProfilesLoading: boolean;
+  selectedCodexProfileId: number | null;
+  setSelectedCodexProfileId: (profileId: number | null) => void;
   tasksEnabled: boolean;
   isTaskMasterInstalled: boolean | null;
   onShowAllTasks?: (() => void) | null;
@@ -127,6 +132,10 @@ export default function ProviderSelectionEmptyState({
   claudeProfilesLoading,
   selectedClaudeProfileId,
   setSelectedClaudeProfileId,
+  codexProfiles,
+  codexProfilesLoading,
+  selectedCodexProfileId,
+  setSelectedCodexProfileId,
   tasksEnabled,
   isTaskMasterInstalled,
   onShowAllTasks,
@@ -138,7 +147,7 @@ export default function ProviderSelectionEmptyState({
   const visibleProviderGroups = useMemo<ProviderGroup[]>(() => {
     return PROVIDER_META.flatMap((p) => {
       const models = providerModelCatalog[p.id]?.OPTIONS ?? [];
-      if (p.id !== "claude") {
+      if (p.id !== "claude" && p.id !== "codex") {
         return [{
           id: p.id,
           name: p.name,
@@ -146,24 +155,26 @@ export default function ProviderSelectionEmptyState({
         }];
       }
 
+      const providerLabel = p.id === "claude" ? "Claude" : "Codex";
+      const profiles = p.id === "claude" ? claudeProfiles : codexProfiles;
       const localGroup: ProviderGroup = {
-        id: "claude",
-        name: "Claude - Local CLI",
+        id: p.id,
+        name: `${providerLabel} - Local CLI`,
         profileId: null,
         models,
       };
-      const profileGroups = claudeProfiles
+      const profileGroups = profiles
         .filter((profile) => profile.isActive)
         .map<ProviderGroup>((profile) => ({
-          id: "claude",
-          name: `Claude - ${profile.title}`,
+          id: p.id,
+          name: `${providerLabel} - ${profile.title}`,
           profileId: profile.id,
           models,
         }));
 
       return [localGroup, ...profileGroups];
     });
-  }, [claudeProfiles, providerModelCatalog]);
+  }, [claudeProfiles, codexProfiles, providerModelCatalog]);
 
   const nextTaskPrompt = t("tasks.nextTaskPrompt", {
     defaultValue: "Start the next task",
@@ -186,13 +197,15 @@ export default function ProviderSelectionEmptyState({
   }, [provider, currentModel, providerModelCatalog]);
 
   const currentProviderLabel = useMemo(() => {
-    if (provider !== "claude") {
+    if (provider !== "claude" && provider !== "codex") {
       return getProviderDisplayName(provider);
     }
 
-    const profile = claudeProfiles.find((entry) => entry.id === selectedClaudeProfileId);
-    return `Claude - ${profile?.title ?? "Local CLI"}`;
-  }, [claudeProfiles, provider, selectedClaudeProfileId]);
+    const profiles = provider === "claude" ? claudeProfiles : codexProfiles;
+    const profileId = provider === "claude" ? selectedClaudeProfileId : selectedCodexProfileId;
+    const profile = profiles.find((entry) => entry.id === profileId);
+    return `${getProviderDisplayName(provider)} - ${profile?.title ?? "Local CLI"}`;
+  }, [claudeProfiles, codexProfiles, provider, selectedClaudeProfileId, selectedCodexProfileId]);
 
   const setModelForProvider = useCallback(
     (providerId: LLMProvider, modelValue: string) => {
@@ -219,12 +232,14 @@ export default function ProviderSelectionEmptyState({
       localStorage.setItem("selected-provider", providerId);
       if (providerId === "claude") {
         setSelectedClaudeProfileId(profileId);
+      } else if (providerId === "codex") {
+        setSelectedCodexProfileId(profileId);
       }
       setModelForProvider(providerId, modelValue);
       setDialogOpen(false);
       setTimeout(() => textareaRef.current?.focus(), 100);
     },
-    [setProvider, setModelForProvider, setSelectedClaudeProfileId, textareaRef],
+    [setProvider, setModelForProvider, setSelectedClaudeProfileId, setSelectedCodexProfileId, textareaRef],
   );
 
   if (!selectedSession && !currentSessionId) {
@@ -305,17 +320,29 @@ export default function ProviderSelectionEmptyState({
                         </span>
                       }
                     >
-                      {group.models.length === 0 && (providerModelsLoading || (group.id === "claude" && claudeProfilesLoading)) ? (
+                      {group.models.length === 0 && (
+                        providerModelsLoading
+                        || (group.id === "claude" && claudeProfilesLoading)
+                        || (group.id === "codex" && codexProfilesLoading)
+                      ) ? (
                         <CommandItem disabled className="ml-4 border-l border-border/40 pl-4 text-muted-foreground">
                           {t("providerSelection.loadingModels", { defaultValue: "Loading models…" })}
                         </CommandItem>
                       ) : null}
                       {group.models.map((model) => {
                         const groupProfileId = group.profileId ?? null;
+                        const selectedProfileId = group.id === "claude"
+                          ? selectedClaudeProfileId
+                          : group.id === "codex"
+                            ? selectedCodexProfileId
+                            : null;
                         const isSelected =
                           provider === group.id &&
                           currentModel === model.value &&
-                          (group.id !== "claude" || selectedClaudeProfileId === groupProfileId);
+                          (
+                            (group.id !== "claude" && group.id !== "codex")
+                            || selectedProfileId === groupProfileId
+                          );
                         return (
                           <CommandItem
                             key={`${group.id}-${groupProfileId ?? "local"}-${model.value}`}

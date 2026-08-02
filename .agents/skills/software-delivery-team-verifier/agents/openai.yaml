@@ -1,4 +1,0 @@
-interface:
-  display_name: "Software Delivery Team Verifier"
-  short_description: "Check implementation against plan"
-  default_prompt: "Use $software-delivery-team-verifier to verify this implementation against the approved plan and requirements."

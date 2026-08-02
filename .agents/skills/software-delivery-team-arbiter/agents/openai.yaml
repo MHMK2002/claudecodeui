@@ -1,4 +1,0 @@
-interface:
-  display_name: "Software Delivery Team Arbiter"
-  short_description: "Adjudicate role disagreements"
-  default_prompt: "Use $software-delivery-team-arbiter to decide which disputed findings are valid and what should happen next."

@@ -244,5 +244,8 @@
   "optionalDependencies": {
     "@nut-tree-fork/nut-js": "^4.2.6",
     "screenshot-desktop": "^1.15.4"
+  },
+  "volta": {
+    "node": "22.22.3"
   }
 }

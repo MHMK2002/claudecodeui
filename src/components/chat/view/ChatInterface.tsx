@@ -6,7 +6,7 @@ import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
 import PermissionContext from '../../../contexts/PermissionContext';
 import { QuickSettingsPanel } from '../../quick-settings-panel';
-import type { ChatInterfaceProps, Provider  } from '../types/types';
+import type { ChatInterfaceProps } from '../types/types';
 import { useChatProviderState } from '../hooks/useChatProviderState';
 import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
@@ -18,7 +18,6 @@ import ChatMessagesPane from './subcomponents/ChatMessagesPane';
 import ChatComposer from './subcomponents/ChatComposer';
 import CommandResultModal from './subcomponents/CommandResultModal';
 import RewindConfirmModal from './subcomponents/RewindConfirmModal';
-import MessageEditComposer from './subcomponents/MessageEditComposer';
 
 function ChatInterface({
   selectedProject,
@@ -88,6 +87,10 @@ function ChatInterface({
     claudeProfilesLoading,
     selectedClaudeProfileId,
     setSelectedClaudeProfileId,
+    codexProfiles,
+    codexProfilesLoading,
+    selectedCodexProfileId,
+    setSelectedCodexProfileId,
     hardRefreshProviderModels,
     selectProviderModel,
     setStoredProviderEffort,
@@ -217,6 +220,7 @@ function ChatInterface({
     currentProviderEffort,
     opencodeModel,
     selectedClaudeProfileId,
+    selectedCodexProfileId,
     isLoading: isProcessing,
     canAbortSession,
     tokenBudget,
@@ -357,7 +361,7 @@ function ChatInterface({
           selectedSession={selectedSession}
           currentSessionId={currentSessionId}
           provider={provider}
-          setProvider={(nextProvider) => setProvider(nextProvider as Provider)}
+          setProvider={setProvider}
           textareaRef={textareaRef}
           claudeModel={claudeModel}
           setClaudeModel={setClaudeModel}
@@ -373,6 +377,10 @@ function ChatInterface({
           claudeProfilesLoading={claudeProfilesLoading}
           selectedClaudeProfileId={selectedClaudeProfileId}
           setSelectedClaudeProfileId={setSelectedClaudeProfileId}
+          codexProfiles={codexProfiles}
+          codexProfilesLoading={codexProfilesLoading}
+          selectedCodexProfileId={selectedCodexProfileId}
+          setSelectedCodexProfileId={setSelectedCodexProfileId}
           tasksEnabled={tasksEnabled}
           isTaskMasterInstalled={isTaskMasterInstalled}
           onShowAllTasks={onShowAllTasks}
@@ -394,7 +402,7 @@ function ChatInterface({
           onShowSettings={onShowSettings}
           onGrantToolPermission={handleGrantToolPermission}
           onRequestRewind={requestRewind}
-          onRequestEdit={(messageId, content, images) => editController.beginEdit(messageId, content, images)}
+          onRequestEdit={editController.beginEdit}
           editingMessageId={editController.target?.messageId ?? null}
           editInitialContent={editController.target?.initialContent ?? ''}
           editPending={editController.pending}
@@ -471,6 +479,7 @@ function ChatInterface({
           input={input}
           onVoiceTranscript={handleVoiceTranscript}
           onVoiceCommit={captureVoiceOrigin}
+          viewedSessionKey={currentSessionId || selectedSession?.id || null}
           onInputChange={handleInputChange}
           onTextareaClick={handleTextareaClick}
           onTextareaKeyDown={handleKeyDown}

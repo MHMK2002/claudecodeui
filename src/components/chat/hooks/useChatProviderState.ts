@@ -9,6 +9,7 @@ import type {
   ProviderModelOption,
   ProviderModelsCacheInfo,
   ProviderModelsDefinition,
+  CodexProviderProfilePublic,
   ClaudeProviderProfilePublic,
 } from '../../../types/app';
 import {
@@ -26,6 +27,7 @@ const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
 
 const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode'];
 const CLAUDE_PROFILE_STORAGE_KEY = 'claude-provider-profile-id';
+const CODEX_PROFILE_STORAGE_KEY = 'codex-provider-profile-id';
 
 const readStoredProvider = (): LLMProvider => {
   const storedProvider = localStorage.getItem('selected-provider');
@@ -36,6 +38,16 @@ const readStoredProvider = (): LLMProvider => {
 
 const readStoredClaudeProfileId = (): number | null => {
   const storedProfileId = localStorage.getItem(CLAUDE_PROFILE_STORAGE_KEY);
+  if (!storedProfileId || storedProfileId === 'local') {
+    return null;
+  }
+
+  const parsed = /^\d+$/.test(storedProfileId) ? Number(storedProfileId) : NaN;
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+};
+
+const readStoredCodexProfileId = (): number | null => {
+  const storedProfileId = localStorage.getItem(CODEX_PROFILE_STORAGE_KEY);
   if (!storedProfileId || storedProfileId === 'local') {
     return null;
   }
@@ -106,6 +118,13 @@ type ClaudeProviderProfilesApiResponse = {
   };
 };
 
+type CodexProviderProfilesApiResponse = {
+  success?: boolean;
+  data?: {
+    profiles?: CodexProviderProfilePublic[];
+  };
+};
+
 export function useChatProviderState({ selectedSession, selectedProject: _selectedProject }: UseChatProviderStateArgs) {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
@@ -132,6 +151,11 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const [claudeProfilesLoading, setClaudeProfilesLoading] = useState(true);
   const [selectedClaudeProfileId, setSelectedClaudeProfileIdState] = useState<number | null>(
     readStoredClaudeProfileId,
+  );
+  const [codexProfiles, setCodexProfiles] = useState<CodexProviderProfilePublic[]>([]);
+  const [codexProfilesLoading, setCodexProfilesLoading] = useState(true);
+  const [selectedCodexProfileId, setSelectedCodexProfileIdState] = useState<number | null>(
+    readStoredCodexProfileId,
   );
 
   /**
@@ -164,6 +188,14 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     );
   }, []);
 
+  const setSelectedCodexProfileId = useCallback((profileId: number | null) => {
+    setSelectedCodexProfileIdState(profileId);
+    localStorage.setItem(
+      CODEX_PROFILE_STORAGE_KEY,
+      profileId === null ? 'local' : String(profileId),
+    );
+  }, []);
+
   const loadClaudeProfiles = useCallback(async () => {
     try {
       setClaudeProfilesLoading(true);
@@ -180,9 +212,29 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     }
   }, []);
 
+  const loadCodexProfiles = useCallback(async () => {
+    try {
+      setCodexProfilesLoading(true);
+      const response = await authenticatedFetch('/api/providers/codex/profiles');
+      const body = (await response.json()) as CodexProviderProfilesApiResponse;
+      if (!response.ok || !body.success) {
+        return;
+      }
+      setCodexProfiles(body.data?.profiles ?? []);
+    } catch (error) {
+      console.error('Error loading Codex provider profiles:', error);
+    } finally {
+      setCodexProfilesLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadClaudeProfiles();
   }, [loadClaudeProfiles]);
+
+  useEffect(() => {
+    void loadCodexProfiles();
+  }, [loadCodexProfiles]);
 
   useEffect(() => {
     const handleProfilesUpdated = () => {
@@ -194,6 +246,17 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       window.removeEventListener('claude-provider-profiles-updated', handleProfilesUpdated);
     };
   }, [loadClaudeProfiles]);
+
+  useEffect(() => {
+    const handleProfilesUpdated = () => {
+      void loadCodexProfiles();
+    };
+
+    window.addEventListener('codex-provider-profiles-updated', handleProfilesUpdated);
+    return () => {
+      window.removeEventListener('codex-provider-profiles-updated', handleProfilesUpdated);
+    };
+  }, [loadCodexProfiles]);
 
   useEffect(() => {
     if (selectedClaudeProfileId === null) {
@@ -211,6 +274,23 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       setSelectedClaudeProfileId(null);
     }
   }, [claudeProfiles, selectedClaudeProfileId, setSelectedClaudeProfileId]);
+
+  useEffect(() => {
+    if (selectedCodexProfileId === null) {
+      const hasStoredSelection = localStorage.getItem(CODEX_PROFILE_STORAGE_KEY) !== null;
+      const defaultProfile = codexProfiles.find((profile) => profile.isDefault && profile.isActive);
+      if (!hasStoredSelection && defaultProfile) {
+        setSelectedCodexProfileIdState(defaultProfile.id);
+        localStorage.setItem(CODEX_PROFILE_STORAGE_KEY, String(defaultProfile.id));
+      }
+      return;
+    }
+
+    const selectedProfile = codexProfiles.find((profile) => profile.id === selectedCodexProfileId);
+    if (!selectedProfile || !selectedProfile.isActive) {
+      setSelectedCodexProfileId(null);
+    }
+  }, [codexProfiles, selectedCodexProfileId, setSelectedCodexProfileId]);
 
   const setStoredProviderModel = useCallback((targetProvider: LLMProvider, model: string) => {
     if (targetProvider === 'claude') {
@@ -664,7 +744,12 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     claudeProfilesLoading,
     selectedClaudeProfileId,
     setSelectedClaudeProfileId,
+    codexProfiles,
+    codexProfilesLoading,
+    selectedCodexProfileId,
+    setSelectedCodexProfileId,
     reloadClaudeProfiles: loadClaudeProfiles,
+    reloadCodexProfiles: loadCodexProfiles,
     hardRefreshProviderModels: () => loadProviderModels({ bypassCache: true }),
     selectProviderModel,
     setStoredProviderEffort,

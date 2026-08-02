@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
 
 import type { ChatImage } from '../../types/types';
+import { getTextDirection } from '../../../../utils/textDirection';
 
 interface MessageEditComposerProps {
   initialContent: string;
@@ -121,12 +122,12 @@ export default function MessageEditComposer({
       )}
       <textarea
         ref={textareaRef}
-        dir="auto"
+        dir={getTextDirection(value)}
         value={value}
         onChange={(event) => handleChange(event.target.value)}
         onKeyDown={handleKeyDown}
         rows={Math.min(8, Math.max(2, value.split('\n').length))}
-        className="bidi-plaintext block w-full resize-none border-0 bg-transparent text-sm leading-6 text-white placeholder:text-blue-100/60 focus:outline-none"
+        className="bidi-isolate block w-full resize-none border-0 bg-transparent text-sm leading-6 text-white placeholder:text-blue-100/60 focus:outline-none"
         placeholder={t('rewind.editPlaceholder', { defaultValue: 'Edit your message…' })}
       />
       {error && (

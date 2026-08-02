@@ -1,4 +1,0 @@
-interface:
-  display_name: "Software Delivery Team Planner"
-  short_description: "Turn accepted work into a safe plan"
-  default_prompt: "Use $software-delivery-team-planner to turn the accepted findings or requirements into a minimal implementation plan."

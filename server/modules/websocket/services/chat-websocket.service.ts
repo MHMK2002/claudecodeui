@@ -10,6 +10,7 @@ import type {
   AnyRecord,
   AuthenticatedWebSocketRequest,
   LLMProvider,
+  ProviderProfileProvider,
 } from '@/shared/types.js';
 import { parseIncomingJsonObject } from '@/shared/utils.js';
 
@@ -116,6 +117,10 @@ function readNumericUserId(userId: string | number | null): number | null {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
+function isProfileProvider(provider: LLMProvider): provider is ProviderProfileProvider {
+  return provider === 'claude' || provider === 'codex';
+}
+
 /**
  * Reports a protocol-level failure to the requesting client.
  *
@@ -178,28 +183,29 @@ async function handleChatSend(
     return;
   }
 
-  let claudeProviderProfile: AnyRecord | null = null;
-  if (provider === 'claude' && session.provider_profile_id) {
+  let providerProfile: AnyRecord | null = null;
+  if (isProfileProvider(provider) && session.provider_profile_id) {
     const numericUserId = readNumericUserId(userId);
     if (!numericUserId) {
       sendProtocolError(
         ws,
         'PROVIDER_PROFILE_AUTH_REQUIRED',
-        'A signed-in user is required to use this Claude provider profile.',
+        `A signed-in user is required to use this ${provider} provider profile.`,
         sessionId
       );
       return;
     }
 
-    claudeProviderProfile = providerProfilesDb.getClaudeProfileForRuntime(
+    providerProfile = providerProfilesDb.getProviderProfileForRuntime(
       numericUserId,
+      provider,
       Number(session.provider_profile_id),
     );
-    if (!claudeProviderProfile) {
+    if (!providerProfile) {
       sendProtocolError(
         ws,
         'PROVIDER_PROFILE_NOT_FOUND',
-        'The Claude provider profile for this session was not found or is inactive.',
+        `The ${provider} provider profile for this session was not found or is inactive.`,
         sessionId
       );
       return;
@@ -240,7 +246,8 @@ async function handleChatSend(
     resume: Boolean(session.provider_session_id),
     cwd: clientOptions.cwd ?? session.project_path ?? undefined,
     projectPath: session.project_path ?? clientOptions.projectPath,
-    claudeProviderProfile: claudeProviderProfile ?? undefined,
+    claudeProviderProfile: provider === 'claude' ? providerProfile ?? undefined : undefined,
+    codexProviderProfile: provider === 'codex' ? providerProfile ?? undefined : undefined,
   };
 
   try {

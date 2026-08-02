@@ -1,4 +1,0 @@
-interface:
-  display_name: "Software Delivery Team Plan Critic"
-  short_description: "Challenge implementation plans"
-  default_prompt: "Use $software-delivery-team-plan-critic to attack this plan for correctness, scope, sequencing, and risk."

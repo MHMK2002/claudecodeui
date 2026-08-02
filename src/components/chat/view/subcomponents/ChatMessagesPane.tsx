@@ -9,6 +9,7 @@ import type {
   LLMProvider,
   ProviderModelsDefinition,
   ClaudeProviderProfilePublic,
+  CodexProviderProfilePublic,
 } from '../../../../types/app';
 import { getIntrinsicMessageKey } from '../../utils/messageKeys';
 import { groupConsecutiveTools, isToolGroupItem } from '../../utils/toolGrouping';
@@ -48,6 +49,10 @@ interface ChatMessagesPaneProps {
   claudeProfilesLoading: boolean;
   selectedClaudeProfileId: number | null;
   setSelectedClaudeProfileId: (profileId: number | null) => void;
+  codexProfiles: CodexProviderProfilePublic[];
+  codexProfilesLoading: boolean;
+  selectedCodexProfileId: number | null;
+  setSelectedCodexProfileId: (profileId: number | null) => void;
   tasksEnabled: boolean;
   isTaskMasterInstalled: boolean | null;
   onShowAllTasks?: (() => void) | null;
@@ -122,6 +127,10 @@ function ChatMessagesPane({
   claudeProfilesLoading,
   selectedClaudeProfileId,
   setSelectedClaudeProfileId,
+  codexProfiles,
+  codexProfilesLoading,
+  selectedCodexProfileId,
+  setSelectedCodexProfileId,
   tasksEnabled,
   isTaskMasterInstalled,
   onShowAllTasks,
@@ -233,6 +242,10 @@ function ChatMessagesPane({
           claudeProfilesLoading={claudeProfilesLoading}
           selectedClaudeProfileId={selectedClaudeProfileId}
           setSelectedClaudeProfileId={setSelectedClaudeProfileId}
+          codexProfiles={codexProfiles}
+          codexProfilesLoading={codexProfilesLoading}
+          selectedCodexProfileId={selectedCodexProfileId}
+          setSelectedCodexProfileId={setSelectedCodexProfileId}
           tasksEnabled={tasksEnabled}
           isTaskMasterInstalled={isTaskMasterInstalled}
           onShowAllTasks={onShowAllTasks}

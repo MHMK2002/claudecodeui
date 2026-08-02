@@ -1,4 +1,0 @@
-interface:
-  display_name: "Software Delivery Team Responder"
-  short_description: "Answer review findings with evidence"
-  default_prompt: "Use $software-delivery-team-responder to respond to these review findings with evidence."

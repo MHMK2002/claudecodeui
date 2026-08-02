@@ -47,6 +47,7 @@ interface UseChatComposerStateArgs {
   currentProviderEffort: string;
   opencodeModel: string;
   selectedClaudeProfileId: number | null;
+  selectedCodexProfileId: number | null;
   isLoading: boolean;
   canAbortSession: boolean;
   tokenBudget: Record<string, unknown> | null;
@@ -171,6 +172,14 @@ export type QueuedDraft = {
 export type VoiceOrigin = {
   key: string | null;
   options: QueuedSendOptions;
+  /**
+   * Project + provider identity of the origin session, snapshotted at commit time.
+   * Lets a transcript dictated in a brand-new (not-yet-created) chat allocate that
+   * chat's session and be delivered there even after the user has switched away.
+   */
+  projectPath: string;
+  provider: LLMProvider;
+  providerProfileId: number | null;
 };
 
 const restoreQueuedDraft = (sessionKey: string): QueuedDraft | null => {
@@ -211,6 +220,7 @@ export function useChatComposerState({
     currentProviderEffort,
     opencodeModel,
     selectedClaudeProfileId,
+    selectedCodexProfileId,
     isLoading,
   canAbortSession,
   tokenBudget,
@@ -253,6 +263,13 @@ export function useChatComposerState({
   // to currentSessionId for a just-established session that hasn't been
   // handed back to the parent's `selectedSession` prop yet.
   const sessionKey = selectedSession?.id || currentSessionId || null;
+  // Live mirror of the viewed session key. handleVoiceTranscript is captured by the
+  // in-flight recorder's onstop when recording STARTS, so reading selectedSession /
+  // currentSessionId from its closure would see the ORIGIN session, not the one on
+  // screen when the transcript resolves. Reading through this ref makes the
+  // "did the user switch away?" check reflect delivery time.
+  const sessionKeyRef = useRef<string | null>(sessionKey);
+  sessionKeyRef.current = sessionKey;
 
   const [queuedDraft, setQueuedDraft] = useState<QueuedDraft | null>(() => {
     if (typeof window === 'undefined' || !sessionKey) {
@@ -656,6 +673,41 @@ export function useChatComposerState({
     selectedSession,
   ]);
 
+  // Allocate a stable backend session id for a brand-new conversation via the
+  // session gateway (POST /api/providers/sessions). Returns null on failure and
+  // logs; the caller decides what to do with the id — establish + navigate in
+  // handleSubmit, or an out-of-band dispatch for a voice transcript that resolved
+  // after the user left the origin chat.
+  const createProviderSessionId = useCallback(
+    async (args: {
+      provider: LLMProvider;
+      projectPath: string;
+      providerProfileId: number | null;
+    }): Promise<string | null> => {
+      try {
+        const response = await authenticatedFetch('/api/providers/sessions', {
+          method: 'POST',
+          body: JSON.stringify({
+            provider: args.provider,
+            projectPath: args.projectPath,
+            providerProfileId: args.provider === 'claude' || args.provider === 'codex'
+              ? args.providerProfileId
+              : null,
+          }),
+        });
+        if (!response.ok) {
+          throw new Error(`Failed to create session (${response.status})`);
+        }
+        const body = await response.json();
+        return body?.data?.sessionId || null;
+      } catch (error) {
+        console.error('Session creation failed:', error);
+        return null;
+      }
+    },
+    [],
+  );
+
   const handleSubmit = useCallback(
     async (
       event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>,
@@ -769,35 +821,20 @@ export function useChatComposerState({
       // handoff later — this id stays valid for the conversation's lifetime.
       let targetSessionId = selectedSession?.id || currentSessionId || null;
       if (!targetSessionId) {
-        try {
-          const response = await authenticatedFetch('/api/providers/sessions', {
-            method: 'POST',
-            body: JSON.stringify({
-              provider,
-              projectPath: resolvedProjectPath,
-              providerProfileId: provider === 'claude' ? selectedClaudeProfileId : null,
-            }),
-          });
-          if (!response.ok) {
-            throw new Error(`Failed to create session (${response.status})`);
-          }
-          const body = await response.json();
-          targetSessionId = body?.data?.sessionId || null;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Unknown error';
-          console.error('Session creation failed:', error);
-          addMessage({
-            type: 'error',
-            content: `Failed to start a new session: ${message}`,
-            timestamp: new Date(),
-          });
-          return;
-        }
+        targetSessionId = await createProviderSessionId({
+          provider,
+          projectPath: resolvedProjectPath,
+          providerProfileId: provider === 'claude'
+            ? selectedClaudeProfileId
+            : provider === 'codex'
+              ? selectedCodexProfileId
+              : null,
+        });
 
         if (!targetSessionId) {
           addMessage({
             type: 'error',
-            content: 'Failed to start a new session: no session id returned.',
+            content: 'Failed to start a new session. Please try again.',
             timestamp: new Date(),
           });
           return;
@@ -860,6 +897,7 @@ export function useChatComposerState({
       selectedSession,
       attachedImages,
       buildSendOptions,
+      createProviderSessionId,
       currentSessionId,
       executeCommand,
       isLoading,
@@ -867,6 +905,7 @@ export function useChatComposerState({
       onSessionEstablished,
       provider,
       selectedClaudeProfileId,
+      selectedCodexProfileId,
       resetCommandMenuState,
       scrollToBottom,
       selectedProject,
@@ -949,50 +988,82 @@ export function useChatComposerState({
   const captureVoiceOrigin = useCallback((): VoiceOrigin => ({
     key: selectedSession?.id || currentSessionId || null,
     options: buildSendOptions(''),
-  }), [selectedSession, currentSessionId, buildSendOptions]);
+    projectPath: selectedProject?.fullPath || selectedProject?.path || '',
+    provider,
+    providerProfileId: provider === 'claude'
+      ? selectedClaudeProfileId
+      : provider === 'codex'
+        ? selectedCodexProfileId
+        : null,
+  }), [
+    selectedSession,
+    currentSessionId,
+    buildSendOptions,
+    selectedProject,
+    provider,
+    selectedClaudeProfileId,
+    selectedCodexProfileId,
+  ]);
 
   // A voice transcript either fills the input (to edit before sending) or, when the
   // user tapped "stop and send", is submitted straight away. Mirror the value into
   // inputValueRef synchronously so handleSubmit reads the new text, not the stale state.
-  const handleVoiceTranscript = useCallback((text: string, send?: boolean, origin?: unknown) => {
+  const handleVoiceTranscript = useCallback(async (text: string, send?: boolean, origin?: unknown) => {
     const trimmed = text.trim();
     if (!trimmed) return;
 
-    const activeKey = selectedSession?.id || currentSessionId || null;
+    // Read the chat on screen NOW (delivery time), not the one this callback closed
+    // over when recording started — see sessionKeyRef above.
+    const activeKey = sessionKeyRef.current;
     const voiceOrigin = origin as VoiceOrigin | undefined;
+    const originKey = voiceOrigin?.key ?? null;
 
-    // The recording was committed in a session that is no longer open. Route the
-    // transcript to that origin session out-of-band instead of the composer's now-
-    // stale current-session path — this both stops a switched-away transcript from
-    // hijacking the open session and lets a fresh recording start here undisturbed.
-    if (voiceOrigin?.key && voiceOrigin.key !== activeKey) {
+    // The recording was committed in a chat that is no longer on screen — including a
+    // brand-new chat whose session id was still null at commit time. Route the
+    // transcript to that origin out-of-band instead of the composer's now-stale
+    // current-session path — this both stops a switched-away transcript from
+    // hijacking the open chat and lets a fresh recording start here undisturbed.
+    if (voiceOrigin && originKey !== activeKey) {
       if (send) {
-        // Same session-addressed dispatch the app-level auto-send uses; the backend
-        // resolves provider/path from the session row. No optimistic addMessage — the
-        // user message surfaces when they reopen the origin session.
-        sendMessage({
-          type: 'chat.send',
-          sessionId: voiceOrigin.key,
-          content: trimmed,
-          options: { ...(voiceOrigin.options ?? {}), images: [] },
-        });
-        onSessionProcessing?.(voiceOrigin.key, { statusText: null, canInterrupt: true });
-      } else {
-        // "Fill the box" for a session we've left: stash it as that session's queued
-        // draft so it's waiting in the composer when the user returns.
-        writeQueuedMessage(voiceOrigin.key, { content: trimmed, options: voiceOrigin.options });
+        let target = originKey;
+        if (!target) {
+          // Brand-new origin chat: allocate its session now. A transcript exists, so
+          // this can't leave an orphan session behind.
+          target = await createProviderSessionId({
+            provider: voiceOrigin.provider,
+            projectPath: voiceOrigin.projectPath,
+            providerProfileId: voiceOrigin.providerProfileId,
+          });
+        }
+        if (target) {
+          // Same session-addressed dispatch the app-level auto-send uses; the backend
+          // resolves provider/path from the session row. No optimistic addMessage —
+          // the user message surfaces when they reopen the origin session.
+          sendMessage({
+            type: 'chat.send',
+            sessionId: target,
+            content: trimmed,
+            options: { ...(voiceOrigin.options ?? {}), images: [] },
+          });
+          onSessionProcessing?.(target, { statusText: null, canInterrupt: true });
+        }
+      } else if (originKey) {
+        // "Fill the box" for a chat we've left: stash it as that session's queued
+        // draft so it's waiting in the composer when the user returns. A brand-new
+        // origin chat has no key to stash under, so its fill is dropped.
+        writeQueuedMessage(originKey, { content: trimmed, options: voiceOrigin.options });
       }
       return;
     }
 
-    // Origin is the open session (or unknown / brand-new): fill the box inline and,
-    // when the user tapped "stop and send", submit straight away.
+    // Origin is the open chat (or unknown / the same brand-new chat): fill the box
+    // inline and, when the user tapped "stop and send", submit straight away.
     const base = inputValueRef.current.trim();
     const next = base ? `${base} ${trimmed}` : trimmed;
     setInput(next);
     inputValueRef.current = next;
     if (send) handleSubmitRef.current?.(createFakeSubmitEvent());
-  }, [selectedSession, currentSessionId, sendMessage, onSessionProcessing, setInput]);
+  }, [sendMessage, onSessionProcessing, setInput, createProviderSessionId]);
 
   useEffect(() => {
     inputValueRef.current = input;

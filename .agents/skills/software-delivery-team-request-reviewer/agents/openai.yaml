@@ -1,4 +1,0 @@
-interface:
-  display_name: "Software Delivery Team Request Reviewer"
-  short_description: "Review raw requests for gaps and conflicts"
-  default_prompt: "Use $software-delivery-team-request-reviewer to inspect this feature request for ambiguity, conflicts, and product decisions."

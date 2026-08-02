@@ -101,10 +101,11 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
     () => formatUsageLimitText(String(message.content || '')),
     [message.content]
   );
-  // Plain (non-isolated) content. Direction is handled natively by dir="auto"
-  // on the container plus the .bidi-isolate CSS class; the Markdown renderer
-  // additionally sets per-block dir. Wrapping the string with FSI/PDI here used
-  // to break Persian markdown headings/lists (marker + space folded apart).
+  // Plain (non-isolated) content. Direction comes from getTextDirection (any
+  // strong RTL char => rtl, so an English-first Persian line still reads RTL)
+  // plus the .bidi-isolate CSS class; the Markdown renderer additionally sets
+  // per-block dir. Wrapping the string with FSI/PDI here used to break Persian
+  // markdown headings/lists (marker + space folded apart).
   const plainContent = String(message.content || '');
   const assistantCopyContent = message.isToolUse
     ? String(message.displayText || message.content || '')
@@ -157,7 +158,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
             )}
             {userCopyContent.trim().length > 0 || !message.images?.length ? (
               <div className="group max-w-full rounded-2xl rounded-br-md bg-blue-600 px-3 py-2 text-white shadow-sm sm:px-4">
-                <div dir="auto" className="bidi-isolate whitespace-pre-wrap break-words font-serif text-sm">
+                <div dir={getTextDirection(plainContent)} className="bidi-isolate whitespace-pre-wrap break-words font-serif text-sm">
                   {plainContent}
                 </div>
                 <div className="mt-1 flex items-center justify-end gap-1 text-xs text-blue-100">
@@ -212,7 +213,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
         <div className="w-full">
           <div className="flex items-center gap-2 py-0.5">
             <span className={`inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full ${message.taskStatus === 'completed' ? 'bg-green-400 dark:bg-green-500' : 'bg-amber-400 dark:bg-amber-500'}`} />
-            <span dir="auto" className="bidi-isolate text-xs text-gray-500 dark:text-gray-400">{plainContent}</span>
+            <span dir={getTextDirection(plainContent)} className="bidi-isolate text-xs text-gray-500 dark:text-gray-400">{plainContent}</span>
           </div>
         </div>
       ) : (

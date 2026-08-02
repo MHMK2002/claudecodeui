@@ -25,6 +25,49 @@ import { createCompleteMessage, createNormalizedMessage } from './shared/utils.j
 
 const activeCodexSessions = new Map();
 
+function buildCodexProviderProfileSdkOptions(profile) {
+  if (!profile || typeof profile !== 'object') {
+    return {
+      env: { ...process.env },
+      config: {
+        model_provider: CODEX_MODEL_PROVIDER_ID,
+      },
+    };
+  }
+
+  const profileId = Number(profile.id);
+  const secretValue = typeof profile.secretValue === 'string' ? profile.secretValue.trim() : '';
+  const baseUrl = typeof profile.baseUrl === 'string' ? profile.baseUrl.trim() : '';
+  if (!Number.isInteger(profileId) || profileId <= 0 || !secretValue || !baseUrl) {
+    throw new Error('Codex provider profile is incomplete.');
+  }
+
+  const providerId = `cloudcli_codex_profile_${profileId}`;
+  const envKey = `CLOUDCLI_CODEX_PROFILE_${profileId}_API_KEY`;
+  const providerName = typeof profile.title === 'string' && profile.title.trim()
+    ? profile.title.trim()
+    : providerId;
+
+  return {
+    env: {
+      ...process.env,
+      [envKey]: secretValue,
+    },
+    config: {
+      model_provider: providerId,
+      model_providers: {
+        [providerId]: {
+          name: providerName,
+          base_url: baseUrl,
+          env_key: envKey,
+          wire_api: 'responses',
+          supports_websockets: true,
+        },
+      },
+    },
+  };
+}
+
 function readUsageNumber(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -258,10 +301,10 @@ export async function queryCodex(command, options = {}, ws) {
   const abortController = new AbortController();
 
   try {
+    const codexProviderOptions = buildCodexProviderProfileSdkOptions(options.codexProviderProfile);
     codex = new Codex({
-      config: {
-        model_provider: CODEX_MODEL_PROVIDER_ID,
-      },
+      env: codexProviderOptions.env,
+      config: codexProviderOptions.config,
     });
 
     const threadOptions = {

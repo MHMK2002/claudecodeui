@@ -23,6 +23,12 @@ export type VoiceConfig = {
   cleanupEnabled: boolean;
   cleanupModel: string;
   cleanupPrompt: string;
+  /**
+   * Preferred microphone (MediaDeviceInfo.deviceId) for dictation. '' = system
+   * default. Used client-side only, as a getUserMedia constraint in useVoiceInput;
+   * not sent to the voice proxy.
+   */
+  micDeviceId: string;
 };
 
 const STORAGE_KEY = 'voiceConfig';
@@ -39,6 +45,7 @@ const DEFAULTS: VoiceConfig = {
   cleanupEnabled: false,
   cleanupModel: 'gpt-4o-mini',
   cleanupPrompt: DEFAULT_CLEANUP_PROMPT,
+  micDeviceId: '',
 };
 
 const STT_PROVIDERS: VoiceSttProvider[] = ['openai', 'soniox'];
@@ -71,7 +78,9 @@ export function readVoiceConfig(): VoiceConfig {
 }
 
 // Headers the voice proxy reads to target a per-user OpenAI-compatible backend.
-// Empty fields are omitted so the server's env defaults apply.
+// Empty fields are omitted so the server's env defaults apply. Soniox fields
+// (sttProvider, sonioxApiKey) aren't included — that provider streams over the
+// /voice-stream WebSocket relay instead, which resolves its own key.
 export function voiceConfigHeaders(): Record<string, string> {
   if (typeof window === 'undefined') return {};
   const c = readVoiceConfig();
@@ -81,8 +90,6 @@ export function voiceConfigHeaders(): Record<string, string> {
   if (c.ttsModel) h['x-voice-tts-model'] = c.ttsModel;
   if (c.ttsVoice) h['x-voice-tts-voice'] = c.ttsVoice;
   if (c.ttsFormat.trim()) h['x-voice-tts-format'] = c.ttsFormat.trim();
-  if (c.sttProvider !== 'openai') h['x-voice-stt-provider'] = c.sttProvider;
-  if (c.sonioxApiKey) h['x-soniox-api-key'] = c.sonioxApiKey;
   if (c.cleanupEnabled) {
     h['x-voice-cleanup'] = '1';
     if (c.cleanupModel.trim()) h['x-voice-cleanup-model'] = c.cleanupModel.trim();

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Software Delivery Team Adversary"
-  short_description: "Attack implemented changes for regressions"
-  default_prompt: "Use $software-delivery-team-adversary to adversarially test this implemented change for regressions and edge cases."

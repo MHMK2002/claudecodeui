@@ -1,4 +1,0 @@
-interface:
-  display_name: "Software Delivery Team Implementer"
-  short_description: "Implement only the approved plan"
-  default_prompt: "Use $software-delivery-team-implementer to execute this approved plan and report blockers instead of guessing."

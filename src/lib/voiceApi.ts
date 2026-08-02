@@ -1,28 +1,45 @@
 import { authenticatedFetch } from '../utils/api';
 import { DEFAULT_CLEANUP_PROMPT, readVoiceConfig, voiceConfigHeaders } from '../hooks/useVoiceConfig';
+import { IS_PLATFORM } from '../constants/config';
 
 function directUrl(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/$/, '')}${path}`;
+}
+
+/**
+ * URL for the real-time Soniox STT relay (server/modules/websocket/services/
+ * voice-stream-proxy.service.ts). Mirrors getShellWebSocketUrl's auth handling:
+ * platform mode needs no token, otherwise the JWT rides along as a query param
+ * (a native WebSocket can't set an Authorization header).
+ */
+export function getVoiceStreamWebSocketUrl(): string | null {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+
+  if (IS_PLATFORM) {
+    return `${protocol}//${window.location.host}/voice-stream`;
+  }
+
+  const token = localStorage.getItem('auth-token');
+  if (!token) {
+    console.error('No authentication token found for voice stream WebSocket connection');
+    return null;
+  }
+
+  return `${protocol}//${window.location.host}/voice-stream?token=${encodeURIComponent(token)}`;
 }
 
 export function voiceConfigSignature(): string {
   return JSON.stringify(readVoiceConfig());
 }
 
+/**
+ * Uploads a finished recording for transcription. Not used for the 'soniox'
+ * provider — that streams live over the /voice-stream WebSocket relay
+ * (see useVoiceInput.ts) instead of uploading a completed blob.
+ */
 export function transcribeVoice(blob: Blob, filename: string): Promise<Response> {
   const config = readVoiceConfig();
   const body = new FormData();
-
-  // Soniox is a fixed SaaS backend (no user baseUrl); always go through the
-  // server proxy, which holds the API key and runs the async flow.
-  if (config.sttProvider === 'soniox') {
-    body.append('audio', blob, filename);
-    return authenticatedFetch('/api/voice/soniox-transcribe', {
-      method: 'POST',
-      headers: voiceConfigHeaders(),
-      body,
-    });
-  }
 
   if (config.baseUrl.trim()) {
     body.append('file', blob, filename);

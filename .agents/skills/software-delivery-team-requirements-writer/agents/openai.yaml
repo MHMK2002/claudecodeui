@@ -1,4 +1,0 @@
-interface:
-  display_name: "Software Delivery Team Requirements Writer"
-  short_description: "Write implementation-ready requirements"
-  default_prompt: "Use $software-delivery-team-requirements-writer to convert the clarified request into an implementation-ready requirements document."

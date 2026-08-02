@@ -238,8 +238,14 @@ const markdownComponents = {
   ),
 };
 
-export function Markdown({ children, className }: MarkdownProps) {
-  const content = normalizeInlineCodeFences(String(children ?? ''));
+// Memoized: markdown parsing plus Prism highlighting is the single most
+// expensive thing a chat message does, and the transcript keeps dozens of
+// these mounted. Without `memo`, any re-render of the message pane (a
+// keystroke in the composer, a streaming frame) re-parsed and re-highlighted
+// every block. All call sites pass a plain string child, so the default
+// shallow compare is enough; theme/palette still arrive via context.
+function MarkdownComponent({ children, className }: MarkdownProps) {
+  const content = useMemo(() => normalizeInlineCodeFences(String(children ?? '')), [children]);
   const remarkPlugins = useMemo(() => [remarkGfm, remarkMath], []);
   const rehypePlugins = useMemo(() => [rehypeKatex], []);
   const { openFileInEditor } = usePaletteOps();
@@ -291,3 +297,5 @@ export function Markdown({ children, className }: MarkdownProps) {
     </div>
   );
 }
+
+export const Markdown = React.memo(MarkdownComponent);

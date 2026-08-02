@@ -10,10 +10,11 @@ import { sessionConversationsSearchService } from '@/modules/providers/services/
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import type {
   LLMProvider,
-  ClaudeProviderProfileAuthType,
   McpScope,
   McpTransport,
   ProviderChangeActiveModelInput,
+  ProviderProfileAuthType,
+  ProviderProfileProvider,
   ProviderSkillCreateFile,
   ProviderSkillCreateInput,
   UpsertProviderMcpServerInput,
@@ -165,7 +166,37 @@ const parseOptionalProviderProfileId = (value: unknown): number | null => {
   return parsed;
 };
 
-const parseClaudeProfileAuthType = (value: unknown): ClaudeProviderProfileAuthType => {
+const isProfileProvider = (provider: LLMProvider): provider is ProviderProfileProvider => (
+  provider === 'claude' || provider === 'codex'
+);
+
+const parseProfileProvider = (value: unknown): ProviderProfileProvider => {
+  const provider = parseProvider(value);
+  if (!isProfileProvider(provider)) {
+    throw new AppError('Provider profiles are currently supported for Claude and Codex only.', {
+      code: 'PROVIDER_PROFILES_UNSUPPORTED',
+      statusCode: 404,
+    });
+  }
+
+  return provider;
+};
+
+const parseProviderProfileAuthType = (
+  provider: ProviderProfileProvider,
+  value: unknown,
+): ProviderProfileAuthType => {
+  if (provider === 'codex') {
+    if (value === undefined || value === null || value === '' || value === 'api_key') {
+      return 'api_key';
+    }
+
+    throw new AppError('Codex provider profiles support api_key auth only.', {
+      code: 'INVALID_PROVIDER_PROFILE_AUTH_TYPE',
+      statusCode: 400,
+    });
+  }
+
   if (value === undefined || value === null || value === '') {
     return 'auth_token';
   }
@@ -194,7 +225,7 @@ const readOptionalBodyString = (body: Record<string, unknown>, key: string): str
   return value.trim();
 };
 
-const parseClaudeProfileBaseUrl = (value: string | undefined): string | null | undefined => {
+const parseProviderProfileBaseUrl = (value: string | undefined): string | null | undefined => {
   if (value === undefined) {
     return undefined;
   }
@@ -216,13 +247,16 @@ const parseClaudeProfileBaseUrl = (value: string | undefined): string | null | u
   }
 };
 
-const readClaudeProfileSecret = (body: Record<string, unknown>): string | undefined => (
+const readProviderProfileSecret = (body: Record<string, unknown>): string | undefined => (
   readOptionalBodyString(body, 'secretValue')
   ?? readOptionalBodyString(body, 'token')
   ?? readOptionalBodyString(body, 'secret')
 );
 
-const parseClaudeProfileCreatePayload = (payload: unknown) => {
+const parseProviderProfileCreatePayload = (
+  provider: ProviderProfileProvider,
+  payload: unknown,
+) => {
   if (!payload || typeof payload !== 'object') {
     throw new AppError('Request body must be an object.', {
       code: 'INVALID_REQUEST_BODY',
@@ -232,7 +266,7 @@ const parseClaudeProfileCreatePayload = (payload: unknown) => {
 
   const body = payload as Record<string, unknown>;
   const title = readOptionalBodyString(body, 'title');
-  const secretValue = readClaudeProfileSecret(body);
+  const secretValue = readProviderProfileSecret(body);
   if (!title) {
     throw new AppError('title is required.', {
       code: 'PROVIDER_PROFILE_TITLE_REQUIRED',
@@ -245,18 +279,28 @@ const parseClaudeProfileCreatePayload = (payload: unknown) => {
       statusCode: 400,
     });
   }
+  const baseUrl = parseProviderProfileBaseUrl(readOptionalBodyString(body, 'baseUrl')) ?? null;
+  if (provider === 'codex' && !baseUrl) {
+    throw new AppError('baseUrl is required for Codex provider profiles.', {
+      code: 'PROVIDER_PROFILE_BASE_URL_REQUIRED',
+      statusCode: 400,
+    });
+  }
 
   return {
     title,
-    baseUrl: parseClaudeProfileBaseUrl(readOptionalBodyString(body, 'baseUrl')) ?? null,
-    authType: parseClaudeProfileAuthType(body.authType),
+    baseUrl,
+    authType: parseProviderProfileAuthType(provider, body.authType),
     secretValue,
     isDefault: body.isDefault === true,
     isActive: body.isActive !== false,
   };
 };
 
-const parseClaudeProfileUpdatePayload = (payload: unknown) => {
+const parseProviderProfileUpdatePayload = (
+  provider: ProviderProfileProvider,
+  payload: unknown,
+) => {
   if (!payload || typeof payload !== 'object') {
     throw new AppError('Request body must be an object.', {
       code: 'INVALID_REQUEST_BODY',
@@ -266,8 +310,8 @@ const parseClaudeProfileUpdatePayload = (payload: unknown) => {
 
   const body = payload as Record<string, unknown>;
   const title = readOptionalBodyString(body, 'title');
-  const baseUrl = parseClaudeProfileBaseUrl(readOptionalBodyString(body, 'baseUrl'));
-  const secretValue = readClaudeProfileSecret(body);
+  const baseUrl = parseProviderProfileBaseUrl(readOptionalBodyString(body, 'baseUrl'));
+  const secretValue = readProviderProfileSecret(body);
 
   if (title !== undefined && !title) {
     throw new AppError('title must not be empty.', {
@@ -275,11 +319,17 @@ const parseClaudeProfileUpdatePayload = (payload: unknown) => {
       statusCode: 400,
     });
   }
+  if (provider === 'codex' && baseUrl === null) {
+    throw new AppError('baseUrl must not be empty for Codex provider profiles.', {
+      code: 'PROVIDER_PROFILE_BASE_URL_REQUIRED',
+      statusCode: 400,
+    });
+  }
 
   return {
     ...(title !== undefined ? { title } : {}),
     ...(baseUrl !== undefined ? { baseUrl } : {}),
-    ...(body.authType !== undefined ? { authType: parseClaudeProfileAuthType(body.authType) } : {}),
+    ...(body.authType !== undefined ? { authType: parseProviderProfileAuthType(provider, body.authType) } : {}),
     ...(secretValue ? { secretValue } : {}),
     ...(body.isDefault !== undefined ? { isDefault: body.isDefault === true } : {}),
     ...(body.isActive !== undefined ? { isActive: body.isActive === true } : {}),
@@ -562,9 +612,9 @@ router.get(
   asyncHandler(async (req: Request, res: Response) => {
     const provider = parseProvider(req.params.provider);
     const status = await providerAuthService.getProviderAuthStatus(provider);
-    if (provider === 'claude' && status.installed && !status.authenticated) {
+    if (isProfileProvider(provider) && status.installed && !status.authenticated) {
       const userId = readAuthenticatedUserId(req);
-      if (providerProfilesDb.countActiveClaudeProfiles(userId) > 0) {
+      if (providerProfilesDb.countActiveProviderProfiles(userId, provider) > 0) {
         res.json(createApiSuccessResponse({
           ...status,
           authenticated: true,
@@ -582,18 +632,12 @@ router.get(
 router.get(
   '/:provider/profiles',
   asyncHandler(async (req: Request, res: Response) => {
-    const provider = parseProvider(req.params.provider);
-    if (provider !== 'claude') {
-      throw new AppError('Provider profiles are currently supported for Claude only.', {
-        code: 'PROVIDER_PROFILES_UNSUPPORTED',
-        statusCode: 404,
-      });
-    }
+    const provider = parseProfileProvider(req.params.provider);
 
     const userId = readAuthenticatedUserId(req);
     res.json(createApiSuccessResponse({
       provider,
-      profiles: providerProfilesDb.listClaudeProfiles(userId),
+      profiles: providerProfilesDb.listProviderProfiles(userId, provider),
     }));
   }),
 );
@@ -601,18 +645,13 @@ router.get(
 router.post(
   '/:provider/profiles',
   asyncHandler(async (req: Request, res: Response) => {
-    const provider = parseProvider(req.params.provider);
-    if (provider !== 'claude') {
-      throw new AppError('Provider profiles are currently supported for Claude only.', {
-        code: 'PROVIDER_PROFILES_UNSUPPORTED',
-        statusCode: 404,
-      });
-    }
+    const provider = parseProfileProvider(req.params.provider);
 
     const userId = readAuthenticatedUserId(req);
-    const profile = providerProfilesDb.createClaudeProfile(
+    const profile = providerProfilesDb.createProviderProfile(
       userId,
-      parseClaudeProfileCreatePayload(req.body),
+      provider,
+      parseProviderProfileCreatePayload(provider, req.body),
     );
     res.status(201).json(createApiSuccessResponse({ provider, profile }));
   }),
@@ -621,20 +660,15 @@ router.post(
 router.patch(
   '/:provider/profiles/:profileId',
   asyncHandler(async (req: Request, res: Response) => {
-    const provider = parseProvider(req.params.provider);
-    if (provider !== 'claude') {
-      throw new AppError('Provider profiles are currently supported for Claude only.', {
-        code: 'PROVIDER_PROFILES_UNSUPPORTED',
-        statusCode: 404,
-      });
-    }
+    const provider = parseProfileProvider(req.params.provider);
 
     const userId = readAuthenticatedUserId(req);
     const profileId = parseProviderProfileId(req.params.profileId);
-    const profile = providerProfilesDb.updateClaudeProfile(
+    const profile = providerProfilesDb.updateProviderProfile(
       userId,
+      provider,
       profileId,
-      parseClaudeProfileUpdatePayload(req.body),
+      parseProviderProfileUpdatePayload(provider, req.body),
     );
     if (!profile) {
       throw new AppError('Provider profile not found.', {
@@ -650,17 +684,11 @@ router.patch(
 router.delete(
   '/:provider/profiles/:profileId',
   asyncHandler(async (req: Request, res: Response) => {
-    const provider = parseProvider(req.params.provider);
-    if (provider !== 'claude') {
-      throw new AppError('Provider profiles are currently supported for Claude only.', {
-        code: 'PROVIDER_PROFILES_UNSUPPORTED',
-        statusCode: 404,
-      });
-    }
+    const provider = parseProfileProvider(req.params.provider);
 
     const userId = readAuthenticatedUserId(req);
     const profileId = parseProviderProfileId(req.params.profileId);
-    if (!providerProfilesDb.deleteClaudeProfile(userId, profileId)) {
+    if (!providerProfilesDb.deleteProviderProfile(userId, provider, profileId)) {
       throw new AppError('Provider profile not found.', {
         code: 'PROVIDER_PROFILE_NOT_FOUND',
         statusCode: 404,
@@ -823,16 +851,17 @@ router.post(
     const provider = parseProvider(body.provider);
     const projectPath = typeof body.projectPath === 'string' ? body.projectPath : '';
     const providerProfileId = parseOptionalProviderProfileId(body.providerProfileId);
-    if (providerProfileId !== null && provider !== 'claude') {
-      throw new AppError('providerProfileId is currently supported for Claude sessions only.', {
+    if (providerProfileId !== null && !isProfileProvider(provider)) {
+      throw new AppError('providerProfileId is currently supported for Claude and Codex sessions only.', {
         code: 'PROVIDER_PROFILE_UNSUPPORTED',
         statusCode: 400,
       });
     }
 
     if (providerProfileId !== null) {
+      const profileProvider = parseProfileProvider(provider);
       const userId = readAuthenticatedUserId(req);
-      const profile = providerProfilesDb.getClaudeProfileForRuntime(userId, providerProfileId);
+      const profile = providerProfilesDb.getProviderProfileForRuntime(userId, profileProvider, providerProfileId);
       if (!profile) {
         throw new AppError('Provider profile not found or inactive.', {
           code: 'PROVIDER_PROFILE_NOT_FOUND',

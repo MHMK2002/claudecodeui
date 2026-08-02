@@ -82,3 +82,24 @@ test('app-created sessions persist the selected Claude provider profile', async 
     assert.equal(session?.provider_profile_id, profile.id);
   });
 });
+
+test('Codex provider profiles can be stored for app-created sessions', async () => {
+  await withIsolatedDatabase((userId) => {
+    const profile = providerProfilesDb.createCodexProfile(userId, {
+      title: 'OpenRouter',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      secretValue: 'sk-or-codex-token',
+    });
+
+    assert.equal(profile.provider, 'codex');
+    assert.equal(profile.authType, 'api_key');
+    assert.equal(profile.hasSecret, true);
+
+    sessionsDb.createAppSession('codex-session-with-profile', 'codex', '/workspace/demo', profile.id);
+
+    const runtimeProfile = providerProfilesDb.getCodexProfileForRuntime(userId, profile.id);
+    const session = sessionsDb.getSessionById('codex-session-with-profile');
+    assert.equal(runtimeProfile?.secretValue, 'sk-or-codex-token');
+    assert.equal(session?.provider_profile_id, profile.id);
+  });
+});

@@ -31,6 +31,7 @@ import {
   PromptInputButton,
   PromptInputSubmit,
 } from '../../../../shared/view/ui';
+import { getTextDirection } from '../../../../utils/textDirection';
 
 import CommandMenu from './CommandMenu';
 import ActivityIndicator from './ActivityIndicator';
@@ -116,6 +117,12 @@ interface ChatComposerProps {
   placeholder: string;
   isTextareaExpanded: boolean;
   sendByCtrlEnter?: boolean;
+  /**
+   * The chat currently on screen. When it changes while a recording/transcription is
+   * still in flight, the shared voice state is detached so the new chat's composer is
+   * usable immediately (the in-flight transcript still delivers to its origin chat).
+   */
+  viewedSessionKey?: string | null;
 }
 
 export default function ChatComposer({
@@ -175,6 +182,7 @@ export default function ChatComposer({
   placeholder,
   isTextareaExpanded,
   sendByCtrlEnter,
+  viewedSessionKey,
 }: ChatComposerProps) {
   const { t } = useTranslation('chat');
   const commandMenuPosition = useMemo(() => {
@@ -203,7 +211,7 @@ export default function ChatComposer({
     if (voiceErrorTimer.current) clearTimeout(voiceErrorTimer.current);
   }, []);
   const noopTranscript = useCallback(() => {}, []);
-  const { state: voiceState, stop: voiceStop, start: voiceStart } = useVoiceInput(
+  const { state: voiceState, stop: voiceStop, start: voiceStart, detach: voiceDetach } = useVoiceInput(
     onVoiceTranscript ?? noopTranscript,
     handleVoiceError,
   );
@@ -218,6 +226,19 @@ export default function ChatComposer({
     if (voiceState === 'recording') voiceStopCommit({ send: false });
     else if (voiceState === 'idle') voiceStart();
   }, [voiceState, voiceStopCommit, voiceStart]);
+  // Reset the shared voice state when the viewed chat changes so a transcription
+  // still resolving for the previous chat doesn't leave the new chat's mic/Send
+  // buttons stuck in the spinner. The in-flight transcript keeps delivering to its
+  // captured origin; the new chat gets a fresh, recordable composer. voiceState is
+  // read via a ref so this fires on session change only, not on every transition.
+  const voiceStateRef = useRef(voiceState);
+  voiceStateRef.current = voiceState;
+  const prevViewedSessionKeyRef = useRef(viewedSessionKey);
+  useEffect(() => {
+    if (prevViewedSessionKeyRef.current === viewedSessionKey) return;
+    prevViewedSessionKeyRef.current = viewedSessionKey;
+    if (voiceStateRef.current !== 'idle') voiceDetach();
+  }, [viewedSessionKey, voiceDetach]);
   const { preferences } = useUiPreferences();
   useHoldToTalk(
     !!voiceAvailable && !!preferences.voiceEnabled && !!preferences.voiceHoldToTalk,
@@ -427,8 +448,8 @@ export default function ChatComposer({
           <PromptInputBody>
             <div ref={inputHighlightRef} aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden rounded-xl">
               <div
-                dir="auto"
-                className="bidi-plaintext chat-input-placeholder block w-full whitespace-pre-wrap break-words px-4 py-2 text-sm leading-6 text-transparent"
+                dir={getTextDirection(input)}
+                className="bidi-isolate chat-input-placeholder block w-full whitespace-pre-wrap break-words px-4 py-2 text-sm leading-6 text-transparent"
               >
                 {renderInputWithMentions(input)}
               </div>
@@ -436,8 +457,8 @@ export default function ChatComposer({
 
             <PromptInputTextarea
               ref={textareaRef}
-              dir="auto"
-              className="bidi-plaintext"
+              dir={getTextDirection(input)}
+              className="bidi-isolate"
               value={input}
               onChange={onInputChange}
               onClick={onTextareaClick}

@@ -119,26 +119,34 @@ export type ProviderModelsResult = {
 // ---------------------------
 //----------------- PROVIDER PROFILE TYPES ------------
 /**
- * Auth environment shape used by Claude-compatible gateways.
- *
- * `auth_token` maps to ANTHROPIC_AUTH_TOKEN and is the gateway-friendly option
- * used by OpenRouter-style integrations. `api_key` maps to ANTHROPIC_API_KEY
- * for direct Anthropic API key usage.
+ * Providers that support user-managed runtime profiles.
  */
-export type ClaudeProviderProfileAuthType = 'auth_token' | 'api_key';
+export type ProviderProfileProvider = 'claude' | 'codex';
 
 /**
- * Safe Claude provider profile view returned to the browser.
+ * Auth environment shape used by provider-compatible gateways.
+ *
+ * `auth_token` maps to ANTHROPIC_AUTH_TOKEN and is the gateway-friendly option
+ * used by Claude/OpenRouter-style integrations. `api_key` maps to the provider
+ * API-key mechanism, such as ANTHROPIC_API_KEY for Claude or a Codex env_key.
+ */
+export type ProviderProfileAuthType = 'auth_token' | 'api_key';
+
+export type ClaudeProviderProfileAuthType = ProviderProfileAuthType;
+export type CodexProviderProfileAuthType = 'api_key';
+
+/**
+ * Safe provider profile view returned to the browser.
  *
  * Secrets are write-only. APIs return `hasSecret` so the UI can show whether a
  * profile is runnable without exposing the stored token.
  */
-export type ClaudeProviderProfilePublic = {
+export type ProviderProfilePublic<TProvider extends ProviderProfileProvider = ProviderProfileProvider> = {
   id: number;
-  provider: 'claude';
+  provider: TProvider;
   title: string;
   baseUrl: string | null;
-  authType: ClaudeProviderProfileAuthType;
+  authType: ProviderProfileAuthType;
   isDefault: boolean;
   isActive: boolean;
   hasSecret: boolean;
@@ -146,11 +154,22 @@ export type ClaudeProviderProfilePublic = {
   updatedAt: string;
 };
 
+export type ClaudeProviderProfilePublic = ProviderProfilePublic<'claude'>;
+export type CodexProviderProfilePublic = ProviderProfilePublic<'codex'> & {
+  authType: CodexProviderProfileAuthType;
+};
+
 /**
- * Runtime-only Claude profile shape. This must not be serialized to clients.
+ * Runtime-only provider profile shape. This must not be serialized to clients.
  */
-export type ClaudeProviderProfileRuntime = ClaudeProviderProfilePublic & {
+export type ProviderProfileRuntime<TProvider extends ProviderProfileProvider = ProviderProfileProvider> =
+  ProviderProfilePublic<TProvider> & {
   secretValue: string;
+};
+
+export type ClaudeProviderProfileRuntime = ProviderProfileRuntime<'claude'>;
+export type CodexProviderProfileRuntime = ProviderProfileRuntime<'codex'> & {
+  authType: CodexProviderProfileAuthType;
 };
 
 // ---------------------------

@@ -1,9 +1,15 @@
 import { getConnection } from '@/modules/database/connection.js';
 import { decryptSecret, encryptSecret } from '@/modules/database/secret-vault.js';
 import type {
+  CodexProviderProfilePublic,
+  CodexProviderProfileRuntime,
   ClaudeProviderProfileAuthType,
   ClaudeProviderProfilePublic,
   ClaudeProviderProfileRuntime,
+  ProviderProfileAuthType,
+  ProviderProfileProvider,
+  ProviderProfilePublic,
+  ProviderProfileRuntime,
 } from '@/shared/types.js';
 
 type ProviderProfileRow = {
@@ -33,16 +39,34 @@ type UpdateClaudeProfileInput = Partial<Omit<CreateClaudeProfileInput, 'secretVa
   secretValue?: string;
 };
 
-const CLAUDE_PROVIDER = 'claude';
+type CreateCodexProfileInput = {
+  title: string;
+  baseUrl: string;
+  authType?: 'api_key';
+  secretValue: string;
+  isDefault?: boolean;
+  isActive?: boolean;
+};
 
-function toAuthType(value: string): ClaudeProviderProfileAuthType {
+type UpdateCodexProfileInput = Partial<Omit<CreateCodexProfileInput, 'secretValue'>> & {
+  secretValue?: string;
+};
+
+const CLAUDE_PROVIDER = 'claude';
+const CODEX_PROVIDER = 'codex';
+
+function toAuthType(value: string): ProviderProfileAuthType {
   return value === 'api_key' ? 'api_key' : 'auth_token';
 }
 
-function toPublicProfile(row: ProviderProfileRow): ClaudeProviderProfilePublic {
+function toProfileProvider(value: string): ProviderProfileProvider {
+  return value === CODEX_PROVIDER ? CODEX_PROVIDER : CLAUDE_PROVIDER;
+}
+
+function toPublicProfile(row: ProviderProfileRow): ProviderProfilePublic {
   return {
     id: Number(row.id),
-    provider: 'claude',
+    provider: toProfileProvider(row.provider),
     title: row.title,
     baseUrl: row.base_url,
     authType: toAuthType(row.auth_type),
@@ -54,14 +78,18 @@ function toPublicProfile(row: ProviderProfileRow): ClaudeProviderProfilePublic {
   };
 }
 
-function toRuntimeProfile(row: ProviderProfileRow): ClaudeProviderProfileRuntime {
+function toRuntimeProfile(row: ProviderProfileRow): ProviderProfileRuntime {
   return {
     ...toPublicProfile(row),
     secretValue: decryptSecret(row.secret_value),
   };
 }
 
-function fetchProfileRow(userId: number, profileId: number): ProviderProfileRow | null {
+function fetchProfileRow(
+  userId: number,
+  profileId: number,
+  provider: ProviderProfileProvider,
+): ProviderProfileRow | null {
   const db = getConnection();
   const row = db
     .prepare(
@@ -70,7 +98,7 @@ function fetchProfileRow(userId: number, profileId: number): ProviderProfileRow 
        WHERE id = ? AND user_id = ? AND provider = ?
        LIMIT 1`,
     )
-    .get(profileId, userId, CLAUDE_PROVIDER) as ProviderProfileRow | undefined;
+    .get(profileId, userId, provider) as ProviderProfileRow | undefined;
 
   return row ?? null;
 }
@@ -83,8 +111,20 @@ function normalizeSecret(secretValue: string): string {
   return encryptSecret(trimmed);
 }
 
+function normalizeCodexInput<TInput extends CreateCodexProfileInput | UpdateCodexProfileInput>(
+  input: TInput,
+): TInput & { authType: 'api_key' } {
+  return {
+    ...input,
+    authType: 'api_key',
+  };
+}
+
 export const providerProfilesDb = {
-  listClaudeProfiles(userId: number): ClaudeProviderProfilePublic[] {
+  listProviderProfiles(
+    userId: number,
+    provider: ProviderProfileProvider,
+  ): ProviderProfilePublic[] {
     const db = getConnection();
     const rows = db
       .prepare(
@@ -93,12 +133,20 @@ export const providerProfilesDb = {
          WHERE user_id = ? AND provider = ?
          ORDER BY is_default DESC, is_active DESC, title COLLATE NOCASE ASC, id ASC`,
       )
-      .all(userId, CLAUDE_PROVIDER) as ProviderProfileRow[];
+      .all(userId, provider) as ProviderProfileRow[];
 
     return rows.map(toPublicProfile);
   },
 
-  countActiveClaudeProfiles(userId: number): number {
+  listClaudeProfiles(userId: number): ClaudeProviderProfilePublic[] {
+    return this.listProviderProfiles(userId, CLAUDE_PROVIDER) as ClaudeProviderProfilePublic[];
+  },
+
+  listCodexProfiles(userId: number): CodexProviderProfilePublic[] {
+    return this.listProviderProfiles(userId, CODEX_PROVIDER) as CodexProviderProfilePublic[];
+  },
+
+  countActiveProviderProfiles(userId: number, provider: ProviderProfileProvider): number {
     const db = getConnection();
     const row = db
       .prepare(
@@ -106,36 +154,80 @@ export const providerProfilesDb = {
          FROM provider_profiles
          WHERE user_id = ? AND provider = ? AND is_active = 1`,
       )
-      .get(userId, CLAUDE_PROVIDER) as { count: number } | undefined;
+      .get(userId, provider) as { count: number } | undefined;
 
     return Number(row?.count ?? 0);
   },
 
-  getClaudeProfile(userId: number, profileId: number): ClaudeProviderProfilePublic | null {
-    const row = fetchProfileRow(userId, profileId);
+  countActiveClaudeProfiles(userId: number): number {
+    return this.countActiveProviderProfiles(userId, CLAUDE_PROVIDER);
+  },
+
+  countActiveCodexProfiles(userId: number): number {
+    return this.countActiveProviderProfiles(userId, CODEX_PROVIDER);
+  },
+
+  getProviderProfile(
+    userId: number,
+    provider: ProviderProfileProvider,
+    profileId: number,
+  ): ProviderProfilePublic | null {
+    const row = fetchProfileRow(userId, profileId, provider);
     return row ? toPublicProfile(row) : null;
   },
 
-  getClaudeProfileForRuntime(
+  getClaudeProfile(userId: number, profileId: number): ClaudeProviderProfilePublic | null {
+    return this.getProviderProfile(userId, CLAUDE_PROVIDER, profileId) as ClaudeProviderProfilePublic | null;
+  },
+
+  getCodexProfile(userId: number, profileId: number): CodexProviderProfilePublic | null {
+    return this.getProviderProfile(userId, CODEX_PROVIDER, profileId) as CodexProviderProfilePublic | null;
+  },
+
+  getProviderProfileForRuntime(
     userId: number,
+    provider: ProviderProfileProvider,
     profileId: number,
-  ): ClaudeProviderProfileRuntime | null {
-    const row = fetchProfileRow(userId, profileId);
+  ): ProviderProfileRuntime | null {
+    const row = fetchProfileRow(userId, profileId, provider);
     if (!row || !row.is_active) {
       return null;
     }
     return toRuntimeProfile(row);
   },
 
-  createClaudeProfile(
+  getClaudeProfileForRuntime(
     userId: number,
-    input: CreateClaudeProfileInput,
-  ): ClaudeProviderProfilePublic {
+    profileId: number,
+  ): ClaudeProviderProfileRuntime | null {
+    return this.getProviderProfileForRuntime(
+      userId,
+      CLAUDE_PROVIDER,
+      profileId,
+    ) as ClaudeProviderProfileRuntime | null;
+  },
+
+  getCodexProfileForRuntime(
+    userId: number,
+    profileId: number,
+  ): CodexProviderProfileRuntime | null {
+    return this.getProviderProfileForRuntime(
+      userId,
+      CODEX_PROVIDER,
+      profileId,
+    ) as CodexProviderProfileRuntime | null;
+  },
+
+  createProviderProfile(
+    userId: number,
+    provider: ProviderProfileProvider,
+    input: CreateClaudeProfileInput | CreateCodexProfileInput,
+  ): ProviderProfilePublic {
     const db = getConnection();
     const existingCount = Number(
       (db
         .prepare('SELECT COUNT(*) AS count FROM provider_profiles WHERE user_id = ? AND provider = ?')
-        .get(userId, CLAUDE_PROVIDER) as { count: number } | undefined)?.count ?? 0,
+        .get(userId, provider) as { count: number } | undefined)?.count ?? 0,
     );
     const isDefault = input.isDefault === true || existingCount === 0;
     const encryptedSecret = normalizeSecret(input.secretValue);
@@ -144,7 +236,7 @@ export const providerProfilesDb = {
       if (isDefault) {
         db.prepare(
           'UPDATE provider_profiles SET is_default = 0, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND provider = ?',
-        ).run(userId, CLAUDE_PROVIDER);
+        ).run(userId, provider);
       }
 
       const result = db
@@ -156,7 +248,7 @@ export const providerProfilesDb = {
         )
         .run(
           userId,
-          CLAUDE_PROVIDER,
+          provider,
           input.title,
           input.baseUrl,
           input.authType,
@@ -169,20 +261,43 @@ export const providerProfilesDb = {
     });
 
     const profileId = create();
-    const row = fetchProfileRow(userId, profileId);
+    const row = fetchProfileRow(userId, profileId, provider);
     if (!row) {
-      throw new Error('Created Claude profile could not be loaded.');
+      throw new Error('Created provider profile could not be loaded.');
     }
     return toPublicProfile(row);
   },
 
-  updateClaudeProfile(
+  createClaudeProfile(
     userId: number,
+    input: CreateClaudeProfileInput,
+  ): ClaudeProviderProfilePublic {
+    return this.createProviderProfile(
+      userId,
+      CLAUDE_PROVIDER,
+      input,
+    ) as ClaudeProviderProfilePublic;
+  },
+
+  createCodexProfile(
+    userId: number,
+    input: CreateCodexProfileInput,
+  ): CodexProviderProfilePublic {
+    return this.createProviderProfile(
+      userId,
+      CODEX_PROVIDER,
+      normalizeCodexInput(input),
+    ) as CodexProviderProfilePublic;
+  },
+
+  updateProviderProfile(
+    userId: number,
+    provider: ProviderProfileProvider,
     profileId: number,
-    input: UpdateClaudeProfileInput,
-  ): ClaudeProviderProfilePublic | null {
+    input: UpdateClaudeProfileInput | UpdateCodexProfileInput,
+  ): ProviderProfilePublic | null {
     const db = getConnection();
-    const existing = fetchProfileRow(userId, profileId);
+    const existing = fetchProfileRow(userId, profileId, provider);
     if (!existing) {
       return null;
     }
@@ -204,7 +319,7 @@ export const providerProfilesDb = {
       if (nextDefault) {
         db.prepare(
           'UPDATE provider_profiles SET is_default = 0, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND provider = ?',
-        ).run(userId, CLAUDE_PROVIDER);
+        ).run(userId, provider);
       }
 
       db.prepare(
@@ -226,18 +341,48 @@ export const providerProfilesDb = {
         nextActive,
         profileId,
         userId,
-        CLAUDE_PROVIDER,
+        provider,
       );
     });
 
     update();
-    const row = fetchProfileRow(userId, profileId);
+    const row = fetchProfileRow(userId, profileId, provider);
     return row ? toPublicProfile(row) : null;
   },
 
-  deleteClaudeProfile(userId: number, profileId: number): boolean {
+  updateClaudeProfile(
+    userId: number,
+    profileId: number,
+    input: UpdateClaudeProfileInput,
+  ): ClaudeProviderProfilePublic | null {
+    return this.updateProviderProfile(
+      userId,
+      CLAUDE_PROVIDER,
+      profileId,
+      input,
+    ) as ClaudeProviderProfilePublic | null;
+  },
+
+  updateCodexProfile(
+    userId: number,
+    profileId: number,
+    input: UpdateCodexProfileInput,
+  ): CodexProviderProfilePublic | null {
+    return this.updateProviderProfile(
+      userId,
+      CODEX_PROVIDER,
+      profileId,
+      normalizeCodexInput(input),
+    ) as CodexProviderProfilePublic | null;
+  },
+
+  deleteProviderProfile(
+    userId: number,
+    provider: ProviderProfileProvider,
+    profileId: number,
+  ): boolean {
     const db = getConnection();
-    const existing = fetchProfileRow(userId, profileId);
+    const existing = fetchProfileRow(userId, profileId, provider);
     if (!existing) {
       return false;
     }
@@ -245,7 +390,7 @@ export const providerProfilesDb = {
     const remove = db.transaction(() => {
       db.prepare(
         'DELETE FROM provider_profiles WHERE id = ? AND user_id = ? AND provider = ?',
-      ).run(profileId, userId, CLAUDE_PROVIDER);
+      ).run(profileId, userId, provider);
 
       if (!existing.is_default) {
         return;
@@ -259,7 +404,7 @@ export const providerProfilesDb = {
            ORDER BY updated_at DESC, id DESC
            LIMIT 1`,
         )
-        .get(userId, CLAUDE_PROVIDER) as { id: number } | undefined;
+        .get(userId, provider) as { id: number } | undefined;
 
       if (replacement) {
         db.prepare(
@@ -270,5 +415,13 @@ export const providerProfilesDb = {
 
     remove();
     return true;
+  },
+
+  deleteClaudeProfile(userId: number, profileId: number): boolean {
+    return this.deleteProviderProfile(userId, CLAUDE_PROVIDER, profileId);
+  },
+
+  deleteCodexProfile(userId: number, profileId: number): boolean {
+    return this.deleteProviderProfile(userId, CODEX_PROVIDER, profileId);
   },
 };

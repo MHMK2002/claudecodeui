@@ -17,8 +17,6 @@ import express from 'express';
 const DEFAULT_CLEANUP_PROMPT =
   'Lightly clean up the transcribed speech. Fix punctuation and capitalization, remove filler words and false starts (um, uh, repeats), and fix obvious recognition errors. Preserve the original language and meaning. Do not translate, expand, or rewrite the content. Output only the cleaned text with no commentary.';
 
-const SONIOX_API_BASE = 'https://api.soniox.com';
-
 const ENV = {
   baseUrl: (process.env.VOICE_API_BASE_URL || '').replace(/\/$/, ''),
   apiKey: process.env.VOICE_API_KEY || '',
@@ -27,15 +25,16 @@ const ENV = {
   ttsVoice: process.env.VOICE_TTS_VOICE || 'alloy',
   cleanupModel: process.env.VOICE_CLEANUP_MODEL || 'gpt-4o-mini',
   cleanupPrompt: process.env.VOICE_CLEANUP_PROMPT || DEFAULT_CLEANUP_PROMPT,
-  sonioxApiKey: process.env.SONIOX_API_KEY || '',
-  sonioxModel: process.env.SONIOX_STT_MODEL || 'stt-async-v5',
 };
 
 /**
  * Resolve the voice backend config for a request. Client headers (set from the
  * user's in-app voice settings) take precedence over the server env defaults.
+ * Soniox is not resolved here — it streams over the /voice-stream WebSocket relay
+ * (server/modules/websocket/services/voice-stream-proxy.service.ts), which resolves
+ * its own key independently.
  * @param {import('express').Request} req
- * @returns {{baseUrl: string, apiKey: string, sttModel: string, ttsModel: string, ttsVoice: string, ttsFormat: string, cleanup: boolean, cleanupModel: string, cleanupPrompt: string, sttProvider: string, sonioxApiKey: string, sonioxModel: string}}
+ * @returns {{baseUrl: string, apiKey: string, sttModel: string, ttsModel: string, ttsVoice: string, ttsFormat: string, cleanup: boolean, cleanupModel: string, cleanupPrompt: string}}
  */
 function resolveConfig(req) {
   const h = req.headers;
@@ -51,9 +50,6 @@ function resolveConfig(req) {
     cleanup: String(h['x-voice-cleanup'] || '') === '1',
     cleanupModel: String(h['x-voice-cleanup-model'] || '') || ENV.cleanupModel,
     cleanupPrompt: String(h['x-voice-cleanup-prompt'] || '') || ENV.cleanupPrompt,
-    sttProvider: String(h['x-voice-stt-provider'] || '') || 'openai',
-    sonioxApiKey: String(h['x-soniox-api-key'] || '') || ENV.sonioxApiKey,
-    sonioxModel: ENV.sonioxModel,
   };
 }
 
@@ -274,111 +270,6 @@ router.post('/cleanup', async (req, res) => {
   } catch (e) {
     backendError(res, e);
   }
-});
-
-/**
- * POST /api/voice/soniox-transcribe (multipart 'audio') -> { text }.
- * Alternative STT backend: Soniox async file transcription. Uploads the audio,
- * creates a transcription, polls until done, concatenates the returned tokens,
- * then deletes the transcription + file. Used when the client selects the
- * 'soniox' STT provider (x-voice-stt-provider: soniox).
- */
-const SONIOX_POLL_MAX_ATTEMPTS = 120; // ~120s, well under VOICE_TIMEOUT_MS
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-router.post('/soniox-transcribe', async (req, res) => {
-  const cfg = resolveConfig(req);
-  if (cfg.sttProvider !== 'soniox') {
-    return res.status(400).json({ error: 'Soniox provider not selected.' });
-  }
-  if (!cfg.sonioxApiKey) return res.status(503).json({ error: 'No Soniox API key configured' });
-  const upload = await getUpload();
-  upload.single('audio')(req, res, async (multerErr) => {
-    if (multerErr) return res.status(400).json({ error: multerErr.message });
-    if (!req.file) return res.status(400).json({ error: 'No audio uploaded' });
-    const auth = authHeader(cfg.sonioxApiKey);
-    let fileId = null;
-    let transcriptionId = null;
-    try {
-      // 1. Upload the audio file.
-      const fd = new FormData();
-      fd.append(
-        'file',
-        new Blob([req.file.buffer], { type: req.file.mimetype || 'audio/webm' }),
-        req.file.originalname || 'recording.webm',
-      );
-      const upRes = await fetchWithTimeout(`${SONIOX_API_BASE}/v1/files`, {
-        method: 'POST',
-        headers: auth,
-        body: fd,
-      });
-      const upText = await upRes.text();
-      if (!upRes.ok) return upstreamError(res, upRes.status, upText);
-      fileId = JSON.parse(upText).id;
-
-      // 2. Create the transcription.
-      const crRes = await fetchWithTimeout(`${SONIOX_API_BASE}/v1/transcriptions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...auth },
-        body: JSON.stringify({
-          model: cfg.sonioxModel,
-          file_id: fileId,
-          enable_language_identification: true,
-        }),
-      });
-      const crText = await crRes.text();
-      if (!crRes.ok) return upstreamError(res, crRes.status, crText);
-      transcriptionId = JSON.parse(crText).id;
-
-      // 3. Poll for completion.
-      let status = '';
-      for (let i = 0; i < SONIOX_POLL_MAX_ATTEMPTS; i++) {
-        await sleep(1000);
-        const pRes = await fetchWithTimeout(`${SONIOX_API_BASE}/v1/transcriptions/${transcriptionId}`, {
-          headers: auth,
-        });
-        const pText = await pRes.text();
-        if (!pRes.ok) return upstreamError(res, pRes.status, pText);
-        status = JSON.parse(pText).status;
-        if (status === 'completed' || status === 'error') break;
-      }
-      if (status !== 'completed') {
-        return res.status(504).json({
-          error: status === 'error' ? 'Soniox transcription failed' : 'Soniox transcription timed out',
-        });
-      }
-
-      // 4. Fetch the transcript and concatenate token text.
-      const tRes = await fetchWithTimeout(
-        `${SONIOX_API_BASE}/v1/transcriptions/${transcriptionId}/transcript`,
-        { headers: auth },
-      );
-      const tText = await tRes.text();
-      if (!tRes.ok) return upstreamError(res, tRes.status, tText);
-      const tokens = JSON.parse(tText).tokens;
-      const text = Array.isArray(tokens) ? tokens.map((tk) => tk.text || '').join('').trim() : '';
-      res.json({ text });
-    } catch (e) {
-      backendError(res, e);
-    } finally {
-      // 5. Best-effort cleanup of the transcription + uploaded file.
-      if (transcriptionId) {
-        fetchWithTimeout(`${SONIOX_API_BASE}/v1/transcriptions/${transcriptionId}`, {
-          method: 'DELETE',
-          headers: auth,
-        }).catch(() => {});
-      }
-      if (fileId) {
-        fetchWithTimeout(`${SONIOX_API_BASE}/v1/files/${fileId}`, {
-          method: 'DELETE',
-          headers: auth,
-        }).catch(() => {});
-      }
-    }
-  });
 });
 
 export default router;

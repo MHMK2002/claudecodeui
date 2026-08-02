@@ -1,4 +1,0 @@
-interface:
-  display_name: "Software Delivery Team Question Resolver"
-  short_description: "Resolve request questions from repo context"
-  default_prompt: "Use $software-delivery-team-question-resolver to determine which request questions are answered by code or history."

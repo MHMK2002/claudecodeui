@@ -24,19 +24,29 @@ export type ProviderModelsCacheInfo = {
   source: 'memory' | 'disk' | 'fresh';
 };
 
-export type ClaudeProviderProfileAuthType = 'auth_token' | 'api_key';
+export type ProviderProfileProvider = 'claude' | 'codex';
 
-export type ClaudeProviderProfilePublic = {
+export type ProviderProfileAuthType = 'auth_token' | 'api_key';
+
+export type ClaudeProviderProfileAuthType = ProviderProfileAuthType;
+export type CodexProviderProfileAuthType = 'api_key';
+
+export type ProviderProfilePublic<TProvider extends ProviderProfileProvider = ProviderProfileProvider> = {
   id: number;
-  provider: 'claude';
+  provider: TProvider;
   title: string;
   baseUrl: string | null;
-  authType: ClaudeProviderProfileAuthType;
+  authType: ProviderProfileAuthType;
   isDefault: boolean;
   isActive: boolean;
   hasSecret: boolean;
   createdAt: string;
   updatedAt: string;
+};
+
+export type ClaudeProviderProfilePublic = ProviderProfilePublic<'claude'>;
+export type CodexProviderProfilePublic = ProviderProfilePublic<'codex'> & {
+  authType: CodexProviderProfileAuthType;
 };
 
 export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'browser' | `plugin:${string}`;

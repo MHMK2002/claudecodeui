@@ -68,7 +68,7 @@
     "sttProviderOpenai": "OpenAI-compatible (Whisper)",
     "sttProviderSonix": "Sonix",
     "sonixApiKey": "Sonix API key",
-    "sonixNote": "Sonix runs server-side via async file transcription. Get a key from console.soniox.com. The base URL and TTS fields above are still used for read-aloud.",
+    "sonixNote": "Sonix streams your recording to a real-time transcription API as you speak, so the transcript is ready almost as soon as you stop. Get a key from console.soniox.com. The base URL and TTS fields above are still used for read-aloud.",
     "holdToTalkTitle": "Hold-to-talk",
     "holdToTalkDescription": "Hold Option+Space anywhere in the app to dictate. Release to fill the input.",
     "holdToTalk": "Enable Option+Space hold-to-talk",
@@ -80,7 +80,14 @@
     "cleanupModel": "Cleanup model",
     "cleanupPrompt": "Cleanup prompt",
     "cleanupReset": "Reset to default prompt",
-    "cleanupNote": "The prompt is sent to the backend's /chat/completions endpoint with the transcript as the user message. Leave blank to use the default."
+    "cleanupNote": "The prompt is sent to the backend's /chat/completions endpoint with the transcript as the user message. Leave blank to use the default.",
+    "microphoneTitle": "Microphone",
+    "microphoneDescription": "Choose which input device dictation records from.",
+    "micDefault": "System default",
+    "micUnavailable": "Saved microphone (unavailable)",
+    "micGrantAccess": "Allow microphone access to show device names",
+    "micNote": "If the selected microphone is unavailable, recording falls back to the system default.",
+    "micUnsupported": "Microphone selection is not supported in this browser."
   },
   "quickSettings": {
     "title": "Quick Settings",
