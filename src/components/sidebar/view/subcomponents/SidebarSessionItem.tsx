@@ -1,13 +1,15 @@
 import { useEffect, useRef } from 'react';
-import { Check, Edit2, Loader2, Trash2, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Edit2, Loader2, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { Badge, Tooltip, buttonVariants } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
 import type { Project, ProjectSession, LLMProvider } from '../../../../types/app';
-import type { SessionWithProvider } from '../../types/types';
+import type { SessionWithProvider, SubagentListItem } from '../../types/types';
 import { createSessionViewModel } from '../../utils/utils';
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
+
+import SidebarSessionAgents from './SidebarSessionAgents';
 
 type SidebarSessionItemProps = {
   project: Project;
@@ -16,6 +18,10 @@ type SidebarSessionItemProps = {
   isProcessing: boolean;
   needsAttention: boolean;
   currentTime: Date;
+  areAgentsExpanded: boolean;
+  agents: SubagentListItem[] | undefined;
+  haveAgentsLoaded: boolean;
+  onToggleAgents: (sessionId: string) => void;
   editingSession: string | null;
   editingSessionName: string;
   onEditingSessionNameChange: (value: string) => void;
@@ -68,6 +74,10 @@ export default function SidebarSessionItem({
   isProcessing,
   needsAttention,
   currentTime,
+  areAgentsExpanded,
+  agents,
+  haveAgentsLoaded,
+  onToggleAgents,
   editingSession,
   editingSessionName,
   onEditingSessionNameChange,
@@ -86,6 +96,10 @@ export default function SidebarSessionItem({
   const editingContainerRef = useRef<HTMLDivElement>(null);
   const showAttentionIndicator = needsAttention && !isSelected;
   const showRecentIndicator = !showAttentionIndicator && !isProcessing && sessionView.isActive;
+  // Sessions that never spawned an agent get no expand affordance, so the
+  // chevron itself tells the user which runs delegated work.
+  const agentCount = Number(session.agentCount ?? 0);
+  const hasAgents = agentCount > 0;
 
   // The rename panel sits inside a group-hover opacity wrapper, so leaving the row
   // would visually hide it. While editing, dismiss only when the user clicks outside
@@ -121,7 +135,30 @@ export default function SidebarSessionItem({
     onDeleteSession(project.projectId, session.id, sessionView.sessionName, session.__provider);
   };
 
+  const agentToggleLabel = areAgentsExpanded
+    ? t('agents.collapseAgents', { defaultValue: 'Hide agents' })
+    : t('agents.expandAgents', { count: agentCount, defaultValue: 'Show {{count}} agents' });
+
+  const renderAgentToggle = () => (
+    <button
+      type="button"
+      aria-label={agentToggleLabel}
+      aria-expanded={areAgentsExpanded}
+      title={agentToggleLabel}
+      className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      onClick={(event) => {
+        // The row itself opens the session; the chevron must only expand.
+        event.preventDefault();
+        event.stopPropagation();
+        onToggleAgents(session.id);
+      }}
+    >
+      {areAgentsExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+    </button>
+  );
+
   return (
+    <>
     <div className="group relative">
       {(showAttentionIndicator || showRecentIndicator) && (
         <div className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2 transform">
@@ -159,6 +196,7 @@ export default function SidebarSessionItem({
           onClick={selectMobileSession}
         >
           <div className="flex items-center gap-2">
+            {hasAgents && renderAgentToggle()}
             <div
               className={cn(
                 'w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0',
@@ -207,12 +245,15 @@ export default function SidebarSessionItem({
         </div>
       </div>
 
-      <div className="hidden md:block">
+      <div className="hidden md:flex md:items-center md:gap-1">
+        {/* Outside the anchor: a button nested in a link is invalid markup and
+            would swallow the row's own click target. */}
+        {hasAgents && renderAgentToggle()}
         <a
           href={`/session/${session.id}`}
           className={cn(
             buttonVariants({ variant: 'ghost' }),
-            'h-auto w-full justify-start rounded-md border bg-card p-2 text-left font-normal transition-all duration-150',
+            'h-auto min-w-0 flex-1 justify-start rounded-md border bg-card p-2 text-left font-normal transition-all duration-150',
             isSelected ? 'border-primary/20 bg-primary/5' : 'border-border/30',
             !isSelected && isProcessing
               ? 'border-border/60 bg-muted/20 hover:bg-muted/25'
@@ -346,5 +387,16 @@ export default function SidebarSessionItem({
           </div>
       </div>
     </div>
+
+    <SidebarSessionAgents
+      project={project}
+      isExpanded={hasAgents && areAgentsExpanded}
+      agents={agents}
+      hasLoaded={haveAgentsLoaded}
+      selectedSession={selectedSession}
+      onSessionSelect={onSessionSelect}
+      t={t}
+    />
+    </>
   );
 }

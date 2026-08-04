@@ -71,6 +71,84 @@ test('createSession reactivates archived rows when the session becomes active ag
   });
 });
 
+test('sub-agent rows stay out of every session listing but remain addressable', async () => {
+  await withIsolatedDatabase(() => {
+    const projectPath = '/workspace/demo-project';
+    sessionsDb.createSession('parent-session', 'claude', projectPath, 'Parent Session');
+    sessionsDb.createSubagentSession({
+      agentSessionId: 'agent-1',
+      provider: 'claude',
+      parentSessionId: 'parent-session',
+      projectPath,
+      jsonlPath: '/transcripts/agent-1.jsonl',
+      agentType: 'general-purpose',
+      customName: 'Coverage analysis',
+    });
+    sessionsDb.createSubagentSession({
+      agentSessionId: 'agent-2',
+      provider: 'claude',
+      parentSessionId: 'parent-session',
+      projectPath,
+      jsonlPath: '/transcripts/agent-2.jsonl',
+    });
+
+    // Every listing query must show the parent alone — a leak here would put
+    // agents in the sidebar, search, and archive views as if they were real
+    // sessions.
+    const onlyParent = ['parent-session'];
+    assert.deepEqual(sessionsDb.getAllSessions().map((row) => row.session_id), onlyParent);
+    assert.deepEqual(sessionsDb.getSessionsByProjectPath(projectPath).map((row) => row.session_id), onlyParent);
+    assert.deepEqual(
+      sessionsDb.getSessionsByProjectPathPage(projectPath, 20, 0).map((row) => row.session_id),
+      onlyParent,
+    );
+    assert.deepEqual(
+      sessionsDb.getSessionsUpdatedSince('1970-01-01T00:00:00.000Z').map((row) => row.session_id),
+      onlyParent,
+    );
+    assert.equal(sessionsDb.countSessionsByProjectPath(projectPath), 1);
+
+    sessionsDb.updateSessionIsArchived('parent-session', true);
+    assert.deepEqual(sessionsDb.getArchivedSessions().map((row) => row.session_id), onlyParent);
+    sessionsDb.updateSessionIsArchived('parent-session', false);
+
+    // Deletion cleanup is the one reader that keeps children, so their
+    // transcript files are not orphaned.
+    assert.deepEqual(
+      sessionsDb.getSessionsByProjectPathIncludingArchived(projectPath).map((row) => row.session_id).sort(),
+      ['agent-1', 'agent-2', 'parent-session'],
+    );
+
+    // Lookups by id stay unfiltered so an agent transcript can be opened.
+    const agent = sessionsDb.getSessionById('agent-1');
+    assert.equal(agent?.parent_session_id, 'parent-session');
+    assert.equal(agent?.agent_type, 'general-purpose');
+    assert.equal(agent?.jsonl_path, '/transcripts/agent-1.jsonl');
+
+    assert.deepEqual(
+      sessionsDb.getSubagentsByParentSessionId('parent-session').map((row) => row.session_id),
+      ['agent-1', 'agent-2'],
+    );
+    assert.equal(sessionsDb.countSubagentsByParentSessionIds(['parent-session']).get('parent-session'), 2);
+  });
+});
+
+test('deleting a session removes the sub-agents it spawned', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createSession('parent-session', 'claude', '/workspace/demo-project', 'Parent Session');
+    sessionsDb.createSubagentSession({
+      agentSessionId: 'agent-1',
+      provider: 'claude',
+      parentSessionId: 'parent-session',
+      projectPath: '/workspace/demo-project',
+      jsonlPath: '/transcripts/agent-1.jsonl',
+    });
+
+    assert.equal(sessionsDb.deleteSessionById('parent-session'), true);
+    assert.equal(sessionsDb.getSessionById('agent-1'), null);
+  });
+});
+
 test('repository reads normalize SQLite UTC timestamps to ISO strings', async () => {
   await withIsolatedDatabase(() => {
     sessionsDb.createAppSession('session-timezone', 'claude', '/workspace/demo-project');

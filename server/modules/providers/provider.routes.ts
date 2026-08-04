@@ -891,6 +891,15 @@ router.get(
   }),
 );
 
+router.get(
+  '/sessions/:sessionId/subagents',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const subagents = await sessionsService.listSubagents(sessionId);
+    res.json(createApiSuccessResponse({ subagents }));
+  }),
+);
+
 router.delete(
   '/sessions/:sessionId',
   asyncHandler(async (req: Request, res: Response) => {

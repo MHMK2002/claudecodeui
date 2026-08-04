@@ -1,13 +1,14 @@
 import { useState } from 'react';
 
+import { DEFAULT_CLEANUP_GUIDANCE } from '../../shared/voice-cleanup-contract';
+
 /**
- * Default system prompt for the transcript cleanup step. Lightly polishes the
- * STT output (punctuation, filler words, obvious errors) without changing
- * meaning or language. Exposed so the settings UI can pre-fill the textarea and
- * the client fallback can use it when the user clears the field.
+ * Default user guidance for the transcript cleanup step. The fixed system
+ * safety policy lives in shared/voice-cleanup-contract.ts; this value only
+ * narrows the desired cleanup behavior and can be edited in settings.
  */
 export const DEFAULT_CLEANUP_PROMPT =
-  'Lightly clean up the transcribed speech. Fix punctuation and capitalization, remove filler words and false starts (um, uh, repeats), and fix obvious recognition errors. Preserve the original language and meaning. Do not translate, expand, or rewrite the content. Output only the cleaned text with no commentary.';
+  DEFAULT_CLEANUP_GUIDANCE;
 
 export type VoiceSttProvider = 'openai' | 'soniox';
 
@@ -16,6 +17,12 @@ export type VoiceConfig = {
   apiKey: string;
   sttProvider: VoiceSttProvider;
   sttModel: string;
+  /** Free-form context sent only to transcription providers that support it. */
+  sttPrompt: string;
+  /** Expected ISO language codes, capped at two to avoid over-biasing recognition. */
+  sttLanguages: string[];
+  /** Literal technical terms that the transcription provider should prefer. */
+  sttTerms: string[];
   ttsModel: string;
   ttsVoice: string;
   ttsFormat: string;
@@ -38,6 +45,9 @@ const DEFAULTS: VoiceConfig = {
   apiKey: '',
   sttProvider: 'openai',
   sttModel: '',
+  sttPrompt: '',
+  sttLanguages: [],
+  sttTerms: [],
   ttsModel: '',
   ttsVoice: '',
   ttsFormat: '',
@@ -49,31 +59,99 @@ const DEFAULTS: VoiceConfig = {
 };
 
 const STT_PROVIDERS: VoiceSttProvider[] = ['openai', 'soniox'];
+const LANGUAGE_HINT_PATTERN = /^[a-z]{2,3}(?:-[a-z0-9]{2,8})?$/i;
+
+export const VOICE_STT_PROMPT_MAX_CHARS = 4000;
+export const VOICE_STT_LANGUAGE_MAX_ITEMS = 2;
+export const VOICE_STT_TERM_MAX_ITEMS = 100;
+export const VOICE_STT_TERM_MAX_CHARS = 128;
+
+function readString(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback;
+}
+
+export function normalizeSttPrompt(value: unknown): string {
+  return readString(value).trim().slice(0, VOICE_STT_PROMPT_MAX_CHARS);
+}
+
+export function normalizeSttLanguages(value: unknown): string[] {
+  const values = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value.split(/[\s,]+/)
+      : [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const candidate of values) {
+    if (typeof candidate !== 'string') continue;
+    const normalized = candidate.trim().toLowerCase();
+    if (!LANGUAGE_HINT_PATTERN.test(normalized) || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+    if (result.length >= VOICE_STT_LANGUAGE_MAX_ITEMS) break;
+  }
+  return result;
+}
+
+export function normalizeSttTerms(value: unknown): string[] {
+  const values = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value.split(/\r?\n/)
+      : [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const candidate of values) {
+    if (typeof candidate !== 'string') continue;
+    const normalized = candidate.trim();
+    if (
+      !normalized ||
+      normalized.length > VOICE_STT_TERM_MAX_CHARS ||
+      /[<>\r\n]/.test(normalized) ||
+      seen.has(normalized)
+    ) {
+      continue;
+    }
+    seen.add(normalized);
+    result.push(normalized);
+    if (result.length >= VOICE_STT_TERM_MAX_ITEMS) break;
+  }
+  return result;
+}
 
 export function readVoiceConfig(): VoiceConfig {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { ...DEFAULTS };
+    if (!raw) return { ...DEFAULTS, sttLanguages: [], sttTerms: [] };
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ...DEFAULTS };
-    const config = { ...DEFAULTS } as Record<keyof VoiceConfig, string | boolean>;
-    const src = parsed as Record<string, unknown>;
-    for (const key of Object.keys(DEFAULTS) as (keyof VoiceConfig)[]) {
-      const def = DEFAULTS[key];
-      const v = src[key as string];
-      if (typeof def === 'boolean') {
-        if (typeof v === 'boolean') config[key] = v;
-      } else if (key === 'sttProvider') {
-        if (typeof v === 'string' && STT_PROVIDERS.includes(v as VoiceSttProvider)) {
-          config[key] = v as VoiceSttProvider;
-        }
-      } else if (typeof v === 'string') {
-        config[key] = v;
-      }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ...DEFAULTS, sttLanguages: [], sttTerms: [] };
     }
-    return config as VoiceConfig;
+    const src = parsed as Record<string, unknown>;
+    const sttProvider =
+      typeof src.sttProvider === 'string' && STT_PROVIDERS.includes(src.sttProvider as VoiceSttProvider)
+        ? (src.sttProvider as VoiceSttProvider)
+        : DEFAULTS.sttProvider;
+    return {
+      baseUrl: readString(src.baseUrl, DEFAULTS.baseUrl),
+      apiKey: readString(src.apiKey, DEFAULTS.apiKey),
+      sttProvider,
+      sttModel: readString(src.sttModel, DEFAULTS.sttModel),
+      sttPrompt: normalizeSttPrompt(src.sttPrompt),
+      sttLanguages: normalizeSttLanguages(src.sttLanguages),
+      sttTerms: normalizeSttTerms(src.sttTerms),
+      ttsModel: readString(src.ttsModel, DEFAULTS.ttsModel),
+      ttsVoice: readString(src.ttsVoice, DEFAULTS.ttsVoice),
+      ttsFormat: readString(src.ttsFormat, DEFAULTS.ttsFormat),
+      sonioxApiKey: readString(src.sonioxApiKey, DEFAULTS.sonioxApiKey),
+      cleanupEnabled:
+        typeof src.cleanupEnabled === 'boolean' ? src.cleanupEnabled : DEFAULTS.cleanupEnabled,
+      cleanupModel: readString(src.cleanupModel, DEFAULTS.cleanupModel),
+      cleanupPrompt: readString(src.cleanupPrompt, DEFAULTS.cleanupPrompt),
+      micDeviceId: readString(src.micDeviceId, DEFAULTS.micDeviceId),
+    };
   } catch {
-    return { ...DEFAULTS };
+    return { ...DEFAULTS, sttLanguages: [], sttTerms: [] };
   }
 }
 
@@ -90,22 +168,26 @@ export function voiceConfigHeaders(): Record<string, string> {
   if (c.ttsModel) h['x-voice-tts-model'] = c.ttsModel;
   if (c.ttsVoice) h['x-voice-tts-voice'] = c.ttsVoice;
   if (c.ttsFormat.trim()) h['x-voice-tts-format'] = c.ttsFormat.trim();
-  if (c.cleanupEnabled) {
-    h['x-voice-cleanup'] = '1';
-    if (c.cleanupModel.trim()) h['x-voice-cleanup-model'] = c.cleanupModel.trim();
-    if (c.cleanupPrompt.trim()) h['x-voice-cleanup-prompt'] = c.cleanupPrompt;
-  }
+  if (c.cleanupEnabled) h['x-voice-cleanup'] = '1';
   return h;
 }
 
 export function useVoiceConfig() {
   const [config, setConfig] = useState<VoiceConfig>(() =>
-    typeof window === 'undefined' ? { ...DEFAULTS } : readVoiceConfig(),
+    typeof window === 'undefined' ? { ...DEFAULTS, sttLanguages: [], sttTerms: [] } : readVoiceConfig(),
   );
 
   const update = (patch: Partial<VoiceConfig>) => {
     setConfig((prev) => {
-      const next = { ...prev, ...patch };
+      const next = {
+        ...prev,
+        ...patch,
+        ...(patch.sttPrompt !== undefined ? { sttPrompt: normalizeSttPrompt(patch.sttPrompt) } : {}),
+        ...(patch.sttLanguages !== undefined
+          ? { sttLanguages: normalizeSttLanguages(patch.sttLanguages) }
+          : {}),
+        ...(patch.sttTerms !== undefined ? { sttTerms: normalizeSttTerms(patch.sttTerms) } : {}),
+      };
       try {
         const stored: Partial<VoiceConfig> = { ...next };
         if (next.ttsFormat.trim()) stored.ttsFormat = next.ttsFormat.trim();

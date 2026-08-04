@@ -4,7 +4,7 @@ import type { TFunction } from 'i18next';
 import { Button } from '../../../../shared/view/ui';
 import type { SessionActivityMap } from '../../../../hooks/useSessionProtection';
 import type { Project, ProjectSession, LLMProvider } from '../../../../types/app';
-import type { SessionWithProvider } from '../../types/types';
+import type { SessionWithProvider, SubagentListItem } from '../../types/types';
 
 import SidebarSessionItem from './SidebarSessionItem';
 
@@ -19,6 +19,10 @@ type SidebarProjectSessionsProps = {
   activeSessions: SessionActivityMap;
   attentionSessionIds: ReadonlySet<string>;
   currentTime: Date;
+  expandedSessions: ReadonlySet<string>;
+  subagentsBySessionId: ReadonlyMap<string, SubagentListItem[]>;
+  loadedSubagentSessionIds: ReadonlySet<string>;
+  onToggleSessionAgents: (sessionId: string) => void;
   editingSession: string | null;
   editingSessionName: string;
   onEditingSessionNameChange: (value: string) => void;
@@ -67,6 +71,10 @@ export default function SidebarProjectSessions({
   activeSessions,
   attentionSessionIds,
   currentTime,
+  expandedSessions,
+  subagentsBySessionId,
+  loadedSubagentSessionIds,
+  onToggleSessionAgents,
   editingSession,
   editingSessionName,
   onEditingSessionNameChange,
@@ -128,6 +136,10 @@ export default function SidebarProjectSessions({
               isProcessing={activeSessions.has(session.id)}
               needsAttention={attentionSessionIds.has(session.id)}
               currentTime={currentTime}
+              areAgentsExpanded={expandedSessions.has(session.id)}
+              agents={subagentsBySessionId.get(session.id)}
+              haveAgentsLoaded={loadedSubagentSessionIds.has(session.id)}
+              onToggleAgents={onToggleSessionAgents}
               editingSession={editingSession}
               editingSessionName={editingSessionName}
               onEditingSessionNameChange={onEditingSessionNameChange}

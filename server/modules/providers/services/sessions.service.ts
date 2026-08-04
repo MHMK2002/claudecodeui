@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import readline from 'node:readline';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { chatRunRegistry, broadcastSessionRewound } from '@/modules/websocket/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
+import { parseAgentTools } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import {
   findJsonlLine,
   truncateJsonlAtLine,
@@ -37,6 +40,165 @@ type ArchivedSessionListItem = {
   lastActivity: string | null;
   isProjectArchived: boolean;
 };
+
+type SubagentStatus = 'running' | 'completed' | 'unknown';
+
+type SubagentCurrentTool = {
+  toolName: string;
+  toolInput: unknown;
+};
+
+type SubagentListItem = {
+  sessionId: string;
+  provider: LLMProvider;
+  parentSessionId: string;
+  name: string;
+  agentType: string | null;
+  status: SubagentStatus;
+  toolCount: number;
+  currentTool: SubagentCurrentTool | null;
+  totalTokens: number | null;
+  totalDurationMs: number | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+type ClaudeAgentResult = {
+  agentType: string | null;
+  description: string | null;
+  status: string | null;
+  totalTokens: number | null;
+  totalDurationMs: number | null;
+  totalToolUseCount: number | null;
+};
+
+type ClaudeAgentActivity = {
+  toolCount: number;
+  currentTool: SubagentCurrentTool | null;
+  // null when the transcript could not be read at all.
+  isComplete: boolean | null;
+};
+
+function readOptionalNumber(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * Collects the per-agent results Claude records on the parent transcript when
+ * an agent-spawning tool call returns, keyed by agent id.
+ *
+ * Background agents (`status: "async_launched"`) return before the agent has
+ * done anything, so their result carries no `agentType` and no totals. The
+ * spawning tool call's own input does carry both the agent type and a short
+ * description, so tool inputs are indexed by id and joined back through the
+ * `tool_use_id` on the result row.
+ */
+async function readClaudeAgentResults(parentJsonlPath: string): Promise<Map<string, ClaudeAgentResult>> {
+  const results = new Map<string, ClaudeAgentResult>();
+  const toolInputsById = new Map<string, Record<string, unknown>>();
+
+  try {
+    const fileStream = fs.createReadStream(parentJsonlPath);
+    const lineReader = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+
+    for await (const line of lineReader) {
+      if (!line.trim()) {
+        continue;
+      }
+
+      let entry: Record<string, unknown>;
+      try {
+        entry = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        // Concurrent writes can leave a partial trailing line.
+        continue;
+      }
+
+      const message = entry.message as Record<string, unknown> | undefined;
+      const contentParts = Array.isArray(message?.content)
+        ? (message.content as Array<Record<string, unknown>>)
+        : [];
+
+      for (const part of contentParts) {
+        if (part.type === 'tool_use' && typeof part.id === 'string') {
+          toolInputsById.set(part.id, (part.input as Record<string, unknown>) ?? {});
+        }
+      }
+
+      const toolUseResult = entry.toolUseResult as Record<string, unknown> | undefined;
+      const agentId = typeof toolUseResult?.agentId === 'string' ? toolUseResult.agentId : null;
+      if (!agentId) {
+        continue;
+      }
+
+      const toolUseId = contentParts.find((part) => part.type === 'tool_result')?.tool_use_id;
+      const spawnInput = typeof toolUseId === 'string' ? toolInputsById.get(toolUseId) ?? {} : {};
+
+      results.set(agentId, {
+        agentType: typeof toolUseResult?.agentType === 'string'
+          ? toolUseResult.agentType
+          : typeof spawnInput.subagent_type === 'string'
+            ? spawnInput.subagent_type
+            : null,
+        description: typeof spawnInput.description === 'string' ? spawnInput.description : null,
+        status: typeof toolUseResult?.status === 'string' ? toolUseResult.status : null,
+        totalTokens: readOptionalNumber(toolUseResult?.totalTokens),
+        totalDurationMs: readOptionalNumber(toolUseResult?.totalDurationMs),
+        totalToolUseCount: readOptionalNumber(toolUseResult?.totalToolUseCount),
+      });
+    }
+  } catch {
+    // A missing or unreadable parent transcript just means no enrichment.
+  }
+
+  return results;
+}
+
+/**
+ * Reads live tool activity straight from one agent transcript.
+ *
+ * The transcript is the only source that stays current while the agent runs —
+ * the parent records nothing until the spawning tool call returns. A trailing
+ * tool call with no result yet is what the agent is doing right now.
+ */
+async function readClaudeAgentActivity(agentJsonlPath: string): Promise<ClaudeAgentActivity> {
+  try {
+    const tools = await parseAgentTools(agentJsonlPath);
+    const lastTool = tools.at(-1);
+    const isRunningTool = Boolean(lastTool) && lastTool?.toolResult === undefined;
+
+    return {
+      toolCount: tools.length,
+      currentTool: isRunningTool && lastTool
+        ? { toolName: String(lastTool.toolName ?? ''), toolInput: lastTool.toolInput ?? null }
+        : null,
+      isComplete: !isRunningTool,
+    };
+  } catch {
+    return { toolCount: 0, currentTool: null, isComplete: null };
+  }
+}
+
+/**
+ * A recorded parent result is authoritative — it only exists once the agent
+ * finished. Otherwise the agent transcript decides: an unresolved trailing
+ * tool call means it is still working.
+ */
+function resolveSubagentStatus(
+  parentResult: ClaudeAgentResult | null,
+  isComplete: boolean | null,
+): SubagentStatus {
+  if (parentResult?.status === 'completed') {
+    return 'completed';
+  }
+
+  if (isComplete === null) {
+    return 'unknown';
+  }
+
+  return isComplete ? 'completed' : 'running';
+}
 
 /**
  * Removes one file if it exists.
@@ -199,6 +361,62 @@ export const sessionsService = {
         sessionId,
       })),
     };
+  },
+
+  /**
+   * Lists the sub-agents one session spawned, for the sidebar's third tree level.
+   *
+   * Each entry is itself an addressable session row, so the returned
+   * `sessionId` can be opened through the normal message endpoint to read the
+   * agent's own transcript.
+   *
+   * Claude entries carry live tool activity parsed from the agent transcript;
+   * Codex entries currently expose metadata only (its rollouts use a different
+   * record format that the tool parser does not read).
+   */
+  async listSubagents(parentSessionId: string): Promise<SubagentListItem[]> {
+    const parentSession = sessionsDb.getSessionById(parentSessionId);
+    if (!parentSession) {
+      throw new AppError(`Session "${parentSessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    const agentRows = sessionsDb.getSubagentsByParentSessionId(parentSessionId);
+    if (agentRows.length === 0) {
+      return [];
+    }
+
+    // Token/duration totals and the resolved agent type are only recorded on
+    // the parent side, once the spawning tool call returns.
+    const parentResults = parentSession.provider === 'claude' && parentSession.jsonl_path
+      ? await readClaudeAgentResults(parentSession.jsonl_path)
+      : new Map<string, ClaudeAgentResult>();
+
+    return Promise.all(agentRows.map(async (row) => {
+      const parentResult = parentResults.get(row.session_id) ?? null;
+      const activity = row.provider === 'claude' && row.jsonl_path
+        ? await readClaudeAgentActivity(row.jsonl_path)
+        : { toolCount: 0, currentTool: null, isComplete: null };
+
+      return {
+        sessionId: row.session_id,
+        provider: row.provider as LLMProvider,
+        parentSessionId,
+        // The spawn description is written for a human; the stored name falls
+        // back to the raw prompt, which is often identical across sibling agents.
+        name: parentResult?.description?.trim() || row.custom_name?.trim() || row.session_id,
+        agentType: parentResult?.agentType ?? row.agent_type ?? null,
+        status: resolveSubagentStatus(parentResult, activity.isComplete),
+        toolCount: parentResult?.totalToolUseCount ?? activity.toolCount,
+        currentTool: activity.currentTool,
+        totalTokens: parentResult?.totalTokens ?? null,
+        totalDurationMs: parentResult?.totalDurationMs ?? null,
+        createdAt: row.created_at ?? null,
+        updatedAt: row.updated_at ?? null,
+      };
+    }));
   },
 
   /**

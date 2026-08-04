@@ -35,7 +35,28 @@ type ClaudeHistoryMessagesResult =
     limit?: number | null;
   };
 
-async function parseAgentTools(filePath: string): Promise<AnyRecord[]> {
+/**
+ * Resolves the directory holding a session's sub-agent transcripts.
+ *
+ * Claude nests them beside the session file, in a directory named after the
+ * transcript itself:
+ * `<projects>/<encoded-cwd>/<session-id>/subagents/agent-<agent-id>.jsonl`.
+ */
+export function resolveSubagentsDir(sessionJsonlPath: string): string {
+  return path.join(sessionJsonlPath.replace(/\.jsonl$/, ''), 'subagents');
+}
+
+async function readSubagentFileNames(subagentsDir: string): Promise<Set<string>> {
+  try {
+    const files = await fsp.readdir(subagentsDir);
+    return new Set(files.filter((file) => file.startsWith('agent-') && file.endsWith('.jsonl')));
+  } catch {
+    // Sessions that never spawned an agent have no `subagents/` directory.
+    return new Set();
+  }
+}
+
+export async function parseAgentTools(filePath: string): Promise<AnyRecord[]> {
   const tools: AnyRecord[] = [];
 
   try {
@@ -110,15 +131,17 @@ async function getSessionMessages(
   try {
     // The DB row is keyed by the app-facing session id, while the JSONL rows
     // on disk carry the provider-native id — both ids are needed here.
-    const jsonLPath = sessionsDb.getSessionById(sessionId)?.jsonl_path;
+    const sessionRow = sessionsDb.getSessionById(sessionId);
+    const jsonLPath = sessionRow?.jsonl_path;
 
     if (!jsonLPath) {
       return { messages: [], total: 0, hasMore: false };
     }
 
-    const projectDir = path.dirname(jsonLPath);
-    const files = await fsp.readdir(projectDir);
-    const agentFiles = files.filter((file) => file.endsWith('.jsonl') && file.startsWith('agent-'));
+    // Sub-agent transcripts repeat the *parent's* `sessionId` on every row and
+    // identify themselves through `agentId`, so matching on the session id
+    // would discard the whole file.
+    const agentId = sessionRow.parent_session_id ? sessionRow.session_id : null;
 
     const messages: AnyRecord[] = [];
     const agentToolsCache = new Map<string, AnyRecord[]>();
@@ -136,7 +159,10 @@ async function getSessionMessages(
 
       try {
         const entry = JSON.parse(line) as AnyRecord;
-        if (entry.sessionId === providerSessionId) {
+        const belongsToSession = agentId
+          ? entry.agentId === agentId
+          : entry.sessionId === providerSessionId;
+        if (belongsToSession) {
           messages.push(entry);
         }
       } catch {
@@ -146,21 +172,23 @@ async function getSessionMessages(
 
     const agentIds = new Set<string>();
     for (const message of messages) {
-      const agentId = message.toolUseResult?.agentId;
-      if (agentId) {
-        agentIds.add(String(agentId));
+      const messageAgentId = message.toolUseResult?.agentId;
+      if (messageAgentId) {
+        agentIds.add(String(messageAgentId));
       }
     }
 
-    for (const agentId of agentIds) {
-      const agentFileName = `agent-${agentId}.jsonl`;
-      if (!agentFiles.includes(agentFileName)) {
+    const subagentsDir = resolveSubagentsDir(jsonLPath);
+    const agentFiles = await readSubagentFileNames(subagentsDir);
+
+    for (const currentAgentId of agentIds) {
+      const agentFileName = `agent-${currentAgentId}.jsonl`;
+      if (!agentFiles.has(agentFileName)) {
         continue;
       }
 
-      const agentFilePath = path.join(projectDir, agentFileName);
-      const tools = await parseAgentTools(agentFilePath);
-      agentToolsCache.set(agentId, tools);
+      const tools = await parseAgentTools(path.join(subagentsDir, agentFileName));
+      agentToolsCache.set(currentAgentId, tools);
     }
 
     for (const message of messages) {

@@ -88,7 +88,7 @@ test('Codex synchronizer titles app-created sessions from the first user message
   }
 });
 
-test('Codex synchronizer skips sub-agent rollout files', { concurrency: false }, async () => {
+test('Codex synchronizer indexes sub-agent rollouts as children of their parent thread', { concurrency: false }, async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-session-sync-subagent-'));
   const workspacePath = path.join(tempRoot, 'workspace');
   await mkdir(workspacePath, { recursive: true });
@@ -108,6 +108,8 @@ test('Codex synchronizer skips sub-agent rollout files', { concurrency: false },
           cwd: workspacePath,
           thread_source: 'subagent',
           parent_thread_id: 'codex-parent-1',
+          agent_nickname: 'Noether',
+          agent_path: '/root/feature_design_review',
           source: { subagent: { thread_spawn: { parent_thread_id: 'codex-parent-1', depth: 1 } } },
         },
       })}\n`,
@@ -119,9 +121,24 @@ test('Codex synchronizer skips sub-agent rollout files', { concurrency: false },
       const synchronizer = new CodexSessionSynchronizer();
       const processed = await synchronizer.synchronize();
 
-      assert.equal(processed, 1);
+      assert.equal(processed, 2);
       assert.ok(sessionsDb.getSessionById('codex-parent-1'));
-      assert.equal(sessionsDb.getSessionById('codex-subagent-1'), null);
+
+      // The child is addressable on its own so its transcript can be opened,
+      // but it hangs off the parent instead of standing beside it.
+      const subagent = sessionsDb.getSessionById('codex-subagent-1');
+      assert.ok(subagent);
+      assert.equal(subagent.parent_session_id, 'codex-parent-1');
+      assert.equal(subagent.agent_type, 'feature_design_review');
+      assert.equal(subagent.custom_name, 'Noether');
+
+      // ...and it must never surface as a standalone sidebar session.
+      const projectSessions = sessionsDb.getSessionsByProjectPath(workspacePath);
+      assert.deepEqual(projectSessions.map((row) => row.session_id), ['codex-parent-1']);
+      assert.equal(sessionsDb.countSessionsByProjectPath(workspacePath), 1);
+
+      const agentCounts = sessionsDb.countSubagentsByParentSessionIds(['codex-parent-1']);
+      assert.equal(agentCounts.get('codex-parent-1'), 1);
     });
   } finally {
     restoreHomeDir();

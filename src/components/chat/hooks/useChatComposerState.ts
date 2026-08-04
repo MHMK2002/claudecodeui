@@ -13,7 +13,9 @@ import { useDropzone } from 'react-dropzone';
 
 import { authenticatedFetch } from '../../../utils/api';
 import type { MarkSessionProcessing } from '../../../hooks/useSessionProtection';
+import type { VoiceTranscriptDelivery } from '../../../lib/finalizeVoiceTranscript';
 import { grantClaudeToolPermission } from '../utils/chatPermissions';
+import { buildVoiceViewKey, isBackgroundVoiceOrigin } from '../utils/voiceOrigin';
 import {
   clearQueuedMessage,
   readQueuedMessage,
@@ -34,9 +36,15 @@ import { useFileMentions } from './useFileMentions';
 import { type SlashCommand, useSlashCommands } from './useSlashCommands';
 
 interface UseChatComposerStateArgs {
+  /**
+   * The conversation on screen. Read only to build the ArrowUp/ArrowDown
+   * recall list (the user's own past turns), never rendered from here.
+   */
+  chatMessages: ChatMessage[];
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   currentSessionId: string | null;
+  newSessionTrigger?: number;
   provider: LLMProvider;
   permissionMode: PermissionMode | string;
   cyclePermissionMode: () => void;
@@ -171,6 +179,8 @@ export type QueuedDraft = {
  */
 export type VoiceOrigin = {
   key: string | null;
+  /** Stable identity even before a backend session id exists. */
+  viewKey: string;
   options: QueuedSendOptions;
   /**
    * Project + provider identity of the origin session, snapshotted at commit time.
@@ -207,9 +217,11 @@ const getNotificationSessionSummary = (
 };
 
 export function useChatComposerState({
+  chatMessages,
   selectedProject,
   selectedSession,
   currentSessionId,
+  newSessionTrigger,
   provider,
   permissionMode,
   cyclePermissionMode,
@@ -263,13 +275,16 @@ export function useChatComposerState({
   // to currentSessionId for a just-established session that hasn't been
   // handed back to the parent's `selectedSession` prop yet.
   const sessionKey = selectedSession?.id || currentSessionId || null;
-  // Live mirror of the viewed session key. handleVoiceTranscript is captured by the
-  // in-flight recorder's onstop when recording STARTS, so reading selectedSession /
-  // currentSessionId from its closure would see the ORIGIN session, not the one on
-  // screen when the transcript resolves. Reading through this ref makes the
-  // "did the user switch away?" check reflect delivery time.
-  const sessionKeyRef = useRef<string | null>(sessionKey);
-  sessionKeyRef.current = sessionKey;
+  const voiceViewKey = buildVoiceViewKey(
+    sessionKey,
+    provider,
+    selectedProjectId || selectedProject?.fullPath || selectedProject?.path,
+    newSessionTrigger,
+  );
+  // Live mirror of the full viewed origin. A nullable session id alone collapses
+  // distinct unsaved projects/chats to the same identity.
+  const voiceViewKeyRef = useRef(voiceViewKey);
+  voiceViewKeyRef.current = voiceViewKey;
 
   const [queuedDraft, setQueuedDraft] = useState<QueuedDraft | null>(() => {
     if (typeof window === 'undefined' || !sessionKey) {
@@ -987,6 +1002,7 @@ export function useChatComposerState({
   // user switches sessions still lands where it was dictated.
   const captureVoiceOrigin = useCallback((): VoiceOrigin => ({
     key: selectedSession?.id || currentSessionId || null,
+    viewKey: voiceViewKey,
     options: buildSendOptions(''),
     projectPath: selectedProject?.fullPath || selectedProject?.path || '',
     provider,
@@ -998,6 +1014,7 @@ export function useChatComposerState({
   }), [
     selectedSession,
     currentSessionId,
+    voiceViewKey,
     buildSendOptions,
     selectedProject,
     provider,
@@ -1005,16 +1022,49 @@ export function useChatComposerState({
     selectedCodexProfileId,
   ]);
 
+  // Text that was in the box when a live dictation started. Partial transcripts are
+  // rendered after it, so the growing preview never eats what the user already typed
+  // and can be rolled back wholesale if the recording produces nothing. `null` means
+  // no live preview is on screen.
+  const voiceLiveBaseRef = useRef<string | null>(null);
+
+  // Streaming STT (Soniox) reports words while the user is still speaking. Show them
+  // in the composer as they arrive; `null` means the recording ended without a
+  // transcript, so the preview is rolled back to the pre-dictation text.
+  const handleVoiceInterim = useCallback((text: string | null) => {
+    if (text === null) {
+      const base = voiceLiveBaseRef.current;
+      if (base === null) return;
+      voiceLiveBaseRef.current = null;
+      setInput(base);
+      inputValueRef.current = base;
+      return;
+    }
+
+    if (voiceLiveBaseRef.current === null) {
+      voiceLiveBaseRef.current = inputValueRef.current.trim();
+    }
+    const base = voiceLiveBaseRef.current;
+    const next = base ? `${base} ${text}` : text;
+    setInput(next);
+    inputValueRef.current = next;
+  }, [setInput]);
+
   // A voice transcript either fills the input (to edit before sending) or, when the
   // user tapped "stop and send", is submitted straight away. Mirror the value into
   // inputValueRef synchronously so handleSubmit reads the new text, not the stale state.
-  const handleVoiceTranscript = useCallback(async (text: string, send?: boolean, origin?: unknown) => {
+  const handleVoiceTranscript = useCallback(async (
+    text: string,
+    send?: boolean,
+    origin?: unknown,
+    delivery?: VoiceTranscriptDelivery,
+  ) => {
     const trimmed = text.trim();
     if (!trimmed) return;
 
     // Read the chat on screen NOW (delivery time), not the one this callback closed
-    // over when recording started — see sessionKeyRef above.
-    const activeKey = sessionKeyRef.current;
+    // over when recording started.
+    const activeViewKey = voiceViewKeyRef.current;
     const voiceOrigin = origin as VoiceOrigin | undefined;
     const originKey = voiceOrigin?.key ?? null;
 
@@ -1023,19 +1073,22 @@ export function useChatComposerState({
     // transcript to that origin out-of-band instead of the composer's now-stale
     // current-session path — this both stops a switched-away transcript from
     // hijacking the open chat and lets a fresh recording start here undisturbed.
-    if (voiceOrigin && originKey !== activeKey) {
-      if (send) {
-        let target = originKey;
-        if (!target) {
-          // Brand-new origin chat: allocate its session now. A transcript exists, so
-          // this can't leave an orphan session behind.
-          target = await createProviderSessionId({
-            provider: voiceOrigin.provider,
-            projectPath: voiceOrigin.projectPath,
-            providerProfileId: voiceOrigin.providerProfileId,
-          });
-        }
-        if (target) {
+    if (
+      voiceOrigin &&
+      (isBackgroundVoiceOrigin(voiceOrigin.viewKey, activeViewKey) || delivery?.ownsUi === false)
+    ) {
+      let target = originKey;
+      if (!target) {
+        // Brand-new origin chat: allocate its session now so the transcript can be
+        // addressed there as either a sent message or a retained draft.
+        target = await createProviderSessionId({
+          provider: voiceOrigin.provider,
+          projectPath: voiceOrigin.projectPath,
+          providerProfileId: voiceOrigin.providerProfileId,
+        });
+      }
+      if (target) {
+        if (send) {
           // Same session-addressed dispatch the app-level auto-send uses; the backend
           // resolves provider/path from the session row. No optimistic addMessage —
           // the user message surfaces when they reopen the origin session.
@@ -1046,14 +1099,22 @@ export function useChatComposerState({
             options: { ...(voiceOrigin.options ?? {}), images: [] },
           });
           onSessionProcessing?.(target, { statusText: null, canInterrupt: true });
+        } else {
+          // A fill-only transcript is persisted as that origin's draft, including
+          // when the origin did not have a backend session id at commit time.
+          writeQueuedMessage(target, { content: trimmed, options: voiceOrigin.options });
         }
-      } else if (originKey) {
-        // "Fill the box" for a chat we've left: stash it as that session's queued
-        // draft so it's waiting in the composer when the user returns. A brand-new
-        // origin chat has no key to stash under, so its fill is dropped.
-        writeQueuedMessage(originKey, { content: trimmed, options: voiceOrigin.options });
       }
       return;
+    }
+
+    // Only a transcript for the chat on screen may replace its live preview. A
+    // committed recording delivered to an older origin must leave a newer
+    // recording's composer state untouched.
+    if (voiceLiveBaseRef.current !== null) {
+      setInput(voiceLiveBaseRef.current);
+      inputValueRef.current = voiceLiveBaseRef.current;
+      voiceLiveBaseRef.current = null;
     }
 
     // Origin is the open chat (or unknown / the same brand-new chat): fill the box
@@ -1062,7 +1123,7 @@ export function useChatComposerState({
     const next = base ? `${base} ${trimmed}` : trimmed;
     setInput(next);
     inputValueRef.current = next;
-    if (send) handleSubmitRef.current?.(createFakeSubmitEvent());
+    if (send) await handleSubmitRef.current?.(createFakeSubmitEvent());
   }, [sendMessage, onSessionProcessing, setInput, createProviderSessionId]);
 
   useEffect(() => {
@@ -1139,10 +1200,135 @@ export function useChatComposerState({
     setIsTextareaExpanded(false);
   }, [input]);
 
+  /* ---------------------------------------------------------------- */
+  /*  ArrowUp / ArrowDown recall of the user's own past messages       */
+  /* ---------------------------------------------------------------- */
+
+  // Position in `historyEntriesRef`, counted from the newest: 0 = last message
+  // sent, 1 = the one before it. `null` = not browsing; the box holds the draft.
+  const historyIndexRef = useRef<number | null>(null);
+  // Snapshot of the recall list, taken when browsing starts so the indices stay
+  // stable if the transcript grows mid-navigation.
+  const historyEntriesRef = useRef<string[]>([]);
+  // The draft that was in the box before browsing began, restored on stepping
+  // back down past the newest entry — the same courtesy a shell does.
+  const historyDraftRef = useRef('');
+  // Set when a recalled value is written, so the effect below can put the caret
+  // at the end once React has committed the new textarea value.
+  const pendingHistoryCaretRef = useRef(false);
+  const chatMessagesRef = useRef(chatMessages);
+  chatMessagesRef.current = chatMessages;
+
+  const exitHistoryNavigation = useCallback(() => {
+    historyIndexRef.current = null;
+    historyEntriesRef.current = [];
+    historyDraftRef.current = '';
+  }, []);
+
+  // A different conversation has different history; never carry it across.
+  const historySessionKey = selectedSession?.id || currentSessionId || null;
+  useEffect(() => {
+    exitHistoryNavigation();
+  }, [historySessionKey, exitHistoryNavigation]);
+
+  // Sending the recalled message (or clearing the box any other way) ends
+  // browsing, so the next ArrowUp rebuilds from the newest turn. Covers every
+  // submit path in one place instead of each `setInput('')` call site.
+  useEffect(() => {
+    if (input === '' && historyIndexRef.current !== null) {
+      exitHistoryNavigation();
+    }
+  }, [input, exitHistoryNavigation]);
+
+  useEffect(() => {
+    if (!pendingHistoryCaretRef.current) return;
+    pendingHistoryCaretRef.current = false;
+    const node = textareaRef.current;
+    if (!node) return;
+    node.selectionStart = node.value.length;
+    node.selectionEnd = node.value.length;
+    resizeTextarea(node);
+  }, [input, resizeTextarea]);
+
+  const applyRecalledInput = useCallback((next: string) => {
+    setInput(next);
+    inputValueRef.current = next;
+    pendingHistoryCaretRef.current = true;
+  }, []);
+
+  /**
+   * Walks the composer through previously sent messages, shell-style.
+   *
+   * Up only fires while the caret sits on the first line and Down only on the
+   * last, so both keys keep their normal meaning inside a multi-line draft;
+   * anything with a modifier, an active selection, or an open command/file menu
+   * is left alone. Returns true when the key was consumed.
+   */
+  const handleHistoryKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return false;
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
+      if (event.nativeEvent.isComposing) return false;
+
+      const node = event.currentTarget;
+      const { selectionStart, selectionEnd, value } = node;
+      if (selectionStart === null || selectionEnd === null) return false;
+      if (selectionStart !== selectionEnd) return false;
+
+      if (event.key === 'ArrowUp') {
+        if (value.slice(0, selectionStart).includes('\n')) return false;
+
+        if (historyIndexRef.current === null) {
+          // Newest last, consecutive repeats collapsed — re-sending the same
+          // text twice shouldn't cost two presses to walk past.
+          const entries: string[] = [];
+          for (const message of chatMessagesRef.current) {
+            if (message.type !== 'user') continue;
+            const text = String(message.content ?? '').trim();
+            if (!text || entries[entries.length - 1] === text) continue;
+            entries.push(text);
+          }
+          if (entries.length === 0) return false;
+          historyEntriesRef.current = entries;
+          historyDraftRef.current = value;
+        }
+
+        const entries = historyEntriesRef.current;
+        const nextIndex = historyIndexRef.current === null ? 0 : historyIndexRef.current + 1;
+        event.preventDefault();
+        // Already at the oldest message: hold there rather than wrapping around.
+        if (nextIndex >= entries.length) return true;
+        historyIndexRef.current = nextIndex;
+        applyRecalledInput(entries[entries.length - 1 - nextIndex]);
+        return true;
+      }
+
+      if (historyIndexRef.current === null) return false;
+      if (value.slice(selectionEnd).includes('\n')) return false;
+
+      event.preventDefault();
+      const nextIndex = historyIndexRef.current - 1;
+      if (nextIndex < 0) {
+        const draft = historyDraftRef.current;
+        exitHistoryNavigation();
+        applyRecalledInput(draft);
+        return true;
+      }
+      historyIndexRef.current = nextIndex;
+      applyRecalledInput(historyEntriesRef.current[historyEntriesRef.current.length - 1 - nextIndex]);
+      return true;
+    },
+    [applyRecalledInput, exitHistoryNavigation],
+  );
+
   const handleInputChange = useCallback(
     (event: ChangeEvent<HTMLTextAreaElement>) => {
       const newValue = event.target.value;
       const cursorPos = event.target.selectionStart;
+
+      // Typing over a recalled message makes it the user's own draft again, so
+      // the next ArrowUp restarts from the newest entry.
+      exitHistoryNavigation();
 
       setInput(newValue);
       inputValueRef.current = newValue;
@@ -1157,7 +1343,7 @@ export function useChatComposerState({
 
       handleCommandInputChange(newValue, cursorPos);
     },
-    [handleCommandInputChange, resetCommandMenuState, setCursorPosition],
+    [exitHistoryNavigation, handleCommandInputChange, resetCommandMenuState, setCursorPosition],
   );
 
   const handleKeyDown = useCallback(
@@ -1167,6 +1353,11 @@ export function useChatComposerState({
       }
 
       if (handleFileMentionsKeyDown(event)) {
+        return;
+      }
+
+      // After the menus: both of them own the arrow keys while open.
+      if (handleHistoryKeyDown(event)) {
         return;
       }
 
@@ -1194,6 +1385,7 @@ export function useChatComposerState({
       cyclePermissionMode,
       handleCommandMenuKeyDown,
       handleFileMentionsKeyDown,
+      handleHistoryKeyDown,
       handleSubmit,
       sendByCtrlEnter,
       showCommandMenu,
@@ -1221,13 +1413,14 @@ export function useChatComposerState({
   const handleClearInput = useCallback(() => {
     setInput('');
     inputValueRef.current = '';
+    exitHistoryNavigation();
     resetCommandMenuState();
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
       textareaRef.current.focus();
     }
     setIsTextareaExpanded(false);
-  }, [resetCommandMenuState]);
+  }, [exitHistoryNavigation, resetCommandMenuState]);
 
   const handleAbortSession = useCallback(() => {
     if (!canAbortSession) {
@@ -1330,7 +1523,9 @@ export function useChatComposerState({
     editQueuedDraft,
     deleteQueuedDraft,
     handleVoiceTranscript,
+    handleVoiceInterim,
     captureVoiceOrigin,
+    voiceViewKey,
     handleInputChange,
     handleKeyDown,
     handlePaste,

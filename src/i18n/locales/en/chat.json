@@ -236,5 +236,10 @@
   },
   "tasks": {
     "nextTaskPrompt": "Start the next task"
+  },
+  "agentTranscript": {
+    "readOnly": "Read-only transcript of the {{agentType}} agent.",
+    "defaultType": "sub",
+    "backToParent": "Back to parent session"
   }
 }

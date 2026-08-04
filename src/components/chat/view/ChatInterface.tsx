@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowDownIcon } from 'lucide-react';
+import { ArrowDownIcon, Bot } from 'lucide-react';
 
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
@@ -42,6 +42,9 @@ function ChatInterface({
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const { subscribe } = useWebSocket();
   const { t } = useTranslation('chat');
+  // Sub-agent sessions carry the id of the session that spawned them; they are
+  // finished transcripts, so the composer is replaced by a read-only banner.
+  const isAgentTranscript = Boolean(selectedSession?.parentSessionId);
 
   const sessionStore = useSessionStore();
   const streamTimerRef = useRef<number | null>(null);
@@ -190,7 +193,9 @@ function ChatInterface({
     editQueuedDraft,
     deleteQueuedDraft,
     handleVoiceTranscript,
+    handleVoiceInterim,
     captureVoiceOrigin,
+    voiceViewKey,
     handleInputChange,
     handleKeyDown,
     handlePaste,
@@ -208,9 +213,11 @@ function ChatInterface({
     showCostModal,
     buildSendOptions,
   } = useChatComposerState({
+    chatMessages,
     selectedProject,
     selectedSession,
     currentSessionId,
+    newSessionTrigger,
     provider,
     permissionMode,
     cyclePermissionMode,
@@ -429,6 +436,26 @@ function ChatInterface({
             </div>
           )}
 
+          {/* An agent transcript is a record of a run that already happened
+              under another session — there is nothing to send it to. */}
+          {isAgentTranscript ? (
+          <div className="flex items-center justify-between gap-3 border-t border-border bg-muted/30 px-4 py-3 text-xs text-muted-foreground">
+            <span className="flex items-center gap-2">
+              <Bot className="h-3.5 w-3.5 flex-shrink-0" aria-hidden />
+              {t('agentTranscript.readOnly', {
+                defaultValue: 'Read-only transcript of the {{agentType}} agent.',
+                agentType: selectedSession?.agentType || t('agentTranscript.defaultType', { defaultValue: 'sub' }),
+              })}
+            </span>
+            <button
+              type="button"
+              className="flex-shrink-0 rounded-md px-2 py-1 font-medium text-foreground transition-colors hover:bg-accent"
+              onClick={() => onNavigateToSession?.(selectedSession!.parentSessionId!)}
+            >
+              {t('agentTranscript.backToParent', { defaultValue: 'Back to parent session' })}
+            </button>
+          </div>
+          ) : (
           <ChatComposer
           pendingPermissionRequests={pendingPermissionRequests}
           handlePermissionDecision={handlePermissionDecision}
@@ -478,8 +505,9 @@ function ChatInterface({
           textareaRef={textareaRef}
           input={input}
           onVoiceTranscript={handleVoiceTranscript}
+          onVoiceInterim={handleVoiceInterim}
           onVoiceCommit={captureVoiceOrigin}
-          viewedSessionKey={currentSessionId || selectedSession?.id || null}
+          viewedSessionKey={voiceViewKey}
           onInputChange={handleInputChange}
           onTextareaClick={handleTextareaClick}
           onTextareaKeyDown={handleKeyDown}
@@ -501,6 +529,7 @@ function ChatInterface({
           isTextareaExpanded={isTextareaExpanded}
           sendByCtrlEnter={sendByCtrlEnter}
         />
+          )}
         </div>
       </div>
 

@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { cleanupVoiceTranscript, getVoiceStreamWebSocketUrl, transcribeVoice } from '../../../lib/voiceApi';
+import {
+  finalizeVoiceTranscript,
+  type VoiceTranscriptDelivery,
+} from '../../../lib/finalizeVoiceTranscript';
+import {
+  cleanupVoiceTranscript,
+  getVoiceStreamWebSocketUrl,
+  transcribeVoice,
+} from '../../../lib/voiceApi';
 import { readVoiceConfig } from '../../../hooks/useVoiceConfig';
 
 function sleep(ms: number): Promise<void> {
@@ -9,6 +17,12 @@ function sleep(ms: number): Promise<void> {
 
 type SonioxToken = { text?: string; is_final?: boolean };
 type SonioxRelayMessage = { error?: string; ready?: boolean; finished?: boolean; tokens?: SonioxToken[] };
+type RecordingControl = {
+  recorder: MediaRecorder;
+  send: boolean;
+  origin?: unknown;
+  discard: boolean;
+};
 
 // Mobile-safe recording: iOS Safari 18.4+ supports webm/opus; older iOS needs mp4.
 const MIME_CANDIDATES = [
@@ -73,33 +87,51 @@ export type VoiceInputState = 'idle' | 'recording' | 'transcribing';
  * Push-to-talk dictation. Records the mic, uploads to /api/voice/transcribe
  * (an OpenAI-compatible speech-to-text backend via the Express proxy), and
  * returns the transcript through onTranscript.
+ *
+ * `onInterim` receives the partial transcript as it arrives, so the composer can
+ * show words appearing while the user is still speaking. Only the Soniox
+ * streaming provider produces partials; the batch backend has nothing to report
+ * until the upload completes. It is called with `null` when a recording ends
+ * without delivering a transcript (cancelled, discarded, or failed) so the
+ * consumer can drop the preview it was rendering.
  */
 export function useVoiceInput(
-  onTranscript: (text: string, send?: boolean, origin?: unknown) => void,
+  onTranscript: (
+    text: string,
+    send?: boolean,
+    origin?: unknown,
+    delivery?: VoiceTranscriptDelivery,
+  ) => void | Promise<void>,
   onError?: (msg: string) => void,
+  onInterim?: (text: string | null) => void,
 ) {
   const [state, setState] = useState<VoiceInputState>('idle');
   const recorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
   const cancelledRef = useRef(false);
   const startingRef = useRef(false);
-  // Whether the in-progress stop should auto-send the transcript (vs just fill the box).
-  const sendRef = useRef(false);
-  // Opaque token identifying which session (etc.) this stop commits to. Snapshotted
-  // in onstop before any async work so a recording started elsewhere while this one
-  // is still transcribing can't redirect this transcript.
-  const originRef = useRef<unknown>(undefined);
+  // Invalidates an outstanding getUserMedia request when the viewed session is
+  // detached. A late permission/device result must not start recording there.
+  const startAttemptRef = useRef(0);
+  // Mutable commit intent for the active recorder only. Every start() captures its
+  // own object, so an older onstop cannot consume a newer recording's send/origin.
+  const recordingControlRef = useRef<RecordingControl | null>(null);
   // Monotonic id per recording. A recording that is superseded (the user started a
   // new one while this one was still transcribing) must not drive the shared UI
   // state — only the newest recording owns `state`. Delivery still fires regardless.
   const genRef = useRef(0);
-  // Set by detach() to drop an in-progress recording on a session switch: onstop
-  // reads and clears it, then bails before transcribing/delivering.
-  const discardRef = useRef(false);
   // Soniox streaming only: the relay WebSocket for the current/most recent
   // recording, held purely so the unmount cleanup effect can close it.
   const sonioxSocketRef = useRef<WebSocket | null>(null);
+  // A committed recording owns its controller until STT + cleanup + delivery
+  // completes. Starting another recording leaves older controllers alone; only a
+  // real component teardown aborts all outstanding work.
+  const pipelineControllersRef = useRef(new Set<AbortController>());
+  // Read through a ref: partials fire many times per recording, from socket
+  // handlers closed over inside start(), and must not force start() to change
+  // identity on every consumer re-render.
+  const onInterimRef = useRef(onInterim);
+  onInterimRef.current = onInterim;
 
   const stopTracks = () => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -109,8 +141,10 @@ export function useVoiceInput(
   // Stop the mic if the component unmounts mid-recording.
   useEffect(() => {
     cancelledRef.current = false;
+    const pipelineControllers = pipelineControllersRef.current;
     return () => {
       cancelledRef.current = true;
+      startAttemptRef.current += 1;
       startingRef.current = false;
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
@@ -121,12 +155,15 @@ export function useVoiceInput(
         /* already closed */
       }
       sonioxSocketRef.current = null;
+      for (const controller of pipelineControllers) controller.abort();
+      pipelineControllers.clear();
     };
   }, []);
 
   const start = useCallback(async () => {
     if (startingRef.current || (recorderRef.current && recorderRef.current.state !== 'inactive')) return;
     startingRef.current = true;
+    const startAttempt = ++startAttemptRef.current;
     try {
       // Record from the user's chosen input device (Voice settings), read fresh each
       // time so a settings change applies to the next recording with no prop
@@ -153,7 +190,7 @@ export function useVoiceInput(
           throw constraintErr;
         }
       }
-      if (cancelledRef.current) {
+      if (cancelledRef.current || startAttemptRef.current !== startAttempt) {
         stream.getTracks().forEach((t) => t.stop());
         return;
       }
@@ -161,12 +198,26 @@ export function useVoiceInput(
       const mimeType = pickMime();
       const rec = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
       recorderRef.current = rec;
-      chunksRef.current = [];
+      const chunks: Blob[] = [];
+      const control: RecordingControl = {
+        recorder: rec,
+        send: false,
+        origin: undefined,
+        discard: false,
+      };
+      recordingControlRef.current = control;
+      const stopRecordingTracks = () => {
+        stream.getTracks().forEach((track) => track.stop());
+        if (streamRef.current === stream) streamRef.current = null;
+      };
       // Claim ownership of the shared UI state for this recording. Any older
       // recording still resolving in the background compares against this and
       // bows out of setState so it can't reset a newer recording's state.
       const gen = ++genRef.current;
       const isCurrent = () => genRef.current === gen;
+      const clearCurrentInterim = () => {
+        if (isCurrent()) onInterimRef.current?.(null);
+      };
 
       const isSoniox = readVoiceConfig().sttProvider === 'soniox';
 
@@ -206,7 +257,14 @@ export function useVoiceInput(
           };
 
           socket.onopen = () => {
-            socket.send(JSON.stringify({ apiKey: readVoiceConfig().sonioxApiKey }));
+            const voiceConfig = readVoiceConfig();
+            socket.send(
+              JSON.stringify({
+                apiKey: voiceConfig.sonioxApiKey,
+                languageHints: voiceConfig.sttLanguages,
+                terms: voiceConfig.sttTerms,
+              }),
+            );
           };
           socket.onmessage = (ev) => {
             if (typeof ev.data !== 'string') return;
@@ -228,8 +286,18 @@ export function useVoiceInput(
               return;
             }
             if (Array.isArray(msg.tokens)) {
+              // Soniox resends the whole not-yet-final tail on every frame, so the
+              // interim buffer is rebuilt per message while finals accumulate.
+              let interim = '';
               for (const tok of msg.tokens) {
-                if (tok?.is_final && typeof tok.text === 'string') sonioxFinalText += tok.text;
+                if (typeof tok?.text !== 'string') continue;
+                if (tok.is_final) sonioxFinalText += tok.text;
+                else interim += tok.text;
+              }
+              // Live preview only belongs to the recording that currently owns the
+              // UI; a superseded one still finishes, but silently.
+              if (isCurrent() && !control.discard) {
+                onInterimRef.current?.((sonioxFinalText + interim).trim());
               }
             }
             if (msg.finished) sonioxFinishedResolve?.();
@@ -239,7 +307,7 @@ export function useVoiceInput(
             forceStopOnFailure();
           };
           socket.onclose = () => {
-            if (!sonioxReady && !discardRef.current) {
+            if (!sonioxReady && !control.discard) {
               if (!sonioxError) sonioxError = 'Voice stream connection failed';
               forceStopOnFailure();
             }
@@ -252,7 +320,7 @@ export function useVoiceInput(
         // Kept for both providers: Soniox streaming still needs the full blob for
         // the size/silence guards below (mirroring the batch path exactly), on top
         // of forwarding chunks live over the relay socket.
-        chunksRef.current.push(e.data);
+        chunks.push(e.data);
         if (isSoniox && sonioxSocket) {
           const blob = e.data;
           const socket = sonioxSocket;
@@ -270,7 +338,9 @@ export function useVoiceInput(
       };
 
       rec.onstop = async () => {
-        stopTracks();
+        stopRecordingTracks();
+        if (recorderRef.current === rec) recorderRef.current = null;
+        if (recordingControlRef.current === control) recordingControlRef.current = null;
         if (cancelledRef.current) {
           try {
             sonioxSocket?.close();
@@ -281,12 +351,9 @@ export function useVoiceInput(
         }
         // Capture and clear the send intent + commit target for this stop before any
         // async work, so a later recording can't change where this transcript lands.
-        const shouldSend = sendRef.current;
-        const origin = originRef.current;
-        const discarded = discardRef.current;
-        sendRef.current = false;
-        originRef.current = undefined;
-        discardRef.current = false;
+        const shouldSend = control.send;
+        const origin = control.origin;
+        const discarded = control.discard;
         // Dropped by detach() on a session switch: the mic is already released above
         // and the shared UI state has been relinquished, so bail before any async
         // work — no transcription, no delivery.
@@ -299,9 +366,10 @@ export function useVoiceInput(
           return;
         }
         const type = rec.mimeType || 'audio/webm';
-        const blob = new Blob(chunksRef.current, { type });
+        const blob = new Blob(chunks, { type });
         if (blob.size < 800) {
           if (isCurrent()) setState('idle');
+          clearCurrentInterim();
           onError?.('Recording too short');
           try {
             sonioxSocket?.close();
@@ -316,6 +384,7 @@ export function useVoiceInput(
         if (await isRecordingSilent(blob)) {
           if (cancelledRef.current) return;
           if (isCurrent()) setState('idle');
+          clearCurrentInterim();
           onError?.('No sound from the microphone — check the selected device isn’t muted.');
           try {
             sonioxSocket?.close();
@@ -324,6 +393,19 @@ export function useVoiceInput(
           }
           return;
         }
+
+        const pipelineController = new AbortController();
+        pipelineControllersRef.current.add(pipelineController);
+        const deliverFinalTranscript = (rawText: string) =>
+          finalizeVoiceTranscript({
+            rawText,
+            send: shouldSend,
+            origin,
+            signal: pipelineController.signal,
+            ownsUi: isCurrent,
+            onTranscript,
+            cleanup: cleanupVoiceTranscript,
+          });
 
         if (isSoniox) {
           if (isCurrent()) setState('transcribing');
@@ -340,17 +422,14 @@ export function useVoiceInput(
             sonioxSocket.send('');
             await Promise.race([finishedPromise, sleep(6000)]);
             if (cancelledRef.current) return;
-            const text = sonioxFinalText.trim();
-            if (text) {
-              // Same optional LLM polish step as the batch path. State stays
-              // 'transcribing' through this so the UI keeps the loading indicator.
-              const finalText = await cleanupVoiceTranscript(text);
-              if (cancelledRef.current) return;
-              onTranscript(finalText, shouldSend, origin);
-            } else {
+            const result = await deliverFinalTranscript(sonioxFinalText);
+            if (result === 'cancelled') return;
+            if (result === 'empty') {
+              clearCurrentInterim();
               onError?.(sonioxError || 'No speech detected');
             }
           } catch (e) {
+            clearCurrentInterim();
             if (!cancelledRef.current) {
               onError?.(`Transcription failed: ${e instanceof Error ? e.message : String(e)}`);
             }
@@ -360,6 +439,7 @@ export function useVoiceInput(
             } catch {
               /* already closed */
             }
+            pipelineControllersRef.current.delete(pipelineController);
             if (!cancelledRef.current && isCurrent()) setState('idle');
           }
           return;
@@ -368,25 +448,20 @@ export function useVoiceInput(
         if (isCurrent()) setState('transcribing');
         try {
           const ext = type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm';
-          const res = await transcribeVoice(blob, `recording.${ext}`);
+          const res = await transcribeVoice(blob, `recording.${ext}`, pipelineController.signal);
           if (!res.ok) throw new Error(`transcribe ${res.status}`);
           const data = await res.json();
           if (cancelledRef.current) return;
-          const text = String(data?.text || '').trim();
-          if (text) {
-            // Optional LLM polish step. State stays 'transcribing' through this so
-            // the UI keeps the loading indicator. Fails soft to the raw transcript.
-            const finalText = await cleanupVoiceTranscript(text);
-            if (cancelledRef.current) return;
-            // Deliver even if superseded — the transcript belongs to `origin`, not
-            // to whatever recording currently owns the UI state.
-            onTranscript(finalText, shouldSend, origin);
-          } else onError?.('No speech detected');
+          const result = await deliverFinalTranscript(
+            typeof data?.text === 'string' ? data.text : '',
+          );
+          if (result === 'empty') onError?.('No speech detected');
         } catch (e) {
           if (!cancelledRef.current) {
             onError?.(`Transcription failed: ${e instanceof Error ? e.message : String(e)}`);
           }
         } finally {
+          pipelineControllersRef.current.delete(pipelineController);
           if (!cancelledRef.current && isCurrent()) setState('idle');
         }
       };
@@ -394,6 +469,7 @@ export function useVoiceInput(
       rec.start(isSoniox ? 250 : undefined);
       setState('recording');
     } catch (e) {
+      if (startAttemptRef.current !== startAttempt) return;
       recorderRef.current = null;
       stopTracks();
       if (cancelledRef.current) return;
@@ -404,7 +480,7 @@ export function useVoiceInput(
       onError?.(msg);
       setState('idle');
     } finally {
-      startingRef.current = false;
+      if (startAttemptRef.current === startAttempt) startingRef.current = false;
     }
   }, [onTranscript, onError]);
 
@@ -416,8 +492,11 @@ export function useVoiceInput(
   const stop = useCallback((opts?: { send?: boolean; origin?: unknown }) => {
     const rec = recorderRef.current;
     if (rec && rec.state !== 'inactive') {
-      sendRef.current = opts?.send ?? false;
-      originRef.current = opts?.origin;
+      const control = recordingControlRef.current;
+      if (control?.recorder === rec) {
+        control.send = opts?.send ?? false;
+        control.origin = opts?.origin;
+      }
       rec.stop();
     }
   }, []);
@@ -434,17 +513,25 @@ export function useVoiceInput(
   // Either way the newest generation resets to 'idle' so the now-viewed session can
   // start its own recording immediately (concurrently with the backgrounded one).
   const detach = useCallback(() => {
+    startAttemptRef.current += 1;
+    startingRef.current = false;
     const rec = recorderRef.current;
     if (rec && rec.state !== 'inactive') {
-      discardRef.current = true;
-      sendRef.current = false;
-      originRef.current = undefined;
+      const control = recordingControlRef.current;
+      if (control?.recorder === rec) {
+        control.discard = true;
+        control.send = false;
+        control.origin = undefined;
+      }
       rec.stop();
     }
     // Bump the generation so any in-flight recording/transcription stops owning
     // `state` (its isCurrent() turns false), then reset the visible state.
     genRef.current++;
     setState('idle');
+    // The composer is shared across sessions, so a live preview left in the box
+    // would follow the user into the session they just switched to.
+    onInterimRef.current?.(null);
   }, []);
 
   return { state, toggle, stop, start, detach };

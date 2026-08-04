@@ -215,5 +215,10 @@
   },
   "tasks": {
     "nextTaskPrompt": "Inizia l'attività successiva"
+  },
+  "agentTranscript": {
+    "readOnly": "Trascrizione di sola lettura dell'agente {{agentType}}.",
+    "defaultType": "secondario",
+    "backToParent": "Torna alla sessione principale"
   }
 }

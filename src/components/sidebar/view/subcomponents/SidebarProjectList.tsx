@@ -3,7 +3,7 @@ import type { TFunction } from 'i18next';
 
 import type { LoadingProgress, Project, ProjectSession, LLMProvider } from '../../../../types/app';
 import type { SessionActivityMap } from '../../../../hooks/useSessionProtection';
-import type { MCPServerStatus, SessionWithProvider } from '../../types/types';
+import type { MCPServerStatus, SessionWithProvider, SubagentListItem } from '../../types/types';
 
 import SidebarProjectItem from './SidebarProjectItem';
 import SidebarProjectsState from './SidebarProjectsState';
@@ -20,6 +20,10 @@ export type SidebarProjectListProps = {
   editingName: string;
   initialSessionsLoaded: Set<string>;
   currentTime: Date;
+  expandedSessions: ReadonlySet<string>;
+  subagentsBySessionId: ReadonlyMap<string, SubagentListItem[]>;
+  loadedSubagentSessionIds: ReadonlySet<string>;
+  onToggleSessionAgents: (sessionId: string) => void;
   editingSession: string | null;
   editingSessionName: string;
   deletingProjects: Set<string>;
@@ -67,6 +71,10 @@ export default function SidebarProjectList({
   editingName,
   initialSessionsLoaded,
   currentTime,
+  expandedSessions,
+  subagentsBySessionId,
+  loadedSubagentSessionIds,
+  onToggleSessionAgents,
   editingSession,
   editingSessionName,
   deletingProjects,
@@ -138,6 +146,10 @@ export default function SidebarProjectList({
               initialSessionsLoaded={initialSessionsLoaded.has(project.projectId)}
               isLoadingMoreSessions={loadingMoreProjects.has(project.projectId)}
               currentTime={currentTime}
+              expandedSessions={expandedSessions}
+              subagentsBySessionId={subagentsBySessionId}
+              loadedSubagentSessionIds={loadedSubagentSessionIds}
+              onToggleSessionAgents={onToggleSessionAgents}
               editingSession={editingSession}
               editingSessionName={editingSessionName}
               tasksEnabled={tasksEnabled}

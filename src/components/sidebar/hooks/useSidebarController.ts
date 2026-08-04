@@ -11,6 +11,7 @@ import type {
   SidebarSearchMode,
   SessionDeleteConfirmation,
   SessionWithProvider,
+  SubagentListItem,
 } from '../types/types';
 import {
   clearLegacyStarredProjectIds,
@@ -26,6 +27,7 @@ import {
 // selectable recent-chat windows (minutes): 1h, 6h, 12h, 2d
 export const RECENT_WINDOW_OPTIONS_MINUTES = [60, 360, 720, 2880] as const;
 const DEFAULT_RECENT_WINDOW_MINUTES = 720;
+const SUBAGENT_POLL_INTERVAL_MS = 4000;
 
 type UseSidebarControllerArgs = {
   projects: Project[];
@@ -67,6 +69,9 @@ export function useSidebarController({
 }: UseSidebarControllerArgs) {
   const paletteOps = usePaletteOps();
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
+  const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
+  const [subagentsBySessionId, setSubagentsBySessionId] = useState<Map<string, SubagentListItem[]>>(new Map());
+  const [loadedSubagentSessionIds, setLoadedSubagentSessionIds] = useState<Set<string>>(new Set());
   const [editingProject, setEditingProject] = useState<string | null>(null);
   const [showNewProject, setShowNewProject] = useState(false);
   const [editingName, setEditingName] = useState('');
@@ -293,6 +298,60 @@ export function useSidebarController({
     [onSessionSelect],
   );
 
+  /**
+   * Loads the sub-agents of one session into the cache.
+   *
+   * Failures leave the previous entry untouched rather than clearing it, so a
+   * dropped poll never blanks an already-rendered agent list.
+   */
+  const loadSubagents = useCallback(async (sessionId: string) => {
+    try {
+      const response = await api.sessionSubagents(sessionId);
+      if (!response.ok) {
+        return;
+      }
+
+      const body = await response.json();
+      const subagents: SubagentListItem[] = body?.data?.subagents ?? body?.subagents ?? [];
+      setSubagentsBySessionId((previous) => new Map(previous).set(sessionId, subagents));
+    } catch (error) {
+      console.error(`[Sidebar] failed to load sub-agents for ${sessionId}:`, error);
+    } finally {
+      setLoadedSubagentSessionIds((previous) => new Set(previous).add(sessionId));
+    }
+  }, []);
+
+  const toggleSessionAgents = useCallback((sessionId: string) => {
+    setExpandedSessions((previous) => {
+      const next = new Set(previous);
+      if (next.has(sessionId)) {
+        next.delete(sessionId);
+      } else {
+        next.add(sessionId);
+        void loadSubagents(sessionId);
+      }
+      return next;
+    });
+  }, [loadSubagents]);
+
+  // Agents of a *running* session change while the user watches, so expanded
+  // rows re-poll. Idle sessions are fetched once on expand — their transcripts
+  // are final, and polling them would be pure I/O for an unchanged answer.
+  useEffect(() => {
+    const pollableSessionIds = [...expandedSessions].filter((sessionId) => activeSessionIds.has(sessionId));
+    if (pollableSessionIds.length === 0) {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      for (const sessionId of pollableSessionIds) {
+        void loadSubagents(sessionId);
+      }
+    }, SUBAGENT_POLL_INTERVAL_MS);
+
+    return () => clearInterval(interval);
+  }, [expandedSessions, activeSessionIds, loadSubagents]);
+
   const resolveProjectStarState = useCallback(
     (projectId: string): boolean => {
       if (optimisticStarByProjectId.has(projectId)) {
@@ -474,6 +533,40 @@ export function useSidebarController({
 
     return filterProjects(searchMode === 'running' ? runningProjects : sortedProjects, debouncedSearchQuery);
   }, [debouncedSearchQuery, recentProjects, runningProjects, searchMode, sortedProjects]);
+
+  // "Expand all / collapse all" acts on the list the user is actually looking at
+  // (the current tab's filtered projects), leaving the expansion state of projects
+  // hidden by the filter untouched.
+  const visibleProjectIds = useMemo(
+    () => filteredProjects.map((project) => project.projectId),
+    [filteredProjects],
+  );
+
+  const canExpandAllProjects = visibleProjectIds.length > 0;
+
+  const areAllProjectsExpanded = useMemo(
+    () => canExpandAllProjects && visibleProjectIds.every((projectId) => expandedProjects.has(projectId)),
+    [canExpandAllProjects, expandedProjects, visibleProjectIds],
+  );
+
+  const toggleAllProjects = useCallback(() => {
+    setExpandedProjects((prev) => {
+      if (visibleProjectIds.length === 0) {
+        return prev;
+      }
+
+      const allExpanded = visibleProjectIds.every((projectId) => prev.has(projectId));
+      const next = new Set(prev);
+      for (const projectId of visibleProjectIds) {
+        if (allExpanded) {
+          next.delete(projectId);
+        } else {
+          next.add(projectId);
+        }
+      }
+      return next;
+    });
+  }, [visibleProjectIds]);
 
   const startEditing = useCallback((project: Project) => {
     // `editingProject` is keyed by projectId so it stays stable across
@@ -667,6 +760,10 @@ export function useSidebarController({
   return {
     isSidebarCollapsed,
     expandedProjects,
+    expandedSessions,
+    subagentsBySessionId,
+    loadedSubagentSessionIds,
+    toggleSessionAgents,
     editingProject,
     showNewProject,
     editingName,
@@ -691,6 +788,9 @@ export function useSidebarController({
     isRecentProjectsLoading,
     runningSessionsCount,
     toggleProject,
+    areAllProjectsExpanded,
+    canExpandAllProjects,
+    toggleAllProjects,
     handleSessionClick,
     toggleStarProject,
     isProjectStarred,

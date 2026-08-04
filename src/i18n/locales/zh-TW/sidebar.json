@@ -49,7 +49,9 @@
     "cancel": "取消",
     "clearSearch": "清除搜尋",
     "openCommandPalette": "開啟指令面板",
-    "attentionRequiredIndicator": "工作階段需要處理"
+    "attentionRequiredIndicator": "工作階段需要處理",
+    "expandAllProjects": "展開所有專案與工作階段",
+    "collapseAllProjects": "收合所有專案"
   },
   "navigation": {
     "chat": "聊天",
@@ -140,5 +142,12 @@
     "deleteAllData": "永久刪除所有資料",
     "allConversationsDeleted": "專案將從側邊欄中移除。您的檔案、記憶和工作階段資料將會保留。",
     "cannotUndo": "您可以稍後重新新增此專案。"
+  },
+  "agents": {
+    "noAgents": "沒有子代理",
+    "defaultType": "代理",
+    "toolCount": "{{count}} 個工具",
+    "expandAgents": "顯示 {{count}} 個代理",
+    "collapseAgents": "隱藏代理"
   }
 }

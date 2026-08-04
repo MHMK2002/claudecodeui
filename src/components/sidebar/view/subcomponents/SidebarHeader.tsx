@@ -1,4 +1,16 @@
-import { Activity, Clock3, Folder, FolderPlus, Plus, RefreshCw, Search, X, PanelLeftClose } from 'lucide-react';
+import {
+  Activity,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  Clock3,
+  Folder,
+  FolderPlus,
+  Plus,
+  RefreshCw,
+  Search,
+  X,
+  PanelLeftClose,
+} from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { Button, Input, Tooltip } from '../../../../shared/view/ui';
@@ -25,6 +37,9 @@ type SidebarHeaderProps = {
   onSearchModeChange: (mode: SidebarSearchMode) => void;
   onRefresh: () => void;
   isRefreshing: boolean;
+  areAllProjectsExpanded: boolean;
+  canExpandAllProjects: boolean;
+  onToggleAllProjects: () => void;
   onCreateProject: () => void;
   onCollapseSidebar: () => void;
   t: TFunction;
@@ -43,11 +58,20 @@ export default function SidebarHeader({
   onSearchModeChange,
   onRefresh,
   isRefreshing,
+  areAllProjectsExpanded,
+  canExpandAllProjects,
+  onToggleAllProjects,
   onCreateProject,
   onCollapseSidebar,
   t,
 }: SidebarHeaderProps) {
   const showSearchTools = (projectsCount > 0 || runningSessionsCount > 0) && !isLoading;
+  // The Running tab renders every project force-expanded, so there is nothing to
+  // toggle there.
+  const showExpandAllToggle = canExpandAllProjects && searchMode !== 'running' && !isLoading;
+  const expandAllLabel = areAllProjectsExpanded
+    ? t('tooltips.collapseAllProjects', 'Collapse all projects')
+    : t('tooltips.expandAllProjects', 'Expand all projects and sessions');
   const searchPlaceholder = searchMode === 'recent'
     ? t('recent.searchPlaceholder', 'Search recent chats...')
     : searchMode === 'running'
@@ -146,6 +170,23 @@ export default function SidebarHeader({
           )}
 
           <div className="flex flex-shrink-0 items-center gap-0.5">
+            {showExpandAllToggle && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 w-7 rounded-lg p-0 text-muted-foreground hover:bg-accent/80 hover:text-foreground"
+                onClick={onToggleAllProjects}
+                aria-pressed={areAllProjectsExpanded}
+                aria-label={expandAllLabel}
+                title={expandAllLabel}
+              >
+                {areAllProjectsExpanded ? (
+                  <ChevronsDownUp className="h-3.5 w-3.5" />
+                ) : (
+                  <ChevronsUpDown className="h-3.5 w-3.5" />
+                )}
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"
@@ -242,6 +283,21 @@ export default function SidebarHeader({
           )}
 
           <div className="flex flex-shrink-0 gap-1.5">
+            {showExpandAllToggle && (
+              <button
+                className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted/50 transition-all active:scale-95"
+                onClick={onToggleAllProjects}
+                aria-pressed={areAllProjectsExpanded}
+                aria-label={expandAllLabel}
+                title={expandAllLabel}
+              >
+                {areAllProjectsExpanded ? (
+                  <ChevronsDownUp className="h-4 w-4 text-muted-foreground" />
+                ) : (
+                  <ChevronsUpDown className="h-4 w-4 text-muted-foreground" />
+                )}
+              </button>
+            )}
             <button
               className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted/50 transition-all active:scale-95"
               onClick={onRefresh}

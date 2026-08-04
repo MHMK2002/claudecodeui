@@ -12,10 +12,15 @@ import { Readable } from 'node:stream';
 
 import express from 'express';
 
-// Default cleanup prompt kept in sync with src/hooks/useVoiceConfig.ts (DEFAULT_CLEANUP_PROMPT).
-// Duplicated because the client and server are separate bundles.
-const DEFAULT_CLEANUP_PROMPT =
-  'Lightly clean up the transcribed speech. Fix punctuation and capitalization, remove filler words and false starts (um, uh, repeats), and fix obvious recognition errors. Preserve the original language and meaning. Do not translate, expand, or rewrite the content. Output only the cleaned text with no commentary.';
+import {
+  buildCleanupMessages,
+  CLEANUP_TEXT_MAX_CHARS,
+  DEFAULT_CLEANUP_GUIDANCE,
+  normalizeCleanupInstructions,
+  normalizeCleanupModel,
+  parseCleanupDecision,
+} from '../shared/voice-cleanup-contract.js';
+import { isUnsupportedSttContextError } from '../shared/voice-stt-context.js';
 
 const ENV = {
   baseUrl: (process.env.VOICE_API_BASE_URL || '').replace(/\/$/, ''),
@@ -24,8 +29,64 @@ const ENV = {
   ttsModel: process.env.VOICE_TTS_MODEL || 'tts-1',
   ttsVoice: process.env.VOICE_TTS_VOICE || 'alloy',
   cleanupModel: process.env.VOICE_CLEANUP_MODEL || 'gpt-4o-mini',
-  cleanupPrompt: process.env.VOICE_CLEANUP_PROMPT || DEFAULT_CLEANUP_PROMPT,
+  cleanupPrompt: process.env.VOICE_CLEANUP_PROMPT || DEFAULT_CLEANUP_GUIDANCE,
 };
+
+const STT_PROMPT_MAX_CHARS = 4000;
+const STT_LANGUAGE_MAX_ITEMS = 2;
+const STT_TERM_MAX_ITEMS = 100;
+const STT_TERM_MAX_CHARS = 128;
+const LANGUAGE_HINT_PATTERN = /^[a-z]{2,3}(?:-[a-z0-9]{2,8})?$/i;
+
+function parseArrayField(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizeStringList(value, { maxItems, maxChars, normalize, isValid }) {
+  const seen = new Set();
+  const result = [];
+  for (const item of parseArrayField(value)) {
+    if (typeof item !== 'string') continue;
+    const normalized = normalize(item.trim());
+    if (!normalized || normalized.length > maxChars || !isValid(normalized) || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+    if (result.length >= maxItems) break;
+  }
+  return result;
+}
+
+export function normalizeVoiceSttContext(body = {}) {
+  const prompt = typeof body.sttPrompt === 'string'
+    ? body.sttPrompt.trim().slice(0, STT_PROMPT_MAX_CHARS)
+    : '';
+  const languages = normalizeStringList(body.sttLanguages, {
+    maxItems: STT_LANGUAGE_MAX_ITEMS,
+    maxChars: 16,
+    normalize: (value) => value.toLowerCase(),
+    isValid: (value) => LANGUAGE_HINT_PATTERN.test(value),
+  });
+  const terms = normalizeStringList(body.sttTerms, {
+    maxItems: STT_TERM_MAX_ITEMS,
+    maxChars: STT_TERM_MAX_CHARS,
+    normalize: (value) => value,
+    isValid: (value) => !/[<>\r\n]/.test(value),
+  });
+  return { prompt, languages, terms };
+}
+
+function hasSttContext(context) {
+  return Boolean(context.prompt || context.languages.length || context.terms.length);
+}
+
+export { isUnsupportedSttContextError };
 
 /**
  * Resolve the voice backend config for a request. Client headers (set from the
@@ -62,6 +123,12 @@ const _parsedTimeout = Number(process.env.VOICE_TIMEOUT_MS);
 const VOICE_TIMEOUT_MS = Number.isFinite(_parsedTimeout) && _parsedTimeout > 0
   ? _parsedTimeout
   : DEFAULT_VOICE_TIMEOUT_MS;
+const DEFAULT_CLEANUP_TIMEOUT_MS = 10000;
+const _parsedCleanupTimeout = Number(process.env.VOICE_CLEANUP_TIMEOUT_MS);
+const VOICE_CLEANUP_TIMEOUT_MS =
+  Number.isFinite(_parsedCleanupTimeout) && _parsedCleanupTimeout > 0
+    ? _parsedCleanupTimeout
+    : DEFAULT_CLEANUP_TIMEOUT_MS;
 
 /**
  * fetch() with an AbortController timeout so a stalled backend can't hold the
@@ -70,15 +137,35 @@ const VOICE_TIMEOUT_MS = Number.isFinite(_parsedTimeout) && _parsedTimeout > 0
  * @param {RequestInit} [options]
  * @returns {Promise<Response>}
  */
-async function fetchWithTimeout(url, options = {}) {
+async function fetchWithTimeout(url, options = {}, timeoutMs = VOICE_TIMEOUT_MS) {
   const parsed = new URL(url);
   if (!['http:', 'https:'].includes(parsed.protocol) || !isAllowedBackendUrl(parsed.origin)) {
     throw new Error('Blocked outbound voice backend URL');
   }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), VOICE_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(parsed.toString(), { redirect: 'manual', ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Keep the timeout active until a text response body is fully consumed. */
+export async function fetchTextWithTimeout(url, options = {}, timeoutMs = VOICE_TIMEOUT_MS) {
+  const parsed = new URL(url);
+  if (!['http:', 'https:'].includes(parsed.protocol) || !isAllowedBackendUrl(parsed.origin)) {
+    throw new Error('Blocked outbound voice backend URL');
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(parsed.toString(), {
+      redirect: 'manual',
+      ...options,
+      signal: controller.signal,
+    });
+    return { response, body: await response.text() };
   } finally {
     clearTimeout(timer);
   }
@@ -90,10 +177,10 @@ async function fetchWithTimeout(url, options = {}) {
  * @param {import('express').Response} res
  * @param {Error} e
  */
-function backendError(res, e) {
+function backendError(res, e, timeoutMs = VOICE_TIMEOUT_MS) {
   if (e && e.name === 'AbortError') {
     return res.status(504).json({
-      error: `Voice backend timed out after ${Math.round(VOICE_TIMEOUT_MS / 1000)}s. Check your voice backend.`,
+      error: `Voice backend timed out after ${Math.round(timeoutMs / 1000)}s. Check your voice backend.`,
     });
   }
   return res.status(502).json({ error: `Voice backend unreachable: ${e.message}` });
@@ -157,6 +244,22 @@ function authHeader(apiKey) {
   return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
 }
 
+export function buildTranscriptionBody(file, cfg, context, includeContext) {
+  const fd = new FormData();
+  fd.append(
+    'file',
+    new Blob([file.buffer], { type: file.mimetype || 'audio/webm' }),
+    file.originalname || 'recording.webm',
+  );
+  fd.append('model', cfg.sttModel);
+  if (includeContext) {
+    if (context.prompt) fd.append('prompt', context.prompt);
+    for (const term of context.terms) fd.append('keywords[]', term);
+    for (const language of context.languages) fd.append('languages[]', language);
+  }
+  return fd;
+}
+
 /**
  * GET /api/voice/health -> { configured } (true when a backend base URL is set).
  */
@@ -177,19 +280,22 @@ router.post('/transcribe', async (req, res) => {
     if (err) return res.status(400).json({ error: err.message });
     if (!req.file) return res.status(400).json({ error: 'No audio uploaded' });
     try {
-      const fd = new FormData();
-      fd.append(
-        'file',
-        new Blob([req.file.buffer], { type: req.file.mimetype || 'audio/webm' }),
-        req.file.originalname || 'recording.webm',
-      );
-      fd.append('model', cfg.sttModel);
-      const r = await fetchWithTimeout(`${cfg.baseUrl}/audio/transcriptions`, {
+      const context = normalizeVoiceSttContext(req.body);
+      const includeContext = hasSttContext(context);
+      let r = await fetchWithTimeout(`${cfg.baseUrl}/audio/transcriptions`, {
         method: 'POST',
         headers: authHeader(cfg.apiKey),
-        body: fd,
+        body: buildTranscriptionBody(req.file, cfg, context, includeContext),
       });
-      const text = await r.text();
+      let text = await r.text();
+      if (includeContext && !r.ok && isUnsupportedSttContextError(r.status, text)) {
+        r = await fetchWithTimeout(`${cfg.baseUrl}/audio/transcriptions`, {
+          method: 'POST',
+          headers: authHeader(cfg.apiKey),
+          body: buildTranscriptionBody(req.file, cfg, context, false),
+        });
+        text = await r.text();
+      }
       if (!r.ok) return upstreamError(res, r.status, text);
       let data;
       try { data = JSON.parse(text); } catch { data = { text }; }
@@ -235,40 +341,41 @@ router.post('/tts', async (req, res) => {
 });
 
 /**
- * POST /api/voice/cleanup { text } -> { text }.
- * Optional transcript polish step: runs the raw STT text through the backend's
- * /chat/completions endpoint with the configurable cleanup system prompt, so the
- * user gets lightly cleaned-up text (punctuation, filler words) instead of raw
- * ASR output. Reached only when the client sends x-voice-cleanup: 1. Falls back
- * to the original text if the model returns nothing.
+ * POST /api/voice/cleanup { text, mode, model?, instructions? } -> CleanupDecision.
+ * The fixed system prompt owns the schema and safety boundary; user guidance is
+ * subordinate data. Legacy cleanup headers remain a one-release fallback, with
+ * body fields authoritative when both are present.
  */
 router.post('/cleanup', async (req, res) => {
   const cfg = resolveConfig(req);
   if (!cfg.baseUrl) return res.status(503).json({ error: 'No voice backend configured' });
   if (!isAllowedBackendUrl(cfg.baseUrl)) return res.status(400).json({ error: 'Invalid voice backend URL.' });
   const text = req.body?.text;
-  if (typeof text !== 'string' || !text.trim()) return res.status(400).json({ error: 'text required' });
+  if (typeof text !== 'string' || !text.trim() || text.length > CLEANUP_TEXT_MAX_CHARS) {
+    return res.status(400).json({ error: 'valid text required' });
+  }
+  const mode = req.body?.mode ?? 'clean_transcript';
+  if (mode !== 'clean_transcript') return res.status(400).json({ error: 'invalid cleanup mode' });
+  const model = normalizeCleanupModel(req.body?.model, cfg.cleanupModel);
+  const instructions = normalizeCleanupInstructions(req.body?.instructions, cfg.cleanupPrompt);
   try {
-    const r = await fetchWithTimeout(`${cfg.baseUrl}/chat/completions`, {
+    const { response: r, body } = await fetchTextWithTimeout(`${cfg.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeader(cfg.apiKey) },
       body: JSON.stringify({
-        model: cfg.cleanupModel,
-        messages: [
-          { role: 'system', content: cfg.cleanupPrompt },
-          { role: 'user', content: text },
-        ],
+        model,
+        messages: buildCleanupMessages(text, instructions),
         temperature: 0,
       }),
-    });
-    const body = await r.text();
+    }, VOICE_CLEANUP_TIMEOUT_MS);
     if (!r.ok) return upstreamError(res, r.status, body);
     let data;
     try { data = JSON.parse(body); } catch { data = {}; }
-    const cleaned = String(data?.choices?.[0]?.message?.content ?? '').trim();
-    res.json({ text: cleaned || text });
+    const decision = parseCleanupDecision(data?.choices?.[0]?.message?.content);
+    res.setHeader('X-Voice-Cleanup-Outcome', decision ? 'model_decision' : 'invalid_schema');
+    res.json(decision || { action: 'keep' });
   } catch (e) {
-    backendError(res, e);
+    backendError(res, e, VOICE_CLEANUP_TIMEOUT_MS);
   }
 });
 

@@ -1,0 +1,1 @@
+Do not rename gpt-4o-mini in src/lib/voiceApi.ts.

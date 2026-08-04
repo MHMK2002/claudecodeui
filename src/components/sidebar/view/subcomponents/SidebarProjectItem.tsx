@@ -5,7 +5,7 @@ import { Button } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
 import type { Project, ProjectSession, LLMProvider } from '../../../../types/app';
 import type { SessionActivityMap } from '../../../../hooks/useSessionProtection';
-import type { MCPServerStatus, SessionWithProvider } from '../../types/types';
+import type { MCPServerStatus, SessionWithProvider, SubagentListItem } from '../../types/types';
 import { getTaskIndicatorStatus } from '../../utils/utils';
 
 import TaskIndicator from './TaskIndicator';
@@ -24,6 +24,10 @@ type SidebarProjectItemProps = {
   initialSessionsLoaded: boolean;
   isLoadingMoreSessions: boolean;
   currentTime: Date;
+  expandedSessions: ReadonlySet<string>;
+  subagentsBySessionId: ReadonlyMap<string, SubagentListItem[]>;
+  loadedSubagentSessionIds: ReadonlySet<string>;
+  onToggleSessionAgents: (sessionId: string) => void;
   editingSession: string | null;
   editingSessionName: string;
   tasksEnabled: boolean;
@@ -72,6 +76,10 @@ export default function SidebarProjectItem({
   initialSessionsLoaded,
   isLoadingMoreSessions,
   currentTime,
+  expandedSessions,
+  subagentsBySessionId,
+  loadedSubagentSessionIds,
+  onToggleSessionAgents,
   editingSession,
   editingSessionName,
   tasksEnabled,
@@ -403,6 +411,10 @@ export default function SidebarProjectItem({
         activeSessions={activeSessions}
         attentionSessionIds={attentionSessionIds}
         currentTime={currentTime}
+        expandedSessions={expandedSessions}
+        subagentsBySessionId={subagentsBySessionId}
+        loadedSubagentSessionIds={loadedSubagentSessionIds}
+        onToggleSessionAgents={onToggleSessionAgents}
         editingSession={editingSession}
         editingSessionName={editingSessionName}
         onEditingSessionNameChange={onEditingSessionNameChange}

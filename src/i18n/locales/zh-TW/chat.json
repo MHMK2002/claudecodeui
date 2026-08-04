@@ -251,5 +251,10 @@
   },
   "tasks": {
     "nextTaskPrompt": "開始下一個任務"
+  },
+  "agentTranscript": {
+    "readOnly": "{{agentType}} 代理的唯讀記錄。",
+    "defaultType": "子",
+    "backToParent": "返回父工作階段"
   }
 }

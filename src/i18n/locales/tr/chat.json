@@ -215,5 +215,10 @@
   },
   "tasks": {
     "nextTaskPrompt": "Sonraki görevi başlat"
+  },
+  "agentTranscript": {
+    "readOnly": "{{agentType}} ajanının salt okunur dökümü.",
+    "defaultType": "alt",
+    "backToParent": "Üst oturuma dön"
   }
 }

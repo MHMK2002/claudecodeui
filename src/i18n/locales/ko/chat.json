@@ -215,5 +215,10 @@
   },
   "tasks": {
     "nextTaskPrompt": "다음 작업 시작"
+  },
+  "agentTranscript": {
+    "readOnly": "{{agentType}} 에이전트의 읽기 전용 기록입니다.",
+    "defaultType": "서브",
+    "backToParent": "상위 세션으로 돌아가기"
   }
 }

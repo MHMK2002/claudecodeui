@@ -49,7 +49,9 @@
     "save": "저장",
     "cancel": "취소",
     "openCommandPalette": "명령 팔레트 열기",
-    "attentionRequiredIndicator": "세션에 주의가 필요합니다"
+    "attentionRequiredIndicator": "세션에 주의가 필요합니다",
+    "expandAllProjects": "모든 프로젝트와 세션 펼치기",
+    "collapseAllProjects": "모든 프로젝트 접기"
   },
   "navigation": {
     "chat": "채팅",
@@ -128,5 +130,12 @@
     "deleteAllData": "모든 데이터 영구 삭제",
     "allConversationsDeleted": "프로젝트가 사이드바에서 제거됩니다. 파일, 메모리 및 세션 데이터는 보존됩니다.",
     "cannotUndo": "나중에 프로젝트를 다시 추가할 수 있습니다."
+  },
+  "agents": {
+    "noAgents": "에이전트 없음",
+    "defaultType": "에이전트",
+    "toolCount": "도구 {{count}}개",
+    "expandAgents": "에이전트 {{count}}개 표시",
+    "collapseAgents": "에이전트 숨기기"
   }
 }

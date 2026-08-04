@@ -49,7 +49,9 @@
     "save": "保存",
     "cancel": "キャンセル",
     "openCommandPalette": "コマンドパレットを開く",
-    "attentionRequiredIndicator": "セッションが対応を必要としています"
+    "attentionRequiredIndicator": "セッションが対応を必要としています",
+    "expandAllProjects": "すべてのプロジェクトとセッションを展開",
+    "collapseAllProjects": "すべてのプロジェクトを折りたたむ"
   },
   "navigation": {
     "chat": "チャット",
@@ -127,5 +129,12 @@
     "deleteAllData": "すべてのデータを完全に削除",
     "allConversationsDeleted": "プロジェクトはサイドバーから除去されます。ファイル、メモリ、セッションデータは保持されます。",
     "cannotUndo": "後からプロジェクトを再追加できます。"
+  },
+  "agents": {
+    "noAgents": "エージェントなし",
+    "defaultType": "エージェント",
+    "toolCount": "ツール {{count}} 件",
+    "expandAgents": "{{count}} 件のエージェントを表示",
+    "collapseAgents": "エージェントを非表示"
   }
 }

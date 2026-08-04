@@ -18,6 +18,30 @@ type ParsedSession = {
   sessionName?: string;
 };
 
+type ParsedSubagent = {
+  agentId: string;
+  parentProviderSessionId: string;
+  projectPath: string;
+  sessionName: string;
+};
+
+/**
+ * Sub-agent rows are labelled with the opening prompt Claude handed the agent,
+ * trimmed to a single readable sidebar line.
+ */
+const SUBAGENT_NAME_MAX_LENGTH = 80;
+
+function buildSubagentName(prompt: string | undefined, agentId: string): string {
+  const firstLine = (prompt ?? '').replace(/\s+/g, ' ').trim();
+  if (!firstLine) {
+    return `Agent ${agentId.slice(0, 8)}`;
+  }
+
+  return firstLine.length > SUBAGENT_NAME_MAX_LENGTH
+    ? `${firstLine.slice(0, SUBAGENT_NAME_MAX_LENGTH).trimEnd()}…`
+    : firstLine;
+}
+
 /**
  * Session indexer for Claude transcript artifacts.
  */
@@ -31,10 +55,10 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
    *
    * Claude stores subagent transcripts under a `subagents/` directory, e.g.
    * `~/.claude/projects/<encoded-cwd>/<session-id>/subagents/agent-<id>.jsonl`.
-   * Those files repeat the parent session's `sessionId`, so indexing them as
-   * standalone sessions overwrites the parent row's `jsonl_path` and corrupts
-   * the main session record. The recursive scan in `synchronize()` reaches
-   * them, so both entry points must skip them.
+   * Those files repeat the parent session's `sessionId`, so indexing them via
+   * the normal session path would overwrite the parent row's `jsonl_path` and
+   * corrupt the main session record. They go through `processSubagentFile`
+   * instead, which keys them by their own `agentId`.
    */
   private isSubagentTranscript(filePath: string): boolean {
     return path.normalize(filePath).split(path.sep).includes('subagents');
@@ -42,6 +66,10 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
 
   /**
    * Scans ~/.claude/projects and upserts discovered sessions into DB.
+   *
+   * Sub-agent transcripts are handled in a second pass: a child row stores the
+   * app-facing id of its parent, which only exists once the parent transcript
+   * has been indexed.
    */
   async synchronize(since?: Date): Promise<number> {
     const nameMap = await buildLookupMap(path.join(this.claudeHome, 'history.jsonl'), 'sessionId', 'display');
@@ -51,12 +79,18 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       since ?? null
     );
 
-    let processed = 0;
+    const sessionFiles: string[] = [];
+    const subagentFiles: string[] = [];
     for (const filePath of files) {
       if (this.isSubagentTranscript(filePath)) {
-        continue;
+        subagentFiles.push(filePath);
+      } else {
+        sessionFiles.push(filePath);
       }
+    }
 
+    let processed = 0;
+    for (const filePath of sessionFiles) {
       const parsed = await this.processSessionFile(filePath, nameMap);
       if (!parsed) {
         continue;
@@ -75,6 +109,12 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       processed += 1;
     }
 
+    for (const filePath of subagentFiles) {
+      if (await this.synchronizeSubagentFile(filePath)) {
+        processed += 1;
+      }
+    }
+
     return processed;
   }
 
@@ -86,7 +126,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       return null;
     }
     if (this.isSubagentTranscript(filePath)) {
-      return null;
+      return this.synchronizeSubagentFile(filePath);
     }
 
     const nameMap = await buildLookupMap(path.join(this.claudeHome, 'history.jsonl'), 'sessionId', 'display');
@@ -105,6 +145,68 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       timestamps.updatedAt,
       filePath
     );
+  }
+
+  /**
+   * Upserts one sub-agent transcript as a child of the session that spawned it.
+   *
+   * Returns null when the parent has not been indexed yet — the next scan (or
+   * the watcher event for the parent's own transcript) picks the child up.
+   */
+  private async synchronizeSubagentFile(filePath: string): Promise<string | null> {
+    const parsed = await this.processSubagentFile(filePath);
+    if (!parsed) {
+      return null;
+    }
+
+    // The rows inside an agent transcript carry the *parent's* provider session
+    // id, which still has to be mapped onto the app-facing row id.
+    const parentSession = sessionsDb.getSessionByProviderSessionId(parsed.parentProviderSessionId)
+      ?? sessionsDb.getSessionById(parsed.parentProviderSessionId);
+    if (!parentSession) {
+      return null;
+    }
+
+    const timestamps = await readFileTimestamps(filePath);
+    return sessionsDb.createSubagentSession({
+      agentSessionId: parsed.agentId,
+      provider: this.provider,
+      parentSessionId: parentSession.session_id,
+      projectPath: parsed.projectPath,
+      jsonlPath: filePath,
+      customName: parsed.sessionName,
+      createdAt: timestamps.createdAt,
+      updatedAt: timestamps.updatedAt,
+    });
+  }
+
+  /**
+   * Extracts sub-agent metadata from one `agent-<id>.jsonl` transcript.
+   *
+   * The first row is the prompt Claude handed the agent, and every row carries
+   * both `agentId` and the parent's `sessionId`.
+   */
+  private async processSubagentFile(filePath: string): Promise<ParsedSubagent | null> {
+    return extractFirstValidJsonlData(filePath, (rawData) => {
+      const data = rawData as Record<string, unknown>;
+      const agentId = typeof data.agentId === 'string' ? data.agentId : undefined;
+      const parentProviderSessionId = typeof data.sessionId === 'string' ? data.sessionId : undefined;
+      const projectPath = typeof data.cwd === 'string' ? data.cwd : undefined;
+
+      if (!agentId || !parentProviderSessionId || !projectPath) {
+        return null;
+      }
+
+      const message = data.message as Record<string, unknown> | undefined;
+      const prompt = typeof message?.content === 'string' ? message.content : undefined;
+
+      return {
+        agentId,
+        parentProviderSessionId,
+        projectPath,
+        sessionName: buildSubagentName(prompt, agentId),
+      };
+    });
   }
 
   /**

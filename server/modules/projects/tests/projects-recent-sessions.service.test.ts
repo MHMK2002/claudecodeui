@@ -81,12 +81,17 @@ test('recent projects are grouped and sorted without per-project pagination', as
         capturedSince = since;
         return sessionRows;
       },
+      readAgentCounts: () => new Map([['alpha-newest', 3]]),
       resolveDisplayName: async (projectName) => projectName,
     },
   );
 
   assert.equal(synchronizationCalls, 0);
   assert.equal(capturedSince, '2026-07-23T11:00:00.000Z');
+  assert.deepEqual(
+    projects[1]?.sessions.map((session) => session.agentCount),
+    [3, 0],
+  );
   assert.deepEqual(projects.map((project) => project.displayName), ['Beta', 'Alpha']);
   assert.deepEqual(projects[0]?.sessions.map((session) => session.id), ['beta-newest']);
   assert.deepEqual(

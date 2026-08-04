@@ -345,8 +345,13 @@ function ChatMessagesPane({
                     key={getMessageKey(item)}
                     className="chat-message user flex justify-end px-3 sm:px-0"
                   >
-                    <div className="flex w-full items-end space-x-0 sm:w-auto sm:max-w-[85%] sm:space-x-3 md:max-w-md lg:max-w-lg xl:max-w-xl">
-                      <div className="flex min-w-0 flex-1 flex-col items-end gap-2 sm:flex-initial">
+                    {/* Unlike the read-only bubble (which is sized by its text),
+                        the editor must claim the full width of the user column:
+                        left to shrink-to-fit it would collapse to the textarea's
+                        default intrinsic width and be far narrower than the
+                        message being edited. */}
+                    <div className="flex w-full items-end sm:max-w-[85%] md:max-w-md lg:max-w-lg xl:max-w-xl">
+                      <div className="flex w-full min-w-0 flex-col items-end gap-2">
                         <MessageEditComposer
                           initialContent={editInitialContent ?? String(item.content ?? '')}
                           initialImages={item.images ?? []}

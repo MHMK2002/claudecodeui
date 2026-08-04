@@ -31,6 +31,9 @@ type SidebarContentProps = {
   onSearchModeChange: (mode: SidebarSearchMode) => void;
   onRefresh: () => void;
   isRefreshing: boolean;
+  areAllProjectsExpanded: boolean;
+  canExpandAllProjects: boolean;
+  onToggleAllProjects: () => void;
   onCreateProject: () => void;
   onCollapseSidebar: () => void;
   updateAvailable: boolean;
@@ -73,6 +76,9 @@ export default function SidebarContent({
   onSearchModeChange,
   onRefresh,
   isRefreshing,
+  areAllProjectsExpanded,
+  canExpandAllProjects,
+  onToggleAllProjects,
   onCreateProject,
   onCollapseSidebar,
   updateAvailable,
@@ -103,6 +109,9 @@ export default function SidebarContent({
         onSearchModeChange={onSearchModeChange}
         onRefresh={onRefresh}
         isRefreshing={isRefreshing}
+        areAllProjectsExpanded={areAllProjectsExpanded}
+        canExpandAllProjects={canExpandAllProjects}
+        onToggleAllProjects={onToggleAllProjects}
         onCreateProject={onCreateProject}
         onCollapseSidebar={onCollapseSidebar}
         t={t}

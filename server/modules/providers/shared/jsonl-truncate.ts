@@ -77,6 +77,9 @@ async function walkLines<T>(
   return result;
 }
 
+/** Flush the kept-line buffer once it reaches this size. */
+const WRITE_BATCH_BYTES = 256 * 1024;
+
 export type TruncateJsonlOptions = {
   /** When true, copy the original file to <path>.bak.<ts> after a successful rewrite. */
   backup?: boolean;
@@ -119,41 +122,52 @@ export async function truncateJsonlAtLine(
   try {
     tmpHandle = await open(tmpPath, 'w');
     let leftover = '';
-    let stopped = false;
+    // Buffer the kept lines and flush in batches: one write() per line costs a
+    // syscall per transcript row, and long sessions run to tens of thousands.
+    let pending: string[] = [];
+    let pendingBytes = 0;
+
+    const flush = async () => {
+      if (pending.length === 0) return;
+      const payload = pending.join('');
+      pending = [];
+      pendingBytes = 0;
+      await tmpHandle!.write(payload);
+    };
+
+    // `for await` (NOT stream.on('data', async …)): an async 'data' listener is
+    // not awaited by the stream, so the next chunk's handler starts while this
+    // one is still awaiting its write. That interleaving corrupts the shared
+    // `leftover`/`scanned` state and lets lines reach the tmp file out of order
+    // — which silently scrambled every transcript larger than one 64 KB chunk
+    // instead of truncating it. Iterating sequentially keeps chunk N fully
+    // written before chunk N+1 is read.
     const stream = handle.createReadStream({ encoding: 'utf8' });
+    outer: for await (const chunk of stream) {
+      const text = typeof chunk === 'string' ? chunk : (chunk as Buffer).toString('utf8');
+      const combined = leftover + text;
+      const lines = combined.split('\n');
+      leftover = lines.pop() ?? '';
 
-    const finished = new Promise<void>((resolve, reject) => {
-      stream.on('data', async (chunk: string | Buffer) => {
-        if (stopped) return;
-        const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-        const combined = leftover + text;
-        const lines = combined.split('\n');
-        leftover = lines.pop() ?? '';
+      for (const line of lines) {
+        if (!line.length) continue;
+        const currentIndex = scanned;
+        scanned += 1;
 
-        try {
-          for (const line of lines) {
-            if (!line.length) continue;
-            const currentIndex = scanned;
-            scanned += 1;
-
-            if (currentIndex >= keepUpToIndex) {
-              stopped = true;
-              stream.destroy();
-              return resolve();
-            }
-
-            await tmpHandle!.write(`${line}\n`);
-            kept += 1;
-          }
-        } catch (error) {
-          reject(error);
+        if (currentIndex >= keepUpToIndex) {
+          break outer;
         }
-      });
-      stream.on('end', () => resolve());
-      stream.on('error', reject);
-    });
 
-    await finished;
+        pending.push(`${line}\n`);
+        pendingBytes += line.length + 1;
+        kept += 1;
+        if (pendingBytes >= WRITE_BATCH_BYTES) {
+          await flush();
+        }
+      }
+    }
+
+    await flush();
 
     // Drop any dangling trailing data without a newline; we only ever want
     // cleanly newline-terminated entries.

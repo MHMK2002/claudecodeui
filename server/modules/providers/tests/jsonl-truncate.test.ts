@@ -186,3 +186,48 @@ test('Rewrite is atomic: a tmp failure leaves the original file untouched', asyn
   const entries = await (await import('node:fs/promises')).readdir(dir);
   assert.equal(entries.some((entry) => entry.includes('.rewind-') && entry.endsWith('.tmp')), false);
 });
+test('truncateJsonlAtLine preserves line order across read-stream chunk boundaries', async (t) => {
+  // Regression: the rewrite used an async `data` listener, which the stream does
+  // not await. Chunk N+1 was parsed while chunk N was still writing, so the
+  // shared leftover/index state interleaved and lines landed out of order. Only
+  // transcripts larger than one 64 KB chunk were affected — i.e. every real
+  // session — so an edit/rewind scrambled the file instead of truncating it.
+  const lines = Array.from({ length: 4000 }, (_, i) =>
+    JSON.stringify({ uuid: `u${i}`, index: i, pad: 'x'.repeat(150) }));
+  const { dir, path: filePath } = await writeFixture('large.jsonl', lines);
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  const cutoff = 3900;
+  const result = await truncateJsonlAtLine(filePath, cutoff);
+  const kept = (await readFile(filePath, 'utf8')).split('\n').filter(Boolean);
+
+  assert.equal(result.kept, cutoff);
+  assert.equal(kept.length, cutoff);
+  assert.deepEqual(kept, lines.slice(0, cutoff));
+});
+
+test('editing a user message drops every later line in a large transcript', async (t) => {
+  const lines = Array.from({ length: 3000 }, (_, i) =>
+    JSON.stringify({
+      uuid: `u${i}`,
+      message: { role: i % 2 === 0 ? 'user' : 'assistant', content: 'x'.repeat(150) },
+    }));
+  const { dir, path: filePath } = await writeFixture('edit.jsonl', lines);
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  // Same find-then-truncate pair `sessionsService.editUserMessage` runs.
+  const found = await findJsonlLine(filePath, (parsed) => {
+    const record = parsed as Record<string, unknown>;
+    return record.uuid === 'u2900' && (record.message as { role?: string })?.role === 'user';
+  });
+  assert.equal(found.found, true);
+  assert(found.found);
+
+  await truncateJsonlAtLine(filePath, found.match.index);
+  const kept = (await readFile(filePath, 'utf8')).split('\n').filter(Boolean);
+
+  assert.equal(kept.length, 2900);
+  assert.deepEqual(kept, lines.slice(0, 2900));
+  // Nothing at or after the edited message survives.
+  assert.equal(kept.some((line) => Number(JSON.parse(line).uuid.slice(1)) >= 2900), false);
+});

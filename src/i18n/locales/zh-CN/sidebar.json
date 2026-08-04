@@ -50,7 +50,9 @@
     "cancel": "取消",
     "clearSearch": "清除搜索",
     "openCommandPalette": "打开命令面板",
-    "attentionRequiredIndicator": "会话需要处理"
+    "attentionRequiredIndicator": "会话需要处理",
+    "expandAllProjects": "展开所有项目和会话",
+    "collapseAllProjects": "折叠所有项目"
   },
   "navigation": {
     "chat": "聊天",
@@ -141,5 +143,12 @@
     "deleteAllData": "永久删除所有数据",
     "allConversationsDeleted": "项目将从侧边栏中移除。您的文件、记忆和会话数据将会保留。",
     "cannotUndo": "您可以稍后重新添加此项目。"
+  },
+  "agents": {
+    "noAgents": "没有子代理",
+    "defaultType": "代理",
+    "toolCount": "{{count}} 个工具",
+    "expandAgents": "显示 {{count}} 个代理",
+    "collapseAgents": "隐藏代理"
   }
 }

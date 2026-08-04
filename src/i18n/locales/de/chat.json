@@ -215,5 +215,10 @@
   },
   "tasks": {
     "nextTaskPrompt": "Nächste Aufgabe starten"
+  },
+  "agentTranscript": {
+    "readOnly": "Schreibgeschütztes Protokoll des {{agentType}}-Agenten.",
+    "defaultType": "Sub",
+    "backToParent": "Zurück zur übergeordneten Sitzung"
   }
 }

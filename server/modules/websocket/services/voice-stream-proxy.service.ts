@@ -12,7 +12,62 @@ const ENV_SONIOX_API_KEY = process.env.SONIOX_API_KEY || '';
 
 type ClientConfigMessage = {
   apiKey?: string;
+  languageHints?: unknown;
+  terms?: unknown;
 };
+
+const LANGUAGE_HINT_PATTERN = /^[a-z]{2,3}(?:-[a-z0-9]{2,8})?$/i;
+
+function normalizeClientList(
+  value: unknown,
+  options: { maxItems: number; maxChars: number; maxTotalChars: number; languageCodes?: boolean },
+): string[] {
+  if (!Array.isArray(value)) return [];
+  const result: string[] = [];
+  const seen = new Set<string>();
+  let totalChars = 0;
+  for (const item of value) {
+    if (typeof item !== 'string') continue;
+    const normalized = options.languageCodes ? item.trim().toLowerCase() : item.trim();
+    if (
+      !normalized ||
+      normalized.length > options.maxChars ||
+      totalChars + normalized.length > options.maxTotalChars ||
+      /[<>\r\n]/.test(normalized) ||
+      (options.languageCodes && !LANGUAGE_HINT_PATTERN.test(normalized)) ||
+      seen.has(normalized)
+    ) {
+      continue;
+    }
+    seen.add(normalized);
+    result.push(normalized);
+    totalChars += normalized.length;
+    if (result.length >= options.maxItems) break;
+  }
+  return result;
+}
+
+export function buildSonioxStartRequest(apiKey: string, cfg: ClientConfigMessage): Record<string, unknown> {
+  const languageHints = normalizeClientList(cfg.languageHints, {
+    maxItems: 2,
+    maxChars: 16,
+    maxTotalChars: 32,
+    languageCodes: true,
+  });
+  const terms = normalizeClientList(cfg.terms, {
+    maxItems: 100,
+    maxChars: 128,
+    maxTotalChars: 8000,
+  });
+  return {
+    api_key: apiKey,
+    model: SONIOX_RT_MODEL,
+    audio_format: 'auto',
+    enable_language_identification: true,
+    ...(languageHints.length ? { language_hints: languageHints } : {}),
+    ...(terms.length ? { context: { terms } } : {}),
+  };
+}
 
 /**
  * Relays one client's dictation session to Soniox's real-time STT WebSocket.
@@ -53,14 +108,7 @@ export function handleVoiceStreamConnection(clientWs: WebSocket): void {
       upstream = new WebSocket(SONIOX_RT_URL);
 
       upstream.on('open', () => {
-        upstream!.send(
-          JSON.stringify({
-            api_key: apiKey,
-            model: SONIOX_RT_MODEL,
-            audio_format: 'auto',
-            enable_language_identification: true,
-          }),
-        );
+        upstream!.send(JSON.stringify(buildSonioxStartRequest(apiKey, cfg)));
         // Flush audio chunks the client sent while the upstream connection/config
         // handshake was still in flight, in the order they arrived. Only ever audio
         // (the config frame took the early-return branch above), so binary is safe.

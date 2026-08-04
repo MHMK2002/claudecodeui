@@ -57,6 +57,10 @@ function Sidebar({
   const {
     isSidebarCollapsed,
     expandedProjects,
+    expandedSessions,
+    subagentsBySessionId,
+    loadedSubagentSessionIds,
+    toggleSessionAgents,
     editingProject,
     showNewProject,
     editingName,
@@ -81,6 +85,9 @@ function Sidebar({
     setRecentWindowMinutes,
     isRecentProjectsLoading,
     toggleProject,
+    areAllProjectsExpanded,
+    canExpandAllProjects,
+    toggleAllProjects,
     handleSessionClick,
     toggleStarProject,
     isProjectStarred,
@@ -147,6 +154,9 @@ function Sidebar({
     isLoading,
     loadingProgress,
     expandedProjects,
+    expandedSessions,
+    subagentsBySessionId,
+    loadedSubagentSessionIds,
     editingProject,
     editingName,
     initialSessionsLoaded,
@@ -164,6 +174,7 @@ function Sidebar({
     isProjectStarred,
     onEditingNameChange: setEditingName,
     onToggleProject: toggleProject,
+    onToggleSessionAgents: toggleSessionAgents,
     onProjectSelect: handleProjectSelect,
     onToggleStarProject: toggleStarProject,
     onStartEditingProject: startEditing,
@@ -250,6 +261,9 @@ function Sidebar({
               void refreshProjects();
             }}
             isRefreshing={isRefreshing}
+            areAllProjectsExpanded={areAllProjectsExpanded}
+            canExpandAllProjects={canExpandAllProjects}
+            onToggleAllProjects={toggleAllProjects}
             onCreateProject={() => setShowNewProject(true)}
             onCollapseSidebar={handleCollapseSidebar}
             updateAvailable={updateAvailable}

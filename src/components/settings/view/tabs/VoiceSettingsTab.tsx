@@ -1,10 +1,16 @@
-import type { InputHTMLAttributes, TextareaHTMLAttributes } from 'react';
+import { useEffect, useState, type InputHTMLAttributes, type TextareaHTMLAttributes } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import SettingsSection from '../SettingsSection';
 import SettingsToggle from '../SettingsToggle';
 import { useUiPreferences } from '../../../../hooks/useUiPreferences';
-import { DEFAULT_CLEANUP_PROMPT, useVoiceConfig } from '../../../../hooks/useVoiceConfig';
+import {
+  DEFAULT_CLEANUP_PROMPT,
+  normalizeSttLanguages,
+  normalizeSttTerms,
+  useVoiceConfig,
+  VOICE_STT_PROMPT_MAX_CHARS,
+} from '../../../../hooks/useVoiceConfig';
 import { useAudioInputDevices } from '../../../../hooks/useAudioInputDevices';
 
 const inputClass =
@@ -33,9 +39,24 @@ export default function VoiceSettingsTab() {
   const { preferences, setPreference } = useUiPreferences();
   const { config, update } = useVoiceConfig();
   const mic = useAudioInputDevices();
+  const [promptDraft, setPromptDraft] = useState(config.sttPrompt);
+  const [languageHintsDraft, setLanguageHintsDraft] = useState(() => config.sttLanguages.join(', '));
+  const [termsDraft, setTermsDraft] = useState(() => config.sttTerms.join('\n'));
   const voiceEnabled = preferences.voiceEnabled;
   const savedMicMissing =
     !!config.micDeviceId && !mic.devices.some((device) => device.deviceId === config.micDeviceId);
+
+  useEffect(() => {
+    setPromptDraft(config.sttPrompt);
+  }, [config.sttPrompt]);
+
+  useEffect(() => {
+    setLanguageHintsDraft(config.sttLanguages.join(', '));
+  }, [config.sttLanguages]);
+
+  useEffect(() => {
+    setTermsDraft(config.sttTerms.join('\n'));
+  }, [config.sttTerms]);
 
   return (
     <div className="space-y-8">
@@ -124,6 +145,39 @@ export default function VoiceSettingsTab() {
               />
             </div>
             <p className="text-xs text-muted-foreground">{t('voiceSettings.note')}</p>
+          </div>
+        </SettingsSection>
+
+        <SettingsSection
+          title={t('voiceSettings.contextTitle')}
+          description={t('voiceSettings.contextDescription')}
+        >
+          <div className="space-y-4">
+            {config.sttProvider === 'openai' && (
+              <Area
+                label={t('voiceSettings.contextPrompt')}
+                maxLength={VOICE_STT_PROMPT_MAX_CHARS}
+                placeholder={t('voiceSettings.contextPromptPlaceholder')}
+                value={promptDraft}
+                onChange={(e) => setPromptDraft(e.target.value)}
+                onBlur={() => update({ sttPrompt: promptDraft })}
+              />
+            )}
+            <Field
+              label={t('voiceSettings.contextLanguages')}
+              placeholder="fa, en"
+              value={languageHintsDraft}
+              onChange={(e) => setLanguageHintsDraft(e.target.value)}
+              onBlur={() => update({ sttLanguages: normalizeSttLanguages(languageHintsDraft) })}
+            />
+            <Area
+              label={t('voiceSettings.contextTerms')}
+              placeholder={'useVoiceInput\ngpt-transcribe\n--force'}
+              value={termsDraft}
+              onChange={(e) => setTermsDraft(e.target.value)}
+              onBlur={() => update({ sttTerms: normalizeSttTerms(termsDraft) })}
+            />
+            <p className="text-xs text-muted-foreground">{t('voiceSettings.contextNote')}</p>
           </div>
         </SettingsSection>
 

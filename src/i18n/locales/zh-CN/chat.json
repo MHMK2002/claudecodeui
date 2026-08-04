@@ -215,5 +215,10 @@
   },
   "tasks": {
     "nextTaskPrompt": "开始下一个任务"
+  },
+  "agentTranscript": {
+    "readOnly": "{{agentType}} 代理的只读记录。",
+    "defaultType": "子",
+    "backToParent": "返回父会话"
   }
 }

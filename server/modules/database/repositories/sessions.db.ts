@@ -7,6 +7,9 @@ type SessionRow = {
   provider: string;
   provider_session_id: string | null;
   provider_profile_id: number | null;
+  parent_session_id: string | null;
+  agent_type: string | null;
+  agent_status: string | null;
   project_path: string | null;
   jsonl_path: string | null;
   custom_name: string | null;
@@ -16,7 +19,17 @@ type SessionRow = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, provider_profile_id, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, provider_profile_id, parent_session_id, agent_type, agent_status, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at';
+
+/**
+ * Sub-agent transcripts live in the same table as their parent session so the
+ * existing message pipeline can render them unchanged. Every query that powers
+ * a session *list* must therefore exclude child rows — otherwise agents leak
+ * into the sidebar, search, and archive views as if they were real sessions.
+ * Lookups by id deliberately omit this clause so an agent transcript stays
+ * addressable.
+ */
+const TOP_LEVEL_SESSION_CLAUSE = 'parent_session_id IS NULL';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -90,6 +103,7 @@ export const sessionsDb = {
       .prepare(
         `SELECT session_id FROM sessions
          WHERE provider_session_id = ? AND provider = ?
+           AND ${TOP_LEVEL_SESSION_CLAUSE}
          LIMIT 1`
       )
       .get(providerSessionId, provider) as { session_id: string } | undefined;
@@ -145,6 +159,110 @@ export const sessionsDb = {
   },
 
   /**
+   * Upserts one sub-agent transcript as a child row of the session that
+   * spawned it.
+   *
+   * Kept separate from `createSession` on purpose: that method keys rows by
+   * `provider_session_id` and would happily adopt an agent transcript into the
+   * parent's row, overwriting the parent's `jsonl_path`. Child rows are keyed
+   * directly by their own agent id instead.
+   */
+  createSubagentSession(input: {
+    agentSessionId: string;
+    provider: string;
+    parentSessionId: string;
+    projectPath: string;
+    jsonlPath: string;
+    agentType?: string | null;
+    agentStatus?: string | null;
+    customName?: string | null;
+    createdAt?: string;
+    updatedAt?: string;
+  }): string {
+    const db = getConnection();
+    const normalizedProjectPath = normalizeProjectPathForProvider(input.provider, input.projectPath);
+
+    projectsDb.createProjectPath(normalizedProjectPath);
+
+    db.prepare(
+      `INSERT INTO sessions (session_id, provider, provider_session_id, provider_profile_id, parent_session_id, agent_type, agent_status, custom_name, project_path, jsonl_path, isArchived, created_at, updated_at)
+       VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
+       ON CONFLICT(session_id) DO UPDATE SET
+         provider = excluded.provider,
+         parent_session_id = excluded.parent_session_id,
+         agent_type = COALESCE(excluded.agent_type, sessions.agent_type),
+         agent_status = COALESCE(excluded.agent_status, sessions.agent_status),
+         updated_at = excluded.updated_at,
+         project_path = excluded.project_path,
+         jsonl_path = excluded.jsonl_path,
+         custom_name = COALESCE(excluded.custom_name, sessions.custom_name)`
+    ).run(
+      input.agentSessionId,
+      input.provider,
+      input.agentSessionId,
+      input.parentSessionId,
+      input.agentType ?? null,
+      input.agentStatus ?? null,
+      input.customName ?? null,
+      normalizedProjectPath,
+      input.jsonlPath,
+      normalizeTimestamp(input.createdAt),
+      normalizeTimestamp(input.updatedAt)
+    );
+
+    return input.agentSessionId;
+  },
+
+  /**
+   * Returns the sub-agent transcripts spawned by one session, oldest first so
+   * the sidebar tree reads in spawn order.
+   */
+  getSubagentsByParentSessionId(parentSessionId: string): SessionRow[] {
+    const db = getConnection();
+    const rows = db
+      .prepare(
+        `SELECT ${SESSION_ROW_COLUMNS}
+         FROM sessions
+         WHERE parent_session_id = ?
+         ORDER BY datetime(COALESCE(created_at, updated_at)) ASC, session_id ASC`
+      )
+      .all(parentSessionId) as SessionRow[];
+
+    return normalizeSessionRows(rows);
+  },
+
+  /**
+   * Counts sub-agents for a whole page of sessions in one query.
+   *
+   * The sidebar needs an agent count per row to decide whether to render the
+   * expand chevron; querying per session would mean one round trip per visible
+   * row, so callers pass the entire page instead.
+   */
+  countSubagentsByParentSessionIds(parentSessionIds: string[]): Map<string, number> {
+    const counts = new Map<string, number>();
+    if (parentSessionIds.length === 0) {
+      return counts;
+    }
+
+    const db = getConnection();
+    const placeholders = parentSessionIds.map(() => '?').join(', ');
+    const rows = db
+      .prepare(
+        `SELECT parent_session_id, COUNT(*) AS count
+         FROM sessions
+         WHERE parent_session_id IN (${placeholders})
+         GROUP BY parent_session_id`
+      )
+      .all(...parentSessionIds) as Array<{ parent_session_id: string; count: number }>;
+
+    for (const row of rows) {
+      counts.set(row.parent_session_id, Number(row.count ?? 0));
+    }
+
+    return counts;
+  },
+
+  /**
    * Inserts one app-allocated session row before any provider run happens.
    *
    * The session gateway uses this when the frontend starts a brand-new chat:
@@ -189,6 +307,7 @@ export const sessionsDb = {
           `SELECT ${SESSION_ROW_COLUMNS} FROM sessions
            WHERE (session_id = ? OR provider_session_id = ?)
              AND session_id <> ?
+             AND ${TOP_LEVEL_SESSION_CLAUSE}
            LIMIT 1`
         )
         .get(providerSessionId, providerSessionId, sessionId) as SessionRow | undefined;
@@ -320,7 +439,8 @@ export const sessionsDb = {
       .prepare(
         `SELECT ${SESSION_ROW_COLUMNS}
          FROM sessions
-         WHERE isArchived = 0`
+         WHERE isArchived = 0
+           AND ${TOP_LEVEL_SESSION_CLAUSE}`
       )
       .all() as SessionRow[];
 
@@ -339,6 +459,7 @@ export const sessionsDb = {
         `SELECT ${SESSION_ROW_COLUMNS}
          FROM sessions
          WHERE isArchived = 0
+           AND ${TOP_LEVEL_SESSION_CLAUSE}
            AND project_path IS NOT NULL
            AND datetime(COALESCE(updated_at, created_at)) >= datetime(?)
          ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC`
@@ -359,6 +480,7 @@ export const sessionsDb = {
         `SELECT ${SESSION_ROW_COLUMNS}
          FROM sessions
          WHERE isArchived = 1
+           AND ${TOP_LEVEL_SESSION_CLAUSE}
          ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC`
       )
       .all() as SessionRow[];
@@ -374,7 +496,8 @@ export const sessionsDb = {
         `SELECT ${SESSION_ROW_COLUMNS}
          FROM sessions
          WHERE project_path = ?
-           AND isArchived = 0`
+           AND isArchived = 0
+           AND ${TOP_LEVEL_SESSION_CLAUSE}`
       )
       .all(normalizedProjectPath) as SessionRow[];
 
@@ -384,6 +507,11 @@ export const sessionsDb = {
   /**
    * Permanent project deletion must see every session row for the path,
    * including archived ones, so their transcript files can be cleaned up.
+   *
+   * Unlike the other project-path readers this intentionally keeps sub-agent
+   * child rows: their transcripts are separate files on disk and would be
+   * orphaned if deletion only walked top-level sessions. Callers that render a
+   * session *list* from this must drop child rows themselves.
    */
   getSessionsByProjectPathIncludingArchived(projectPath: string): SessionRow[] {
     const db = getConnection();
@@ -408,6 +536,7 @@ export const sessionsDb = {
          FROM sessions
          WHERE project_path = ?
            AND isArchived = 0
+           AND ${TOP_LEVEL_SESSION_CLAUSE}
          ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC
          LIMIT ? OFFSET ?`
       )
@@ -424,7 +553,8 @@ export const sessionsDb = {
         `SELECT COUNT(*) AS count
          FROM sessions
          WHERE project_path = ?
-           AND isArchived = 0`
+           AND isArchived = 0
+           AND ${TOP_LEVEL_SESSION_CLAUSE}`
       )
       .get(normalizedProjectPath) as { count: number } | undefined;
 
@@ -477,8 +607,17 @@ export const sessionsDb = {
     ).run(isArchived ? 1 : 0, sessionId);
   },
 
+  /**
+   * Deleting a session also drops the sub-agent rows it spawned, so agent
+   * transcripts can never outlive their parent as unreachable orphans.
+   */
   deleteSessionById(sessionId: string): boolean {
     const db = getConnection();
-    return db.prepare('DELETE FROM sessions WHERE session_id = ?').run(sessionId).changes > 0;
+    const remove = db.transaction(() => {
+      db.prepare('DELETE FROM sessions WHERE parent_session_id = ?').run(sessionId);
+      return db.prepare('DELETE FROM sessions WHERE session_id = ?').run(sessionId).changes > 0;
+    });
+
+    return remove();
   },
 };

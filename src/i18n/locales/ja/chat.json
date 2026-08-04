@@ -202,5 +202,10 @@
     "providers": {
       "assistant": "Assistant"
     }
+  },
+  "agentTranscript": {
+    "readOnly": "{{agentType}} エージェントの読み取り専用トランスクリプトです。",
+    "defaultType": "サブ",
+    "backToParent": "親セッションに戻る"
   }
 }

@@ -13,6 +13,9 @@ type SessionSummary = {
   providerProfileId: number | null;
   summary: string;
   messageCount: number;
+  // Number of sub-agent transcripts spawned by this session. Drives the
+  // sidebar's third-level expand affordance.
+  agentCount: number;
   lastActivity: string;
 };
 
@@ -20,6 +23,7 @@ type SessionRepositoryRow = {
   provider: string;
   session_id: string;
   provider_profile_id?: number | null;
+  parent_session_id?: string | null;
   project_path?: string | null;
   custom_name?: string | null;
   updated_at?: string | null;
@@ -73,6 +77,7 @@ type RecentProjectsDependencies = {
   synchronizeSessions: () => Promise<unknown>;
   readProjectRows: () => RecentProjectRepositoryRow[];
   readSessionRows: (since: string) => SessionRepositoryRow[];
+  readAgentCounts: (parentSessionIds: string[]) => Map<string, number>;
   resolveDisplayName: (projectName: string, actualProjectDir: string | null) => Promise<string>;
 };
 
@@ -142,22 +147,40 @@ function normalizeSessionPagination(options: SessionPaginationOptions = {}): { l
   };
 }
 
-function mapSessionRowToSummary(row: SessionRepositoryRow): SessionSummary {
+function mapSessionRowToSummary(row: SessionRepositoryRow, agentCount = 0): SessionSummary {
   return {
     id: row.session_id,
     provider: row.provider,
     providerProfileId: row.provider_profile_id ?? null,
     summary: row.custom_name || '',
     messageCount: 0,
+    agentCount,
     lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
   };
 }
 
+/**
+ * Attaches the sub-agent count to a page of session rows using a single
+ * grouped query, so the sidebar can decide per row whether to render the
+ * expand chevron without one round trip per session.
+ */
+function mapSessionRowsToSummaries(
+  rows: SessionRepositoryRow[],
+  readAgentCounts: (parentSessionIds: string[]) => Map<string, number> =
+    (parentSessionIds) => sessionsDb.countSubagentsByParentSessionIds(parentSessionIds),
+): SessionSummary[] {
+  const agentCounts = readAgentCounts(rows.map((row) => row.session_id));
+  return rows.map((row) => mapSessionRowToSummary(row, agentCounts.get(row.session_id) ?? 0));
+}
+
 function readProjectSessionsIncludingArchived(projectPath: string): ProjectSessionsPageResult {
-  const rows = sessionsDb.getSessionsByProjectPathIncludingArchived(projectPath) as SessionRepositoryRow[];
+  // This reader keeps sub-agent children (deletion needs their transcript
+  // paths), so the archived-projects listing drops them here.
+  const rows = (sessionsDb.getSessionsByProjectPathIncludingArchived(projectPath) as SessionRepositoryRow[])
+    .filter((row) => !row.parent_session_id);
 
   return {
-    sessions: rows.map(mapSessionRowToSummary),
+    sessions: mapSessionRowsToSummaries(rows),
     total: rows.length,
     hasMore: false,
   };
@@ -179,7 +202,7 @@ function readProjectSessionsPageByPath(
   const total = sessionsDb.countSessionsByProjectPath(projectPath);
 
   return {
-    sessions: rows.map(mapSessionRowToSummary),
+    sessions: mapSessionRowsToSummaries(rows),
     total,
     hasMore: pagination.offset + rows.length < total,
   };
@@ -277,6 +300,7 @@ export async function getRecentProjectsWithSessions(
     synchronizeSessions: () => sessionSynchronizerService.synchronizeSessions(),
     readProjectRows: () => projectsDb.getProjectPaths() as RecentProjectRepositoryRow[],
     readSessionRows: (since) => sessionsDb.getSessionsUpdatedSince(since) as SessionRepositoryRow[],
+    readAgentCounts: (parentSessionIds) => sessionsDb.countSubagentsByParentSessionIds(parentSessionIds),
     resolveDisplayName: generateDisplayName,
   },
 ): Promise<ProjectListItem[]> {
@@ -333,8 +357,7 @@ export async function getRecentProjectsWithSessions(
           path.basename(projectRow.project_path) || projectRow.project_path,
           projectRow.project_path,
         );
-    const sessions = sessionRows
-      .map(mapSessionRowToSummary)
+    const sessions = mapSessionRowsToSummaries(sessionRows, dependencies.readAgentCounts)
       .sort((left, right) => right.lastActivity.localeCompare(left.lastActivity));
 
     projects.push({

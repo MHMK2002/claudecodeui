@@ -156,3 +156,7 @@ electron/*.tar.gz
 /.playwright-mcp/
 /*.png
 /RTK.md
+
+# Private voice cleanup benchmark data and generated reports
+/benchmarks/voice-cleanup/local-private/
+/benchmarks/voice-cleanup/results/

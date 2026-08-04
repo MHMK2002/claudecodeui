@@ -15,6 +15,12 @@ interface MessageEditComposerProps {
   onCancel: () => void;
 }
 
+// Editor height bounds, in px. The floor keeps a one-word message from becoming a
+// sliver; the ceiling stops a very long message from pushing the Save/Cancel
+// controls off-screen (the textarea scrolls past it).
+const MIN_EDITOR_HEIGHT_PX = 48;
+const MAX_EDITOR_HEIGHT_PX = 420;
+
 /** Resolve a ChatImage to an <img src>-friendly URL (data URL or asset route). */
 function imageSource(image: ChatImage, fallbackName: string): string {
   if (image.data) return image.data;
@@ -64,6 +70,17 @@ export default function MessageEditComposer({
     const length = node.value.length;
     node.setSelectionRange(length, length);
   }, []);
+
+  // Grow to fit the text instead of counting newlines: a long single-paragraph
+  // message wraps over many visual lines but contains no '\n', so a row count
+  // would collapse the editor to a couple of lines and hide most of the message
+  // the user came here to change.
+  useEffect(() => {
+    const node = textareaRef.current;
+    if (!node) return;
+    node.style.height = 'auto';
+    node.style.height = `${Math.min(Math.max(node.scrollHeight, MIN_EDITOR_HEIGHT_PX), MAX_EDITOR_HEIGHT_PX)}px`;
+  }, [value, images.length]);
 
   const handleChange = useCallback((next: string) => {
     setValue(next);
@@ -126,8 +143,8 @@ export default function MessageEditComposer({
         value={value}
         onChange={(event) => handleChange(event.target.value)}
         onKeyDown={handleKeyDown}
-        rows={Math.min(8, Math.max(2, value.split('\n').length))}
-        className="bidi-isolate block w-full resize-none border-0 bg-transparent text-sm leading-6 text-white placeholder:text-blue-100/60 focus:outline-none"
+        rows={1}
+        className="bidi-isolate block w-full resize-none overflow-y-auto border-0 bg-transparent text-sm leading-6 text-white placeholder:text-blue-100/60 focus:outline-none"
         placeholder={t('rewind.editPlaceholder', { defaultValue: 'Edit your message…' })}
       />
       {error && (

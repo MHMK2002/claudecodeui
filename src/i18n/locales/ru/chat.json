@@ -215,5 +215,10 @@
   },
   "tasks": {
     "nextTaskPrompt": "Начать следующую задачу"
+  },
+  "agentTranscript": {
+    "readOnly": "Транскрипт агента {{agentType}} только для чтения.",
+    "defaultType": "под",
+    "backToParent": "Назад к родительской сессии"
   }
 }

@@ -61,6 +61,13 @@ export interface ProjectSession {
   updated_at?: string;
   lastActivity?: string;
   messageCount?: number;
+  // Number of sub-agents this session spawned; drives the sidebar's
+  // third-level expand affordance.
+  agentCount?: number;
+  // Set only on sub-agent rows: the id of the session that spawned them.
+  // Present means the session is an agent transcript and is read-only.
+  parentSessionId?: string;
+  agentType?: string | null;
   provider?: LLMProvider;
   __provider?: LLMProvider;
   providerProfileId?: number | null;

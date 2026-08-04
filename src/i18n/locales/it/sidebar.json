@@ -50,7 +50,9 @@
     "cancel": "Annulla",
     "clearSearch": "Cancella ricerca",
     "openCommandPalette": "Apri tavolozza comandi",
-    "attentionRequiredIndicator": "La sessione richiede attenzione"
+    "attentionRequiredIndicator": "La sessione richiede attenzione",
+    "expandAllProjects": "Espandi tutti i progetti e le sessioni",
+    "collapseAllProjects": "Comprimi tutti i progetti"
   },
   "navigation": {
     "chat": "Chat",
@@ -141,5 +143,12 @@
     "deleteAllData": "Elimina tutti i dati permanentemente",
     "allConversationsDeleted": "Il progetto verrà rimosso dalla barra laterale. I tuoi file, memorie e dati delle sessioni verranno preservati.",
     "cannotUndo": "Puoi riaggiungerlo in seguito."
+  },
+  "agents": {
+    "noAgents": "Nessun agente",
+    "defaultType": "Agente",
+    "toolCount": "{{count}} strumenti",
+    "expandAgents": "Mostra {{count}} agenti",
+    "collapseAgents": "Nascondi agenti"
   }
 }

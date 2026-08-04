@@ -217,5 +217,10 @@
   },
   "tasks": {
     "nextTaskPrompt": "Commencer la prochaine tâche"
+  },
+  "agentTranscript": {
+    "readOnly": "Transcription en lecture seule de l'agent {{agentType}}.",
+    "defaultType": "secondaire",
+    "backToParent": "Retour à la session parente"
   }
 }

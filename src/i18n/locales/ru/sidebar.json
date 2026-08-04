@@ -50,7 +50,9 @@
     "cancel": "Отмена",
     "clearSearch": "Очистить поиск",
     "openCommandPalette": "Открыть палитру команд",
-    "attentionRequiredIndicator": "Сессия требует внимания"
+    "attentionRequiredIndicator": "Сессия требует внимания",
+    "expandAllProjects": "Развернуть все проекты и сессии",
+    "collapseAllProjects": "Свернуть все проекты"
   },
   "navigation": {
     "chat": "Чат",
@@ -147,5 +149,12 @@
     "deleteAllData": "Удалить все данные навсегда",
     "allConversationsDeleted": "Проект будет убран из боковой панели. Ваши файлы, воспоминания и данные сеансов сохранятся.",
     "cannotUndo": "Вы сможете добавить проект позже."
+  },
+  "agents": {
+    "noAgents": "Нет агентов",
+    "defaultType": "Агент",
+    "toolCount": "инструментов: {{count}}",
+    "expandAgents": "Показать агентов: {{count}}",
+    "collapseAgents": "Скрыть агентов"
   }
 }

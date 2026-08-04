@@ -124,6 +124,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- id mid-run, or equals \`session_id\` for sessions discovered on disk.
     provider_session_id TEXT,
     provider_profile_id INTEGER,
+    -- Sub-agent transcripts (Claude \`Task\` agents, Codex spawned threads) are
+    -- stored as child rows of the session that spawned them. \`parent_session_id\`
+    -- holds the app-facing id of that parent; it stays NULL for real sessions,
+    -- and every session *listing* query filters on \`parent_session_id IS NULL\`
+    -- so agents surface only under their own session in the sidebar tree.
+    parent_session_id TEXT,
+    agent_type TEXT,
+    agent_status TEXT,
     custom_name TEXT,
     project_path TEXT,
     jsonl_path TEXT,

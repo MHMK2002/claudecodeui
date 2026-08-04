@@ -18,6 +18,14 @@ type ParsedSession = {
   sessionName?: string;
 };
 
+type ParsedSubagent = {
+  agentSessionId: string;
+  parentProviderSessionId: string;
+  projectPath: string;
+  agentType: string | null;
+  sessionName: string;
+};
+
 /**
  * Session indexer for Codex transcript artifacts.
  */
@@ -27,6 +35,10 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
 
   /**
    * Scans ~/.codex/sessions and upserts discovered sessions into DB.
+   *
+   * Sub-agent rollouts are indexed in a second pass: a child row stores the
+   * app-facing id of its parent, which only exists once the parent rollout has
+   * been indexed.
    */
   async synchronize(since?: Date): Promise<number> {
     const nameMap = await buildLookupMap(path.join(this.codexHome, 'session_index.jsonl'), 'id', 'thread_name');
@@ -37,7 +49,18 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
     );
 
     let processed = 0;
+    const pendingSubagents: Array<{ filePath: string; parsed: ParsedSubagent }> = [];
+
     for (const filePath of files) {
+      // Sub-agent rollouts live in the same tree as user sessions and are the
+      // main reason `processSessionFile` returns null, so they are checked
+      // first and deferred to the second pass.
+      const parsedSubagent = await this.processSubagentFile(filePath);
+      if (parsedSubagent) {
+        pendingSubagents.push({ filePath, parsed: parsedSubagent });
+        continue;
+      }
+
       const parsed = await this.processSessionFile(filePath, nameMap);
       if (!parsed) {
         continue;
@@ -65,6 +88,12 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
       processed += 1;
     }
 
+    for (const { filePath, parsed } of pendingSubagents) {
+      if (this.upsertSubagentSession(filePath, parsed, await readFileTimestamps(filePath))) {
+        processed += 1;
+      }
+    }
+
     return processed;
   }
 
@@ -74,6 +103,11 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
   async synchronizeFile(filePath: string): Promise<string | null> {
     if (!filePath.endsWith('.jsonl')) {
       return null;
+    }
+
+    const parsedSubagent = await this.processSubagentFile(filePath);
+    if (parsedSubagent) {
+      return this.upsertSubagentSession(filePath, parsedSubagent, await readFileTimestamps(filePath));
     }
 
     const nameMap = await buildLookupMap(path.join(this.codexHome, 'session_index.jsonl'), 'id', 'thread_name');
@@ -92,6 +126,75 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
       timestamps.updatedAt,
       filePath
     );
+  }
+
+  /**
+   * Upserts one parsed sub-agent rollout as a child of its parent thread.
+   *
+   * Returns null when the parent has not been indexed yet — the next scan (or
+   * the watcher event for the parent rollout) picks the child up.
+   */
+  private upsertSubagentSession(
+    filePath: string,
+    parsed: ParsedSubagent,
+    timestamps: { createdAt?: string; updatedAt?: string }
+  ): string | null {
+    const parentSession = sessionsDb.getSessionByProviderSessionId(parsed.parentProviderSessionId)
+      ?? sessionsDb.getSessionById(parsed.parentProviderSessionId);
+    if (!parentSession) {
+      return null;
+    }
+
+    return sessionsDb.createSubagentSession({
+      agentSessionId: parsed.agentSessionId,
+      provider: this.provider,
+      parentSessionId: parentSession.session_id,
+      projectPath: parsed.projectPath,
+      jsonlPath: filePath,
+      agentType: parsed.agentType,
+      customName: parsed.sessionName,
+      createdAt: timestamps.createdAt,
+      updatedAt: timestamps.updatedAt,
+    });
+  }
+
+  /**
+   * Extracts sub-agent metadata from one Codex rollout, or null when the
+   * rollout is a normal user session.
+   *
+   * Codex >=0.144 records the spawning thread in `parent_thread_id` and the
+   * agent identity under `source.subagent.thread_spawn`.
+   */
+  private async processSubagentFile(filePath: string): Promise<ParsedSubagent | null> {
+    return extractFirstValidJsonlData(filePath, (rawData) => {
+      const data = rawData as Record<string, unknown>;
+      const payload = data.payload as Record<string, unknown> | undefined;
+      if (!payload || !this.isSubagentSessionMeta(payload)) {
+        return null;
+      }
+
+      const agentSessionId = typeof payload.id === 'string' ? payload.id : undefined;
+      const parentProviderSessionId = typeof payload.parent_thread_id === 'string'
+        ? payload.parent_thread_id
+        : undefined;
+      const projectPath = typeof payload.cwd === 'string' ? payload.cwd : undefined;
+
+      if (!agentSessionId || !parentProviderSessionId || !projectPath) {
+        return null;
+      }
+
+      const nickname = typeof payload.agent_nickname === 'string' ? payload.agent_nickname.trim() : '';
+      const agentPath = typeof payload.agent_path === 'string' ? payload.agent_path.trim() : '';
+      const agentType = agentPath ? path.basename(agentPath) : null;
+
+      return {
+        agentSessionId,
+        parentProviderSessionId,
+        projectPath,
+        agentType,
+        sessionName: nickname || agentType || `Agent ${agentSessionId.slice(0, 8)}`,
+      };
+    });
   }
 
   /**

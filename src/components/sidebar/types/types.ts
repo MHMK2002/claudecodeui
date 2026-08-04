@@ -9,6 +9,27 @@ export type SessionWithProvider = ProjectSession & {
   __provider: LLMProvider;
 };
 
+export type SubagentStatus = 'running' | 'completed' | 'unknown';
+
+/**
+ * One sub-agent spawned by a session. `sessionId` addresses the agent's own
+ * transcript, so selecting it opens the agent's conversation like any session.
+ */
+export type SubagentListItem = {
+  sessionId: string;
+  provider: LLMProvider;
+  parentSessionId: string;
+  name: string;
+  agentType: string | null;
+  status: SubagentStatus;
+  toolCount: number;
+  currentTool: { toolName: string; toolInput: unknown } | null;
+  totalTokens: number | null;
+  totalDurationMs: number | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
 export type ArchivedSessionListItem = {
   sessionId: string;
   provider: LLMProvider;

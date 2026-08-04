@@ -413,6 +413,25 @@ const addProviderSessionIdMapping = (db: Database): void => {
   `);
 };
 
+/**
+ * Adds the columns that link a sub-agent transcript back to the session that
+ * spawned it.
+ *
+ * Sub-agents (Claude `Task` agents, Codex spawned threads) are indexed as child
+ * rows in `sessions` rather than in a side table, so the existing
+ * `/sessions/:id/messages` pipeline can render an agent transcript unchanged.
+ * Legacy rows predate sub-agent indexing and are all top-level, so leaving
+ * `parent_session_id` NULL is the correct backfill.
+ */
+const addSubagentSessionColumns = (db: Database): void => {
+  const sessionsTableInfo = getTableInfo(db, 'sessions');
+  const columnNames = sessionsTableInfo.map((column) => column.name);
+
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'parent_session_id', 'TEXT');
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'agent_type', 'TEXT');
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'agent_status', 'TEXT');
+};
+
 const ensureProviderProfilesSchema = (db: Database): void => {
   db.exec(PROVIDER_PROFILES_TABLE_SCHEMA_SQL);
   db.exec('CREATE INDEX IF NOT EXISTS idx_provider_profiles_user_provider ON provider_profiles(user_id, provider)');
@@ -471,12 +490,14 @@ export const runMigrations = (db: Database) => {
     rebuildSessionsTableWithProjectSchema(db);
     migrateLegacySessionNames(db);
     addProviderSessionIdMapping(db);
+    addSubagentSessionColumns(db);
     ensureProjectsForSessionPaths(db);
 
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_provider_session_id ON sessions(provider_session_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_project_path ON sessions(project_path)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_is_archived ON sessions(isArchived)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_parent_session_id ON sessions(parent_session_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_projects_is_starred ON projects(isStarred)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_projects_is_archived ON projects(isArchived)');
 

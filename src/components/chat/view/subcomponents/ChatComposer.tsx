@@ -19,6 +19,7 @@ import { useHoldToTalk } from '../../hooks/useHoldToTalk';
 import { useUiPreferences } from '../../../../hooks/useUiPreferences';
 import type { QueuedDraft } from '../../hooks/useChatComposerState';
 import type { SessionActivity } from '../../../../hooks/useSessionProtection';
+import type { VoiceTranscriptDelivery } from '../../../../lib/finalizeVoiceTranscript';
 import type { PendingPermissionRequest, PermissionMode } from '../../types/types';
 import type { ProviderModelOption } from '../../../../types/app';
 import {
@@ -103,7 +104,17 @@ interface ChatComposerProps {
   renderInputWithMentions: (text: string) => ReactNode;
   textareaRef: RefObject<HTMLTextAreaElement>;
   input: string;
-  onVoiceTranscript?: (text: string, send?: boolean, origin?: unknown) => void;
+  onVoiceTranscript?: (
+    text: string,
+    send?: boolean,
+    origin?: unknown,
+    delivery?: VoiceTranscriptDelivery,
+  ) => void | Promise<void>;
+  /**
+   * Partial transcript from a streaming STT provider, shown in the box while the
+   * user is still speaking. `null` clears the preview (recording ended with nothing).
+   */
+  onVoiceInterim?: (text: string | null) => void;
   /** Snapshots the session a recording commits to, captured at each stop/send press. */
   onVoiceCommit?: () => unknown;
   onInputChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
@@ -170,6 +181,7 @@ export default function ChatComposer({
   textareaRef,
   input,
   onVoiceTranscript,
+  onVoiceInterim,
   onVoiceCommit,
   onInputChange,
   onTextareaClick,
@@ -214,6 +226,7 @@ export default function ChatComposer({
   const { state: voiceState, stop: voiceStop, start: voiceStart, detach: voiceDetach } = useVoiceInput(
     onVoiceTranscript ?? noopTranscript,
     handleVoiceError,
+    onVoiceInterim,
   );
   // Every stop/send press snapshots the session being viewed right now (via
   // onVoiceCommit) and binds it to the recording, so a transcript that resolves

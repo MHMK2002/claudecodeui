@@ -374,6 +374,10 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
 
   // ============================================================================
   // SUBAGENT TASK TOOL
+  //
+  // Claude renamed this tool from `Task` to `Agent`; both names appear in
+  // transcripts depending on the version that wrote them, so `Agent` is
+  // registered as an alias right after this config.
   // ============================================================================
 
   Task: {
@@ -548,6 +552,21 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
     }
   }
 };
+
+// Newer Claude versions emit the sub-agent tool as `Agent`; older transcripts
+// still say `Task`. Both render identically.
+TOOL_CONFIGS.Agent = TOOL_CONFIGS.Task;
+
+/**
+ * Every name the sub-agent spawning tool has shipped under. Callers use this
+ * instead of comparing against a single literal, so a transcript written by
+ * either version still renders the agent container.
+ */
+export const SUBAGENT_TOOL_NAMES = ['Task', 'Agent'] as const;
+
+export function isSubagentToolName(toolName: string | undefined | null): boolean {
+  return SUBAGENT_TOOL_NAMES.includes(toolName as (typeof SUBAGENT_TOOL_NAMES)[number]);
+}
 
 /**
  * Get configuration for a tool, with fallback to default
