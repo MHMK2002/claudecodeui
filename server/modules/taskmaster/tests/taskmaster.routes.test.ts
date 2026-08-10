@@ -92,6 +92,86 @@ test('MCP status route delegates detection to the injected TaskMaster service', 
   assert.equal(detectionCount, 1);
 });
 
+test('workflow routes report a deliberate error with its own code and status', async () => {
+  const router = createTaskmasterRouter({
+    fileSystem: {} as typeof import('node:fs'),
+    fileSystemPromises: {} as typeof import('node:fs/promises'),
+    spawnProcess: (() => { throw new Error('spawn should not run'); }) as unknown as
+      Parameters<typeof createTaskmasterRouter>[0]['spawnProcess'],
+    resolveProjectPathById: () => '/workspace/project',
+    taskmasterService: {
+      detectMcpServer: async () => ({
+        hasMCPServer: false,
+        reason: 'Not configured',
+        hasConfig: false,
+      }),
+    },
+  });
+  // No auth middleware is mounted, so reading the caller throws before the
+  // workflow service is reached — the same path that used to crash the process.
+  const app = express().use('/api/taskmaster', router);
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+
+  try {
+    const address = server.address() as AddressInfo;
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/api/taskmaster/workflow/project-1/intakes`,
+      { method: 'POST' },
+    );
+    assert.equal(response.status, 401);
+    assert.deepEqual(await response.json(), {
+      success: false,
+      error: 'AUTHENTICATED_USER_REQUIRED',
+      message: 'Authenticated user is required.',
+    });
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('workflow routes hide an unexpected error behind a generic 500', async (t) => {
+  const loggedErrors: unknown[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { loggedErrors.push(args); });
+
+  const router = createTaskmasterRouter({
+    fileSystem: {} as typeof import('node:fs'),
+    fileSystemPromises: {} as typeof import('node:fs/promises'),
+    spawnProcess: (() => { throw new Error('spawn should not run'); }) as unknown as
+      Parameters<typeof createTaskmasterRouter>[0]['spawnProcess'],
+    resolveProjectPathById: () => { throw new Error('project index is corrupt'); },
+    taskmasterService: {
+      detectMcpServer: async () => ({
+        hasMCPServer: false,
+        reason: 'Not configured',
+        hasConfig: false,
+      }),
+    },
+  });
+  const app = express().use('/api/taskmaster', router);
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+
+  try {
+    const address = server.address() as AddressInfo;
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/api/taskmaster/workflow/project-1/intakes`,
+      { method: 'POST' },
+    );
+    assert.equal(response.status, 500);
+    assert.deepEqual(await response.json(), {
+      success: false,
+      error: 'INTERNAL_ERROR',
+      message: 'Internal server error',
+    });
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+
+  // The unexpected cause is kept out of the response but must reach the logs.
+  assert.equal(loggedErrors.length, 1);
+});
+
 test('TaskMaster process errors use the endpoint failure response and settle once', async () => {
   const child = new EventEmitter() as EventEmitter & {
     stdin: PassThrough;

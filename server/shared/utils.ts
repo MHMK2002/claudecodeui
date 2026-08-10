@@ -101,6 +101,52 @@ export class AppError extends Error {
 }
 
 // ---------------------------
+//----------------- AUTHENTICATED REQUEST UTILITIES ------------
+/**
+ * Express request shape after the auth middleware has attached the caller.
+ *
+ * The middleware historically wrote either `user.id` or `user.userId`, and both
+ * have been observed as numbers or numeric strings, so every field is `unknown`
+ * and must be narrowed before use.
+ */
+type AuthenticatedRequest = Request & {
+  user?: {
+    id?: unknown;
+    userId?: unknown;
+  };
+};
+
+/**
+ * Reads the authenticated caller's numeric user ID from an Express request.
+ *
+ * Accepts `user.id` or `user.userId` as either a number or a numeric string and
+ * normalizes it to a positive integer. Throws an `AppError` with code
+ * `AUTHENTICATED_USER_REQUIRED` and status 401 when no usable ID is present, so
+ * routes can rely on the return value being a valid ID rather than null-checking.
+ *
+ * Used by the providers and taskmaster route modules to scope records to the
+ * requesting user.
+ */
+export function readAuthenticatedUserId(req: Request): number {
+  const user = (req as AuthenticatedRequest).user;
+  const rawUserId = user?.id ?? user?.userId;
+  const parsed = typeof rawUserId === 'number'
+    ? rawUserId
+    : typeof rawUserId === 'string'
+      ? (/^\d+$/.test(rawUserId.trim()) ? Number(rawUserId.trim()) : NaN)
+      : NaN;
+
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new AppError('Authenticated user is required.', {
+      code: 'AUTHENTICATED_USER_REQUIRED',
+      statusCode: 401,
+    });
+  }
+
+  return parsed;
+}
+
+// ---------------------------
 //----------------- WORKSPACE PATH VALIDATION UTILITIES ------------
 /**
  * Root directory that all workspace/project paths must stay under.

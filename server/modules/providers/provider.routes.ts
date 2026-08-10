@@ -25,7 +25,7 @@ import type {
   ProviderSkillCreateInput,
   UpsertProviderMcpServerInput,
 } from '@/shared/types.js';
-import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
+import { AppError, asyncHandler, createApiSuccessResponse, readAuthenticatedUserId } from '@/shared/utils.js';
 
 const router = express.Router();
 
@@ -91,32 +91,6 @@ const parseOptionalBooleanQuery = (value: unknown, name: string): boolean | unde
     code: 'INVALID_QUERY_PARAMETER',
     statusCode: 400,
   });
-};
-
-type AuthenticatedProviderRequest = Request & {
-  user?: {
-    id?: unknown;
-    userId?: unknown;
-  };
-};
-
-const readAuthenticatedUserId = (req: Request): number => {
-  const user = (req as AuthenticatedProviderRequest).user;
-  const rawUserId = user?.id ?? user?.userId;
-  const parsed = typeof rawUserId === 'number'
-    ? rawUserId
-    : typeof rawUserId === 'string'
-      ? (/^\d+$/.test(rawUserId.trim()) ? Number(rawUserId.trim()) : NaN)
-      : NaN;
-
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new AppError('Authenticated user is required.', {
-      code: 'AUTHENTICATED_USER_REQUIRED',
-      statusCode: 401,
-    });
-  }
-
-  return parsed;
 };
 
 const parseMcpScope = (value: unknown): McpScope | undefined => {

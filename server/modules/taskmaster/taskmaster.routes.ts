@@ -13,6 +13,8 @@ import path from 'path';
 
 import express from 'express';
 
+import { readAuthenticatedUserId } from '@/shared/utils.js';
+
 import { taskmasterWorkflowService } from './taskmaster-workflow.service.js';
 import type { createTaskmasterService } from './taskmaster.service.js';
 // cross-spawn: drop-in spawn with Windows .cmd/PATHEXT resolution — required
@@ -51,6 +53,33 @@ function broadcastTaskMasterProjectUpdate(wss, projectId, taskMasterData) {
 
 function broadcastTaskMasterTasksUpdate(wss, projectId, tasksData) {
     broadcastTaskMasterUpdate(wss, 'taskmaster-tasks-updated', projectId, 'tasksData', tasksData);
+}
+
+/**
+ * Translate a workflow error into the `{ success, error, message }` envelope the
+ * workflow routes already use for their inline 404s.
+ *
+ * Deliberate failures carry both `code` and `statusCode` — the workflow service
+ * builds them via `workflowError`, and `readAuthenticatedUserId` throws `AppError`
+ * with the same two fields — so their message is meant for the caller and is
+ * passed through. Anything else is unexpected: it is logged and reported as a
+ * generic 500, mirroring the global error middleware in `server/index.ts`.
+ */
+function sendWorkflowError(res, error) {
+    const isDeliberate = typeof error?.code === 'string' && Number.isInteger(error?.statusCode);
+    if (!isDeliberate) {
+        console.error('TaskMaster workflow request failed:', error);
+        return res.status(500).json({
+            success: false,
+            error: 'INTERNAL_ERROR',
+            message: 'Internal server error',
+        });
+    }
+    return res.status(error.statusCode).json({
+        success: false,
+        error: error.code,
+        message: error.message,
+    });
 }
 
 /**
