@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { NavigateFunction } from 'react-router-dom';
 
 import { api } from '../utils/api';
+import { buildSubagentRoute } from '../utils/subagentNavigation';
 import type { ServerEvent } from '../contexts/WebSocketContext';
 import type {
   AppTab,
@@ -53,6 +54,22 @@ type RegisterOptimisticSessionArgs = {
 };
 
 type ProjectSessionPage = Pick<Project, 'sessions' | 'sessionMeta'>;
+
+type SessionContextApiPayload = {
+  data?: {
+    session?: {
+      sessionId?: unknown;
+      provider?: unknown;
+      providerProfileId?: unknown;
+      projectId?: unknown;
+      projectPath?: unknown;
+      title?: unknown;
+      parentSessionId?: unknown;
+      agentType?: unknown;
+      isSubagent?: unknown;
+    };
+  };
+};
 
 const DEFAULT_PROVIDER: LLMProvider = 'claude';
 
@@ -807,31 +824,82 @@ export function useProjectsState({
       }
     }
 
-    // Session id is in the URL but not yet present on any project payload
-    // (normal for a brand-new conversation: the composer allocates the id and
-    // navigates before the sidebar learns about the session via
-    // `session_upserted`). Without a `selectedSession`, chat state clears
-    // `currentSessionId` and the UI stops reading the session store even
-    // though messages stream under this id — so synthesize a placeholder.
+    // A root selected through the resolver below may not be present in the
+    // currently loaded sidebar page yet. Once it is selected, do not resolve
+    // it again on every project/state update.
     if (selectedSession?.id === sessionId) {
       return;
     }
 
-    // Only the currently selected project may host the placeholder. Guessing
-    // another project (e.g. "first one with sessions") could bind the URL
-    // session to the wrong project — better to wait until the owning project
-    // arrives in a later `projects` payload and is matched by the loop above.
-    if (!selectedProject) {
-      return;
-    }
+    let cancelled = false;
 
-    setSelectedSession({
-      id: sessionId,
-      __provider: readSelectedProvider(),
-      __projectId: selectedProject.projectId,
-      summary: '',
-    });
-  }, [sessionId, projects, selectedProject, selectedSession?.id, selectedSession?.__provider]);
+    const resolveRouteSession = async () => {
+      try {
+        const response = await api.sessionContext(sessionId);
+        if (!response.ok) {
+          // Preserve the optimistic-session fallback for the narrow window in
+          // which a newly allocated id has not reached the sidebar payload.
+          if (!cancelled && selectedProject) {
+            setSelectedSession({
+              id: sessionId,
+              __provider: readSelectedProvider(),
+              __projectId: selectedProject.projectId,
+              summary: '',
+            });
+          }
+          return;
+        }
+
+        const payload = (await response.json()) as SessionContextApiPayload;
+        const context = payload.data?.session;
+        if (cancelled || typeof context?.sessionId !== 'string') {
+          return;
+        }
+
+        if (
+          context.isSubagent === true
+          && typeof context.parentSessionId === 'string'
+          && context.parentSessionId
+        ) {
+          navigate(buildSubagentRoute(context.parentSessionId, context.sessionId), { replace: true });
+          return;
+        }
+
+        const owningProject = projects.find((project) => (
+          (typeof context.projectId === 'string' && project.projectId === context.projectId)
+          || (typeof context.projectPath === 'string' && project.fullPath === context.projectPath)
+        ));
+        if (!owningProject) {
+          return;
+        }
+
+        const provider = typeof context.provider === 'string' && context.provider
+          ? context.provider as LLMProvider
+          : readSelectedProvider();
+        setSelectedProject(owningProject);
+        setSelectedSession({
+          id: context.sessionId,
+          summary: typeof context.title === 'string' ? context.title : '',
+          provider,
+          __provider: provider,
+          providerProfileId: typeof context.providerProfileId === 'number'
+            ? context.providerProfileId
+            : null,
+          __providerProfileId: typeof context.providerProfileId === 'number'
+            ? context.providerProfileId
+            : null,
+          __projectId: owningProject.projectId,
+        });
+      } catch (error) {
+        console.error(`[Projects] Failed to resolve route session ${sessionId}:`, error);
+      }
+    };
+
+    void resolveRouteSession();
+    return () => {
+      cancelled = true;
+    };
+  }, [navigate, projects, selectedProject, selectedSession?.id, selectedSession?.__provider, sessionId]);
 
   const handleProjectSelect = useCallback(
     (project: Project) => {

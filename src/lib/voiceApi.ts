@@ -7,34 +7,21 @@ import {
 } from '../hooks/useVoiceConfig';
 import { IS_PLATFORM } from '../constants/config';
 import {
-  buildCleanupMessages,
   CLEANUP_TEXT_MAX_CHARS,
   normalizeCleanupInstructions,
-  normalizeCleanupModel,
   parseCleanupDecision,
-  type CleanupDecision,
 } from '../../shared/voice-cleanup-contract';
 import { isUnsupportedSttContextError } from '../../shared/voice-stt-context';
 
-import { prepareVoiceCleanup, validateAndRestoreVoiceCleanup } from './voiceCleanupGuard';
-
 export const VOICE_CLEANUP_TIMEOUT_MS = 10000;
 
-export type VoiceCleanupOutcome =
-  | 'disabled'
-  | 'ineligible'
-  | 'kept'
-  | 'edited'
-  | 'invalid_schema'
-  | 'unsafe_edit'
-  | 'timeout'
-  | 'cancelled'
-  | 'request_failed';
+export type EnhanceResult =
+  | { status: 'edited'; text: string }
+  | { status: 'kept' }
+  | { status: 'error'; message: string };
 
-export type CleanupVoiceTranscriptOptions = {
+export type EnhanceTextOptions = {
   signal?: AbortSignal;
-  /** Content-free outcome hook for future local telemetry and benchmark wiring. */
-  onOutcome?: (outcome: VoiceCleanupOutcome) => void;
   /** Test seam; production callers use VOICE_CLEANUP_TIMEOUT_MS. */
   timeoutMs?: number;
 };
@@ -183,34 +170,26 @@ export function synthesizeVoice(text: string, signal: AbortSignal): Promise<Resp
 }
 
 /**
- * Optional stateless transcript cleanup. Sensitive spans are masked before the
- * request and restored only after a conservative edit passes deterministic
- * validation. Every failure path returns the exact input string unchanged.
+ * On-demand text enhancement. POSTs the raw text to the cleanup service and
+ * returns the model's candidate for the user to review and apply manually.
+ * No masking, no automatic validation — the user is the gatekeeper via the
+ * Enhance modal.
  */
-export async function cleanupVoiceTranscript(
+export async function enhanceText(
   text: string,
-  options: CleanupVoiceTranscriptOptions = {},
-): Promise<string> {
+  options: EnhanceTextOptions = {},
+): Promise<EnhanceResult> {
   const config = readVoiceConfig();
-  const finish = (outcome: VoiceCleanupOutcome, result = text): string => {
-    try {
-      options.onOutcome?.(outcome);
-    } catch {
-      // Outcome reporting must never block dictation delivery.
-    }
-    return result;
-  };
-  if (!config.cleanupEnabled) return finish('disabled');
-  if (!text.trim() || text.length > CLEANUP_TEXT_MAX_CHARS) return finish('ineligible');
-  if (options.signal?.aborted) return finish('cancelled');
+  if (!config.cleanupEnabled) return { status: 'error', message: 'Cleanup is disabled.' };
+  if (!text.trim() || text.length > CLEANUP_TEXT_MAX_CHARS) {
+    return { status: 'error', message: 'Nothing to enhance.' };
+  }
+  if (options.signal?.aborted) return { status: 'error', message: 'Cancelled.' };
 
   const instructions = normalizeCleanupInstructions(
     config.cleanupPrompt,
     DEFAULT_CLEANUP_PROMPT,
   );
-  const model = normalizeCleanupModel(config.cleanupModel, 'gpt-4o-mini');
-  const prepared = prepareVoiceCleanup(text);
-  if (prepared.maskedText.length > CLEANUP_TEXT_MAX_CHARS) return finish('ineligible');
   const controller = new AbortController();
   let timedOut = false;
   const timeoutMs = options.timeoutMs ?? VOICE_CLEANUP_TIMEOUT_MS;
@@ -222,53 +201,34 @@ export async function cleanupVoiceTranscript(
   }, timeoutMs);
 
   try {
-    let decision: CleanupDecision | null = null;
-    if (config.baseUrl.trim()) {
-      const res = await fetch(directUrl(config.baseUrl.trim(), '/chat/completions'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
-        },
-        body: JSON.stringify({
-          model,
-          messages: buildCleanupMessages(prepared.maskedText, instructions),
-          temperature: 0,
-        }),
-        signal: controller.signal,
-      });
-      if (!res.ok) return finish('request_failed');
-      const data = await res.json().catch(() => null);
-      decision = parseCleanupDecision(data?.choices?.[0]?.message?.content);
-    } else {
-      const res = await authenticatedFetch('/api/voice/cleanup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...voiceConfigHeaders() },
-        body: JSON.stringify({
-          text: prepared.maskedText,
-          mode: 'clean_transcript',
-          model,
-          instructions,
-        }),
-        signal: controller.signal,
-      });
-      if (!res.ok) return finish('request_failed');
-      const data = await res.json().catch(() => null);
-      decision = res.headers.get('X-Voice-Cleanup-Outcome') === 'invalid_schema'
+    const res = await authenticatedFetch('/api/voice/cleanup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text,
+        mode: 'clean_transcript',
+        providerProfileId: config.cleanupProviderProfileId,
+        model: config.cleanupModel,
+        instructions,
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) return { status: 'error', message: 'Enhance request failed.' };
+    const data = await res.json().catch(() => null);
+    const decision =
+      res.headers.get('X-Voice-Cleanup-Outcome') === 'invalid_schema'
         ? null
         : parseCleanupDecision(data);
-    }
 
-    if (options.signal?.aborted) return finish('cancelled');
-    if (!decision) return finish('invalid_schema');
-    if (decision.action === 'keep') return finish('kept');
-    const validated = validateAndRestoreVoiceCleanup(prepared, decision.text);
-    return validated.accepted
-      ? finish('edited', validated.text)
-      : finish('unsafe_edit');
+    if (options.signal?.aborted) return { status: 'error', message: 'Cancelled.' };
+    if (!decision) return { status: 'error', message: 'Enhance returned an invalid response.' };
+    if (decision.action === 'keep') return { status: 'kept' };
+    return { status: 'edited', text: decision.text };
   } catch {
-    if (options.signal?.aborted) return finish('cancelled');
-    return finish(timedOut ? 'timeout' : 'request_failed');
+    if (options.signal?.aborted) {
+      return { status: 'error', message: timedOut ? 'Enhance timed out.' : 'Cancelled.' };
+    }
+    return { status: 'error', message: 'Enhance request failed.' };
   } finally {
     globalThis.clearTimeout(timer);
     options.signal?.removeEventListener('abort', abortFromCaller);

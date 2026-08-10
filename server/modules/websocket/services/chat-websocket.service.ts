@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { WebSocket } from 'ws';
 
 import { providerProfilesDb, sessionsDb } from '@/modules/database/index.js';
+import { taskmasterWorkflowService } from '@/modules/taskmaster/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
 import { getGlobalImageAssetsDir, normalizeImageDescriptors } from '@/shared/image-attachments.js';
@@ -55,6 +56,34 @@ type ProviderSpawnFn = (
   options: AnyRecord,
   writer: unknown
 ) => Promise<unknown>;
+
+const INTAKE_READ_ONLY_TOOLS_SETTINGS = {
+  allowedTools: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'TodoRead', 'TodoWrite'],
+  disallowedTools: [
+    'Bash',
+    'Write',
+    'Edit',
+    'NotebookEdit',
+    'Task',
+    ...[
+      'get_tasks',
+      'next_task',
+      'get_task',
+      'set_task_status',
+      'update_subtask',
+      'parse_prd',
+      'expand_task',
+      'initialize_project',
+      'analyze_project_complexity',
+      'expand_all',
+      'add_subtask',
+      'remove_task',
+      'add_task',
+      'complexity_report',
+    ].map((tool) => `mcp__task-master-ai__${tool}`),
+  ],
+  skipPermissions: false,
+};
 
 type ChatWebSocketDependencies = {
   /** Provider runtimes keyed by provider id. */
@@ -212,15 +241,63 @@ async function handleChatSend(
     }
   }
 
+  const clientOptions = (data.options ?? {}) as AnyRecord;
+  const rawCommand = typeof data.content === 'string' ? data.content : '';
+
+  // A forked session carries a one-shot handoff summary on its row. Prepend it
+  // to the FIRST outgoing message only, then mark it consumed so later turns go
+  // through verbatim. The block is delimited so the target provider treats it
+  // as context rather than a task to start from.
+  const forkContext = session.fork_context && !session.fork_context_consumed
+    ? session.fork_context
+    : null;
+  const command = forkContext
+    ? `<previous_session_context>\nA summary of the prior session is below for context. Do not start working from it; respond to the user's message that follows.\n\n${forkContext.trim()}\n</previous_session_context>\n\n${rawCommand}`
+    : rawCommand;
+  if (forkContext) {
+    sessionsDb.markForkContextConsumed(session.session_id);
+  }
+  const workflowMessage = data.workflow && typeof data.workflow === 'object'
+    ? data.workflow as AnyRecord
+    : null;
+  let workflowDispatch: Awaited<ReturnType<typeof taskmasterWorkflowService.authorizeDispatch>> | null = null;
+  if (workflowMessage) {
+    try {
+      workflowDispatch = await taskmasterWorkflowService.authorizeDispatch({
+        projectPath: session.project_path ?? '',
+        userId,
+        sessionId,
+        workflowMessage,
+        content: command,
+      });
+    } catch (error) {
+      const workflowError = error as Error & { code?: string };
+      sendProtocolError(
+        ws,
+        workflowError.code ?? 'WORKFLOW_DISPATCH_REJECTED',
+        workflowError.message,
+        sessionId,
+      );
+      return;
+    }
+  }
+  const sessionRuntimePolicy = taskmasterWorkflowService.getSessionRuntimePolicy({
+    projectPath: session.project_path ?? '',
+    sessionId,
+  });
+
   const run = chatRunRegistry.startRun({
     appSessionId: sessionId,
     provider,
     providerSessionId: session.provider_session_id,
     connection: ws,
     userId,
+    onFirstProviderEvent: workflowDispatch?.onFirstProviderEvent,
+    onProviderEvent: sessionRuntimePolicy?.onProviderEvent,
   });
 
   if (!run) {
+    await workflowDispatch?.onFailure('The fresh session already has a run in progress.');
     sendProtocolError(
       ws,
       'RUN_IN_PROGRESS',
@@ -229,9 +306,6 @@ async function handleChatSend(
     );
     return;
   }
-
-  const clientOptions = (data.options ?? {}) as AnyRecord;
-  const command = typeof data.content === 'string' ? data.content : '';
 
   // The provider runtimes receive the provider-native session id (that is the
   // id their CLI/SDK understands for resume). Brand-new sessions have no
@@ -246,6 +320,9 @@ async function handleChatSend(
     resume: Boolean(session.provider_session_id),
     cwd: clientOptions.cwd ?? session.project_path ?? undefined,
     projectPath: session.project_path ?? clientOptions.projectPath,
+    permissionMode: sessionRuntimePolicy?.permissionMode ?? clientOptions.permissionMode,
+    toolsSettings: sessionRuntimePolicy ? INTAKE_READ_ONLY_TOOLS_SETTINGS : clientOptions.toolsSettings,
+    taskMasterReadOnly: Boolean(sessionRuntimePolicy),
     claudeProviderProfile: provider === 'claude' ? providerProfile ?? undefined : undefined,
     codexProviderProfile: provider === 'codex' ? providerProfile ?? undefined : undefined,
   };
@@ -254,8 +331,12 @@ async function handleChatSend(
     await spawnFn(command, runtimeOptions, run.writer);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    await workflowDispatch?.onFailure(message);
     console.error(`[Chat] Provider runtime "${provider}" failed`, { sessionId, error: message });
   } finally {
+    if (!run.writer.hasSeenProviderEvent()) {
+      await workflowDispatch?.onFailure('Provider runtime ended before accepting the initial workflow message.');
+    }
     // Safety net: a runtime that crashed (or resolved) without emitting its
     // terminal `complete` would otherwise leave the session stuck in
     // "processing" forever on every connected client. Scoped to THIS run —

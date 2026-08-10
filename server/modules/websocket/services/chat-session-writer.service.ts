@@ -25,6 +25,14 @@ type ChatSessionWriterOptions = {
    * `complete` after an abort already completed the run).
    */
   decorateOutboundEvent: (message: NormalizedMessage) => NormalizedMessage | null;
+  /**
+   * Workflow launches are acknowledged only when the provider runtime emits
+   * its first real normalized event. Synthetic gateway completion never calls
+   * this hook, so allocation/startRun alone cannot mark delivery accepted.
+   */
+  onFirstProviderEvent?: (message: NormalizedMessage) => void;
+  /** Observes every real provider event for read-only workflow transports. */
+  onProviderEvent?: (message: NormalizedMessage) => void;
 };
 
 /**
@@ -60,6 +68,7 @@ export class ChatSessionWriter {
    * anyway, but the runtime-visible value must stay provider-native.
    */
   private providerSessionId: string | null;
+  private sawProviderEvent = false;
 
   constructor(options: ChatSessionWriterOptions) {
     this.options = options;
@@ -79,6 +88,20 @@ export class ChatSessionWriter {
     }
 
     const message = record as NormalizedMessage;
+
+    if (!this.sawProviderEvent) {
+      this.sawProviderEvent = true;
+      try {
+        this.options.onFirstProviderEvent?.(message);
+      } catch (error) {
+        console.error('[ChatSessionWriter] Workflow acceptance hook failed', error);
+      }
+    }
+    try {
+      this.options.onProviderEvent?.(message);
+    } catch (error) {
+      console.error('[ChatSessionWriter] Workflow event hook failed', error);
+    }
 
     if (message.kind === 'session_created') {
       const announcedId =
@@ -126,6 +149,10 @@ export class ChatSessionWriter {
 
   getSessionId(): string | null {
     return this.providerSessionId;
+  }
+
+  hasSeenProviderEvent(): boolean {
+    return this.sawProviderEvent;
   }
 
   private captureProviderSessionId(providerSessionId: string): void {

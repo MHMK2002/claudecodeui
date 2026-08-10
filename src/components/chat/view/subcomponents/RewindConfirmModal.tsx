@@ -1,16 +1,14 @@
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 
-export type RewindTarget = {
-  messageId: string;
-  preview: string;
-  pending: boolean;
-  error?: string;
-};
+import type {
+  RewindTarget,
+  SessionRewindMode,
+} from '../../hooks/useChatSessionState';
 
 type RewindConfirmModalProps = {
   target: RewindTarget | null;
-  onConfirm: () => void;
+  onConfirm: (mode: SessionRewindMode) => void | Promise<void>;
   onCancel: () => void;
 };
 
@@ -20,7 +18,7 @@ const RewindConfirmModal = ({ target, onConfirm, onCancel }: RewindConfirmModalP
   useEffect(() => {
     if (!target) return undefined;
     const handleKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !target.pending) {
+      if (event.key === 'Escape' && !target.pendingMode) {
         onCancel();
       }
     };
@@ -33,7 +31,7 @@ const RewindConfirmModal = ({ target, onConfirm, onCancel }: RewindConfirmModalP
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
-      onClick={() => !target.pending && onCancel()}
+      onClick={() => !target.pendingMode && onCancel()}
       role="dialog"
       aria-modal="true"
       aria-labelledby="rewind-modal-title"
@@ -48,7 +46,7 @@ const RewindConfirmModal = ({ target, onConfirm, onCancel }: RewindConfirmModalP
         <p className="mb-3 text-sm text-muted-foreground">
           {t('rewind.modalDescription', {
             defaultValue:
-              'The user message above and everything after it will be permanently deleted from this conversation. A backup copy of the original transcript will be saved next to the transcript file.',
+              'Choose what to restore. Restoring the conversation keeps this chat in place and puts the selected prompt back in the input.',
           })}
         </p>
         {target.preview && (
@@ -61,25 +59,70 @@ const RewindConfirmModal = ({ target, onConfirm, onCancel }: RewindConfirmModalP
             {target.error}
           </div>
         )}
-        <div className="mt-4 flex justify-end gap-2">
+        {target.canRestoreFiles && target.filesChanged.length > 0 && (
+          <div className="mb-3 rounded border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+            {t('rewind.filesChanged', {
+              count: target.filesChanged.length,
+              defaultValue: '{{count}} changed file(s) can be restored.',
+            })}
+          </div>
+        )}
+        {target.fileRestoreError && !target.canRestoreFiles && (
+          <div className="mb-3 text-xs text-muted-foreground">{target.fileRestoreError}</div>
+        )}
+        <div className="mt-4 flex flex-wrap justify-end gap-2">
           <button
             type="button"
             onClick={onCancel}
-            disabled={target.pending}
+            disabled={Boolean(target.pendingMode)}
             className="rounded-md border border-border bg-background px-3 py-1.5 text-sm font-medium text-foreground transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
           >
             {t('rewind.cancel', { defaultValue: 'Cancel' })}
           </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            disabled={target.pending}
-            className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {target.pending
-              ? t('rewind.rewinding', { defaultValue: 'Rewinding…' })
-              : t('rewind.confirm', { defaultValue: 'Rewind' })}
-          </button>
+          {target.loading ? (
+            <span className="px-3 py-1.5 text-sm text-muted-foreground">
+              {t('rewind.inspecting', { defaultValue: 'Checking restore options…' })}
+            </span>
+          ) : (
+            <>
+              {target.canRestoreFiles && (
+                <button
+                  type="button"
+                  onClick={() => onConfirm('code')}
+                  disabled={Boolean(target.pendingMode)}
+                  className="rounded-md border border-border bg-background px-3 py-1.5 text-sm font-medium text-foreground transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {target.pendingMode === 'code'
+                    ? t('rewind.rewinding', { defaultValue: 'Restoring…' })
+                    : t('rewind.restoreCode', { defaultValue: 'Restore code' })}
+                </button>
+              )}
+              {target.canRestoreConversation && (
+                <button
+                  type="button"
+                  onClick={() => onConfirm('conversation')}
+                  disabled={Boolean(target.pendingMode)}
+                  className="rounded-md border border-border bg-background px-3 py-1.5 text-sm font-medium text-foreground transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {target.pendingMode === 'conversation'
+                    ? t('rewind.rewinding', { defaultValue: 'Restoring…' })
+                    : t('rewind.restoreConversation', { defaultValue: 'Restore conversation' })}
+                </button>
+              )}
+              {target.canRestoreConversation && target.canRestoreFiles && (
+                <button
+                  type="button"
+                  onClick={() => onConfirm('both')}
+                  disabled={Boolean(target.pendingMode)}
+                  className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {target.pendingMode === 'both'
+                    ? t('rewind.rewinding', { defaultValue: 'Restoring…' })
+                    : t('rewind.restoreBoth', { defaultValue: 'Restore code and conversation' })}
+                </button>
+              )}
+            </>
+          )}
         </div>
       </div>
     </div>

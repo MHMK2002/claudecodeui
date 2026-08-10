@@ -11,12 +11,13 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { ImageIcon, MessageSquareIcon, XIcon, Loader2, ChevronDown, Check, ArrowUpIcon } from 'lucide-react';
+import { ImageIcon, MessageSquareIcon, XIcon, Loader2, ChevronDown, Check, ArrowUpIcon, Wand2 } from 'lucide-react';
 
 import { useVoiceInput } from '../../hooks/useVoiceInput';
 import { useVoiceAvailable } from '../../hooks/useVoiceAvailable';
 import { useHoldToTalk } from '../../hooks/useHoldToTalk';
 import { useUiPreferences } from '../../../../hooks/useUiPreferences';
+import { readVoiceConfig, VOICE_CONFIG_SYNC_EVENT } from '../../../../hooks/useVoiceConfig';
 import type { QueuedDraft } from '../../hooks/useChatComposerState';
 import type { SessionActivity } from '../../../../hooks/useSessionProtection';
 import type { VoiceTranscriptDelivery } from '../../../../lib/finalizeVoiceTranscript';
@@ -38,6 +39,7 @@ import CommandMenu from './CommandMenu';
 import ActivityIndicator from './ActivityIndicator';
 import ImageAttachment from './ImageAttachment';
 import VoiceInputButton from './VoiceInputButton';
+import EnhanceTextModal from './EnhanceTextModal';
 import PermissionRequestsBanner from './PermissionRequestsBanner';
 import TokenUsageSummary from './TokenUsageSummary';
 import QueuedMessageCard from './QueuedMessageCard';
@@ -117,6 +119,11 @@ interface ChatComposerProps {
   onVoiceInterim?: (text: string | null) => void;
   /** Snapshots the session a recording commits to, captured at each stop/send press. */
   onVoiceCommit?: () => unknown;
+  /**
+   * Applies the enhanced text from the on-demand Enhance modal, replacing the
+   * composer input.
+   */
+  onApplyEnhancedText?: (text: string) => void;
   onInputChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
   onTextareaClick: (event: MouseEvent<HTMLTextAreaElement>) => void;
   onTextareaKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
@@ -183,6 +190,7 @@ export default function ChatComposer({
   onVoiceTranscript,
   onVoiceInterim,
   onVoiceCommit,
+  onApplyEnhancedText,
   onInputChange,
   onTextareaClick,
   onTextareaKeyDown,
@@ -213,6 +221,16 @@ export default function ChatComposer({
   // recording and send the transcript in one tap, the way the mic button drops it in the box.
   const voiceAvailable = useVoiceAvailable();
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  // Whether voice cleanup is enabled in settings, kept in sync across hook
+  // instances via the config sync event so the Enhance button reflects live
+  // settings changes made elsewhere (e.g. the Voice settings tab).
+  const [cleanupEnabled, setCleanupEnabled] = useState(() => readVoiceConfig().cleanupEnabled);
+  useEffect(() => {
+    const sync = () => setCleanupEnabled(readVoiceConfig().cleanupEnabled);
+    window.addEventListener(VOICE_CONFIG_SYNC_EVENT, sync);
+    return () => window.removeEventListener(VOICE_CONFIG_SYNC_EVENT, sync);
+  }, []);
+  const [enhanceOpen, setEnhanceOpen] = useState(false);
   const voiceErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleVoiceError = useCallback((msg: string) => {
     setVoiceError(msg);
@@ -470,7 +488,6 @@ export default function ChatComposer({
 
             <PromptInputTextarea
               ref={textareaRef}
-              dir={getTextDirection(input)}
               className="bidi-isolate"
               value={input}
               onChange={onInputChange}
@@ -496,6 +513,15 @@ export default function ChatComposer({
 
             {onVoiceTranscript && voiceAvailable && (
               <VoiceInputButton state={voiceState} onToggle={voiceToggle} errorMsg={voiceError} />
+            )}
+
+            {onApplyEnhancedText && cleanupEnabled && hasInput && (
+              <PromptInputButton
+                tooltip={{ content: t('enhance', { defaultValue: 'Enhance' }) }}
+                onClick={() => setEnhanceOpen(true)}
+              >
+                <Wand2 />
+              </PromptInputButton>
             )}
 
             <button
@@ -670,6 +696,17 @@ export default function ChatComposer({
         </PromptInputFooter>
       </PromptInput>
       </div>}
+
+      {enhanceOpen && onApplyEnhancedText && (
+        <EnhanceTextModal
+          text={input}
+          onUse={(enhanced) => {
+            onApplyEnhancedText(enhanced);
+            setEnhanceOpen(false);
+          }}
+          onClose={() => setEnhanceOpen(false)}
+        />
+      )}
     </div>
   );
 }

@@ -3,8 +3,7 @@ import test from 'node:test';
 
 import { finalizeVoiceTranscript } from './finalizeVoiceTranscript';
 
-test('finalizes one committed transcript through cleanup and delivers exactly once', async () => {
-  const cleanupCalls: string[] = [];
+test('delivers one committed transcript exactly once', async () => {
   const deliveries: Array<{ text: string; send?: boolean; origin?: unknown }> = [];
   const origin = { sessionId: 'session-a' };
 
@@ -12,53 +11,39 @@ test('finalizes one committed transcript through cleanup and delivers exactly on
     rawText: ' raw transcript\n',
     send: true,
     origin,
-    cleanup: async (text) => {
-      cleanupCalls.push(text);
-      return 'clean transcript';
-    },
     onTranscript: (text, send, capturedOrigin) => {
       deliveries.push({ text, send, origin: capturedOrigin });
     },
   });
 
   assert.equal(result, 'delivered');
-  assert.deepEqual(cleanupCalls, [' raw transcript\n']);
-  assert.deepEqual(deliveries, [{ text: 'clean transcript', send: true, origin }]);
+  assert.deepEqual(deliveries, [{ text: ' raw transcript\n', send: true, origin }]);
 });
 
-test('does not clean or deliver an empty transcript', async () => {
-  let cleanupCount = 0;
+test('does not deliver an empty transcript', async () => {
   let deliveryCount = 0;
 
   const result = await finalizeVoiceTranscript({
     rawText: ' \n ',
     send: false,
-    cleanup: async (text) => {
-      cleanupCount += 1;
-      return text;
-    },
     onTranscript: () => {
       deliveryCount += 1;
     },
   });
 
   assert.equal(result, 'empty');
-  assert.equal(cleanupCount, 0);
   assert.equal(deliveryCount, 0);
 });
 
-test('does not deliver when cancellation happens during cleanup', async () => {
+test('does not deliver when already cancelled', async () => {
   const controller = new AbortController();
+  controller.abort();
   let deliveryCount = 0;
 
   const result = await finalizeVoiceTranscript({
     rawText: 'keep this exact',
     send: true,
     signal: controller.signal,
-    cleanup: async (text) => {
-      controller.abort();
-      return text;
-    },
     onTranscript: () => {
       deliveryCount += 1;
     },
@@ -68,17 +53,15 @@ test('does not deliver when cancellation happens during cleanup', async () => {
   assert.equal(deliveryCount, 0);
 });
 
-test('awaits async delivery and reports generation ownership at delivery time', async () => {
+test('awaits async delivery and reports generation ownership from ownsUi', async () => {
   let releaseDelivery: (() => void) | undefined;
   let resolved = false;
-  let ownsUi = true;
   let receivedOwnsUi: boolean | undefined;
 
   const pending = finalizeVoiceTranscript({
     rawText: 'transcript',
     send: true,
-    ownsUi: () => ownsUi,
-    cleanup: async (text) => text,
+    ownsUi: () => false,
     onTranscript: async (_text, _send, _origin, delivery) => {
       receivedOwnsUi = delivery?.ownsUi;
       await new Promise<void>((resolve) => {
@@ -90,8 +73,7 @@ test('awaits async delivery and reports generation ownership at delivery time', 
     return result;
   });
 
-  ownsUi = false;
-  await new Promise<void>((resolve) => queueMicrotask(resolve));
+  // ownsUi is forwarded to the delivery object and delivery is pending.
   assert.equal(receivedOwnsUi, false);
   assert.equal(resolved, false);
   releaseDelivery?.();
@@ -105,7 +87,6 @@ test('propagates an async delivery failure after invoking it once', async () => 
     finalizeVoiceTranscript({
       rawText: 'transcript',
       send: true,
-      cleanup: async (text) => text,
       onTranscript: async () => {
         deliveryCount += 1;
         throw new Error('delivery failed');

@@ -7,6 +7,9 @@ import {
   PROJECTS_TABLE_SCHEMA_SQL,
   PROVIDER_PROFILES_TABLE_SCHEMA_SQL,
   PUSH_SUBSCRIPTIONS_TABLE_SCHEMA_SQL,
+  SCHEDULED_RUNS_TABLE_SCHEMA_SQL,
+  SCHEDULED_RUN_HISTORY_TABLE_SCHEMA_SQL,
+  SESSION_PROVIDER_BRANCHES_TABLE_SCHEMA_SQL,
   SESSIONS_TABLE_SCHEMA_SQL,
   USER_NOTIFICATION_PREFERENCES_TABLE_SCHEMA_SQL,
   VAPID_KEYS_TABLE_SCHEMA_SQL,
@@ -430,6 +433,14 @@ const addSubagentSessionColumns = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'parent_session_id', 'TEXT');
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'agent_type', 'TEXT');
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'agent_status', 'TEXT');
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'fork_context', 'TEXT');
+  addColumnToTableIfNotExists(
+    db,
+    'sessions',
+    columnNames,
+    'fork_context_consumed',
+    'INTEGER NOT NULL DEFAULT 0'
+  );
 };
 
 const ensureProviderProfilesSchema = (db: Database): void => {
@@ -437,6 +448,29 @@ const ensureProviderProfilesSchema = (db: Database): void => {
   db.exec('CREATE INDEX IF NOT EXISTS idx_provider_profiles_user_provider ON provider_profiles(user_id, provider)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_provider_profiles_active ON provider_profiles(provider, is_active)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_provider_profiles_default ON provider_profiles(user_id, provider, is_default)');
+};
+
+const ensureScheduledRunsSchema = (db: Database): void => {
+  db.exec(SCHEDULED_RUNS_TABLE_SCHEMA_SQL);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_runs_user_id ON scheduled_runs(user_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_runs_due ON scheduled_runs(is_enabled, next_run_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_runs_project ON scheduled_runs(project_path)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_runs_in_flight ON scheduled_runs(in_flight_run_id)');
+
+  db.exec(SCHEDULED_RUN_HISTORY_TABLE_SCHEMA_SQL);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_run_history_schedule ON scheduled_run_history(schedule_id, started_at DESC)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_run_history_user ON scheduled_run_history(user_id, started_at DESC)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_run_history_running ON scheduled_run_history(status) WHERE status = \'running\'');
+};
+
+const ensureSessionProviderBranchesSchema = (db: Database): void => {
+  db.exec(SESSION_PROVIDER_BRANCHES_TABLE_SCHEMA_SQL);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_session_provider_branches_app ON session_provider_branches(app_session_id)');
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_session_provider_branches_current
+    ON session_provider_branches(app_session_id)
+    WHERE state = 'current'
+  `);
 };
 
 const ensureProjectsForSessionPaths = (db: Database): void => {
@@ -491,6 +525,7 @@ export const runMigrations = (db: Database) => {
     migrateLegacySessionNames(db);
     addProviderSessionIdMapping(db);
     addSubagentSessionColumns(db);
+    ensureSessionProviderBranchesSchema(db);
     ensureProjectsForSessionPaths(db);
 
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id)');
@@ -512,6 +547,9 @@ export const runMigrations = (db: Database) => {
     }
 
     db.exec(LAST_SCANNED_AT_SQL);
+
+    ensureScheduledRunsSchema(db);
+
     console.log('Database migrations completed successfully');
   } catch (error: any) {
     console.error('Error running migrations:', error.message);

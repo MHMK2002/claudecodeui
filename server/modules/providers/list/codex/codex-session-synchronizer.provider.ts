@@ -66,6 +66,14 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
         continue;
       }
 
+      const branch = sessionsDb.getProviderBranch(this.provider, parsed.sessionId);
+      if (branch) {
+        sessionsDb.updateProviderBranchPath(this.provider, parsed.sessionId, filePath);
+        if (branch.state !== 'current') {
+          continue;
+        }
+      }
+
       const existingSession = sessionsDb.getSessionByProviderSessionId(parsed.sessionId)
         ?? sessionsDb.getSessionById(parsed.sessionId);
       if (existingSession) {
@@ -116,6 +124,14 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
       return null;
     }
 
+    const branch = sessionsDb.getProviderBranch(this.provider, parsed.sessionId);
+    if (branch) {
+      sessionsDb.updateProviderBranchPath(this.provider, parsed.sessionId, filePath);
+      if (branch.state !== 'current') {
+        return null;
+      }
+    }
+
     const timestamps = await readFileTimestamps(filePath);
     return sessionsDb.createSession(
       parsed.sessionId,
@@ -139,8 +155,17 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
     parsed: ParsedSubagent,
     timestamps: { createdAt?: string; updatedAt?: string }
   ): string | null {
-    const parentSession = sessionsDb.getSessionByProviderSessionId(parsed.parentProviderSessionId)
-      ?? sessionsDb.getSessionById(parsed.parentProviderSessionId);
+    const parentBranch = sessionsDb.getProviderBranch(
+      this.provider,
+      parsed.parentProviderSessionId,
+    );
+    if (parentBranch && parentBranch.state !== 'current') {
+      return null;
+    }
+    const parentSession = parentBranch
+      ? sessionsDb.getSessionById(parentBranch.app_session_id)
+      : sessionsDb.getSessionByProviderSessionId(parsed.parentProviderSessionId)
+        ?? sessionsDb.getSessionById(parsed.parentProviderSessionId);
     if (!parentSession) {
       return null;
     }

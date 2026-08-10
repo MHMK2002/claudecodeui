@@ -68,6 +68,8 @@ import { initializeDatabase, projectsDb, sessionsDb } from './modules/database/i
 import { configureWebPush } from './services/vapid-keys.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 import { IS_PLATFORM } from './constants/config.js';
+import scheduledRunsRoutes from './routes/scheduled-runs.routes.js';
+import { startScheduler, stopScheduler } from './modules/scheduler/scheduler.service.js';
 import { c } from './utils/colors.js';
 
 const __dirname = getModuleDir(import.meta.url);
@@ -217,6 +219,9 @@ app.use('/api/providers', authenticateToken, providerRoutes);
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
+
+// Scheduled runs API routes (uses API key authentication; cron + scheduler)
+app.use('/api/scheduled-runs', scheduledRunsRoutes);
 
 app.use('/api/voice', authenticateToken, voiceRoutes);
 
@@ -1614,6 +1619,12 @@ async function startServer() {
             // Start watching the projects folder for changes
             await initializeSessionsWatcher();
 
+            // Start the scheduled-runs tick loop (60s). Repairs orphaned
+            // runs from any prior crash at boot, then ticks every minute.
+            startScheduler().catch(err => {
+                console.error('[Scheduler] Failed to start:', err?.message || err);
+            });
+
             // Start server-side plugin processes for enabled plugins
             startEnabledPluginServers().catch(err => {
                 console.error('[Plugins] Error during startup:', err.message);
@@ -1623,6 +1634,11 @@ async function startServer() {
         await closeSessionsWatcher();
         // Clean up plugin processes on shutdown
         const shutdownRuntimeServices = async () => {
+            try {
+                await stopScheduler();
+            } catch (err) {
+                console.error('[Scheduler] Error during shutdown:', err?.message || err);
+            }
             try {
                 await browserUseService.stopAllSessions();
             } catch (err) {

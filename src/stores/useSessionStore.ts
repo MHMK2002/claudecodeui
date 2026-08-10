@@ -113,6 +113,12 @@ export interface SessionSlot {
   hasMore: boolean;
   offset: number;
   tokenUsage: unknown;
+  /**
+   * Set right after a fork that carried a handoff summary. Drives an
+   * informational banner; cleared once the first realtime event arrives
+   * (the user's first message, which is where the summary is injected).
+   */
+  pendingForkContext?: boolean;
 }
 
 const EMPTY: NormalizedMessage[] = [];
@@ -587,6 +593,12 @@ export function useSessionStore() {
       updated = updated.slice(-MAX_REALTIME_MESSAGES);
     }
     slot.realtimeMessages = updated;
+    // The first realtime event means the user's first message went out —
+    // that is where a carried-over fork summary is injected, so retire the
+    // informational banner now.
+    if (slot.pendingForkContext) {
+      slot.pendingForkContext = false;
+    }
     recomputeMergedIfNeeded(slot);
     notify(sessionId);
   }, [getSlot, notify]);
@@ -770,6 +782,16 @@ export function useSessionStore() {
     return storeRef.current.get(sessionId);
   }, []);
 
+  /**
+   * Marks a freshly forked session as carrying a handoff summary, so the chat
+   * view can show an informational banner until the first message is sent.
+   */
+  const setPendingForkContext = useCallback((sessionId: string, value: boolean) => {
+    const slot = getSlot(sessionId);
+    slot.pendingForkContext = value;
+    notify(sessionId);
+  }, [getSlot, notify]);
+
   return useMemo(() => ({
     getSlot,
     has,
@@ -787,11 +809,12 @@ export function useSessionStore() {
     clearRealtime,
     getMessages,
     getSessionSlot,
+    setPendingForkContext,
   }), [
     getSlot, has, fetchFromServer, fetchMore,
     appendRealtime, appendRealtimeBatch, refreshFromServer, applyRewindFromEvent,
     setActiveSession, setStatus, isStale, updateStreaming, finalizeStreaming,
-    clearRealtime, getMessages, getSessionSlot,
+    clearRealtime, getMessages, getSessionSlot, setPendingForkContext,
   ]);
 }
 

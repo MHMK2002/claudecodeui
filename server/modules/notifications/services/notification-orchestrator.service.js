@@ -6,7 +6,9 @@ import { sendDesktopNotification as sendDesktopNotificationToClients } from '@/m
 const KIND_TO_PREF_KEY = {
   action_required: 'actionRequired',
   stop: 'stop',
-  error: 'error'
+  error: 'error',
+  schedule_run_succeeded: 'scheduleRunSucceeded',
+  schedule_run_failed: 'scheduleRunFailed'
 };
 
 const PROVIDER_LABELS = {
@@ -278,10 +280,59 @@ function notifyRunFailed({ userId, provider, sessionId = null, error, sessionNam
   });
 }
 
+function notifyScheduleRunSucceeded({ schedule, run, summary }) {
+  const truncated = (summary || '').slice(0, 240);
+  notifyUserIfEnabled({
+    userId: schedule.userId,
+    event: createNotificationEvent({
+      provider: 'system',
+      sessionId: null,
+      kind: 'schedule_run_succeeded',
+      code: 'schedule.run.succeeded',
+      meta: {
+        scheduleId: schedule.id,
+        runId: run.id,
+        title: schedule.title,
+        provider: schedule.provider,
+        summary: truncated,
+        trigger: run.trigger,
+        durationMs: run.durationMs,
+      },
+      severity: 'info',
+      dedupeKey: `system:schedule:success:${schedule.id}:${run.id}`,
+    }),
+  });
+}
+
+function notifyScheduleRunFailed({ schedule, run, errorMessage }) {
+  const message = normalizeErrorMessage(errorMessage);
+  notifyUserIfEnabled({
+    userId: schedule.userId,
+    event: createNotificationEvent({
+      provider: 'system',
+      sessionId: null,
+      kind: 'schedule_run_failed',
+      code: 'schedule.run.failed',
+      meta: {
+        scheduleId: schedule.id,
+        runId: run.id,
+        title: schedule.title,
+        provider: schedule.provider,
+        errorMessage: message,
+        trigger: run.trigger,
+      },
+      severity: 'error',
+      dedupeKey: `system:schedule:failed:${schedule.id}:${run.id}`,
+    }),
+  });
+}
+
 export {
   buildNotificationPayload,
   createNotificationEvent,
   notifyUserIfEnabled,
   notifyRunStopped,
-  notifyRunFailed
+  notifyRunFailed,
+  notifyScheduleRunSucceeded,
+  notifyScheduleRunFailed,
 };

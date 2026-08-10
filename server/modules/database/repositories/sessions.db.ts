@@ -14,12 +14,29 @@ type SessionRow = {
   jsonl_path: string | null;
   custom_name: string | null;
   isArchived: number;
+  fork_context: string | null;
+  fork_context_consumed: number;
+  created_at: string;
+  updated_at: string;
+};
+
+type ProviderBranchState = 'staged' | 'current' | 'superseded' | 'abandoned';
+
+type ProviderBranchRow = {
+  id: number;
+  app_session_id: string;
+  provider: string;
+  provider_session_id: string;
+  jsonl_path: string | null;
+  state: ProviderBranchState;
+  forked_from_provider_session_id: string | null;
+  fork_point_id: string | null;
   created_at: string;
   updated_at: string;
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, provider_profile_id, parent_session_id, agent_type, agent_status, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, provider_profile_id, parent_session_id, agent_type, agent_status, project_path, jsonl_path, custom_name, isArchived, fork_context, fork_context_consumed, created_at, updated_at';
 
 /**
  * Sub-agent transcripts live in the same table as their parent session so the
@@ -312,7 +329,9 @@ export const sessionsDb = {
         )
         .get(providerSessionId, providerSessionId, sessionId) as SessionRow | undefined;
 
+      let discoveredJsonlPath: string | null = null;
       if (duplicate) {
+        discoveredJsonlPath = duplicate.jsonl_path;
         db.prepare('DELETE FROM sessions WHERE session_id = ?').run(duplicate.session_id);
         db.prepare(
           `UPDATE sessions SET
@@ -322,18 +341,321 @@ export const sessionsDb = {
              updated_at = CURRENT_TIMESTAMP
            WHERE session_id = ?`
         ).run(providerSessionId, duplicate.jsonl_path, duplicate.custom_name, sessionId);
-        return;
+      } else {
+        db.prepare(
+          `UPDATE sessions SET
+             provider_session_id = ?,
+             updated_at = CURRENT_TIMESTAMP
+           WHERE session_id = ?`
+        ).run(providerSessionId, sessionId);
       }
 
-      db.prepare(
-        `UPDATE sessions SET
-           provider_session_id = ?,
-           updated_at = CURRENT_TIMESTAMP
-         WHERE session_id = ?`
-      ).run(providerSessionId, sessionId);
+      const hasBranchLineage = Boolean(
+        db.prepare(
+          'SELECT 1 FROM session_provider_branches WHERE app_session_id = ? LIMIT 1'
+        ).get(sessionId)
+      );
+      if (hasBranchLineage) {
+        db.prepare(
+          `UPDATE session_provider_branches
+           SET state = 'superseded', updated_at = CURRENT_TIMESTAMP
+           WHERE app_session_id = ? AND state = 'current' AND provider_session_id <> ?`
+        ).run(sessionId, providerSessionId);
+        const provider = db
+          .prepare('SELECT provider FROM sessions WHERE session_id = ?')
+          .get(sessionId) as { provider?: string } | undefined;
+        if (provider?.provider) {
+          db.prepare(
+            `INSERT INTO session_provider_branches (
+               app_session_id, provider, provider_session_id, jsonl_path, state
+             ) VALUES (?, ?, ?, ?, 'current')
+             ON CONFLICT(provider, provider_session_id) DO UPDATE SET
+               app_session_id = excluded.app_session_id,
+               jsonl_path = COALESCE(excluded.jsonl_path, session_provider_branches.jsonl_path),
+               state = 'current',
+               updated_at = CURRENT_TIMESTAMP`
+          ).run(sessionId, provider.provider, providerSessionId, discoveredJsonlPath);
+        }
+      }
     });
 
     merge();
+  },
+
+  /** Returns branch ownership for one provider-native session id. */
+  getProviderBranch(provider: string, providerSessionId: string): ProviderBranchRow | null {
+    const row = getConnection()
+      .prepare(
+        `SELECT id, app_session_id, provider, provider_session_id, jsonl_path, state,
+                forked_from_provider_session_id, fork_point_id, created_at, updated_at
+         FROM session_provider_branches
+         WHERE provider = ? AND provider_session_id = ?
+         LIMIT 1`
+      )
+      .get(provider, providerSessionId) as ProviderBranchRow | undefined;
+    return row ?? null;
+  },
+
+  listProviderBranches(appSessionId: string): ProviderBranchRow[] {
+    return getConnection()
+      .prepare(
+        `SELECT id, app_session_id, provider, provider_session_id, jsonl_path, state,
+                forked_from_provider_session_id, fork_point_id, created_at, updated_at
+         FROM session_provider_branches
+         WHERE app_session_id = ?
+         ORDER BY id ASC`
+      )
+      .all(appSessionId) as ProviderBranchRow[];
+  },
+
+  updateProviderBranchPath(
+    provider: string,
+    providerSessionId: string,
+    jsonlPath: string,
+  ): void {
+    getConnection()
+      .prepare(
+        `UPDATE session_provider_branches
+         SET jsonl_path = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE provider = ? AND provider_session_id = ?`
+      )
+      .run(jsonlPath, provider, providerSessionId);
+  },
+
+  /**
+   * Reserves a provider fork before it becomes the active branch. Staged and
+   * abandoned branches are intentionally invisible to filesystem indexing.
+   */
+  stageProviderBranch(input: {
+    appSessionId: string;
+    provider: string;
+    expectedProviderSessionId: string;
+    providerSessionId: string;
+    jsonlPath: string;
+    forkPointId: string;
+  }): void {
+    const db = getConnection();
+    db.transaction(() => {
+      const session = db
+        .prepare(
+          `SELECT provider, provider_session_id FROM sessions
+           WHERE session_id = ? AND ${TOP_LEVEL_SESSION_CLAUSE}`
+        )
+        .get(input.appSessionId) as {
+          provider: string;
+          provider_session_id: string | null;
+        } | undefined;
+      if (
+        !session
+        || session.provider !== input.provider
+        || session.provider_session_id !== input.expectedProviderSessionId
+      ) {
+        throw new Error('Session provider branch changed before rewind could be staged.');
+      }
+
+      const existing = db
+        .prepare(
+          `SELECT app_session_id FROM session_provider_branches
+           WHERE provider = ? AND provider_session_id = ?`
+        )
+        .get(input.provider, input.providerSessionId) as { app_session_id: string } | undefined;
+      if (existing && existing.app_session_id !== input.appSessionId) {
+        throw new Error('Provider branch is already owned by another session.');
+      }
+
+      db.prepare(
+        `INSERT INTO session_provider_branches (
+           app_session_id, provider, provider_session_id, jsonl_path, state,
+           forked_from_provider_session_id, fork_point_id
+         ) VALUES (?, ?, ?, ?, 'staged', ?, ?)
+         ON CONFLICT(provider, provider_session_id) DO UPDATE SET
+           jsonl_path = excluded.jsonl_path,
+           state = 'staged',
+           forked_from_provider_session_id = excluded.forked_from_provider_session_id,
+           fork_point_id = excluded.fork_point_id,
+           updated_at = CURRENT_TIMESTAMP`
+      ).run(
+        input.appSessionId,
+        input.provider,
+        input.providerSessionId,
+        input.jsonlPath,
+        input.expectedProviderSessionId,
+        input.forkPointId,
+      );
+    })();
+  },
+
+  abandonProviderBranch(
+    appSessionId: string,
+    provider: string,
+    providerSessionId: string,
+  ): void {
+    getConnection()
+      .prepare(
+        `UPDATE session_provider_branches
+         SET state = 'abandoned', updated_at = CURRENT_TIMESTAMP
+         WHERE app_session_id = ? AND provider = ? AND provider_session_id = ?
+           AND state = 'staged'`
+      )
+      .run(appSessionId, provider, providerSessionId);
+  },
+
+  /**
+   * Atomically switches the active provider branch without changing the
+   * app-facing session id, title, project, or provider profile.
+   */
+  commitProviderBranchRewind(input: {
+    appSessionId: string;
+    provider: string;
+    expectedProviderSessionId: string;
+    providerSessionId: string;
+    jsonlPath: string;
+    forkPointId: string;
+  }): void {
+    const db = getConnection();
+    db.transaction(() => {
+      const session = db
+        .prepare(
+          `SELECT provider, provider_session_id, jsonl_path FROM sessions
+           WHERE session_id = ? AND ${TOP_LEVEL_SESSION_CLAUSE}`
+        )
+        .get(input.appSessionId) as {
+          provider: string;
+          provider_session_id: string | null;
+          jsonl_path: string | null;
+        } | undefined;
+      if (
+        !session
+        || session.provider !== input.provider
+        || session.provider_session_id !== input.expectedProviderSessionId
+      ) {
+        throw new Error('Session provider branch changed before rewind could commit.');
+      }
+
+      const staged = db
+        .prepare(
+          `SELECT state, app_session_id FROM session_provider_branches
+           WHERE provider = ? AND provider_session_id = ?`
+        )
+        .get(input.provider, input.providerSessionId) as {
+          state: ProviderBranchState;
+          app_session_id: string;
+        } | undefined;
+      if (!staged || staged.app_session_id !== input.appSessionId || staged.state !== 'staged') {
+        throw new Error('Provider rewind branch was not staged for this session.');
+      }
+
+      db.prepare(
+        `UPDATE session_provider_branches
+         SET state = 'superseded', updated_at = CURRENT_TIMESTAMP
+         WHERE app_session_id = ? AND state = 'current'`
+      ).run(input.appSessionId);
+      db.prepare(
+        `INSERT INTO session_provider_branches (
+           app_session_id, provider, provider_session_id, jsonl_path, state,
+           forked_from_provider_session_id, fork_point_id
+         ) VALUES (?, ?, ?, ?, 'superseded', NULL, ?)
+         ON CONFLICT(provider, provider_session_id) DO UPDATE SET
+           app_session_id = excluded.app_session_id,
+           jsonl_path = COALESCE(session_provider_branches.jsonl_path, excluded.jsonl_path),
+           state = 'superseded',
+           updated_at = CURRENT_TIMESTAMP`
+      ).run(
+        input.appSessionId,
+        input.provider,
+        input.expectedProviderSessionId,
+        session.jsonl_path,
+        input.forkPointId,
+      );
+
+      // The watcher may have indexed the fork in the short interval between
+      // provider file creation and branch staging. Merge that temporary row.
+      db.prepare(
+        `DELETE FROM sessions
+         WHERE session_id <> ?
+           AND ${TOP_LEVEL_SESSION_CLAUSE}
+           AND provider = ?
+           AND (session_id = ? OR provider_session_id = ?)`
+      ).run(
+        input.appSessionId,
+        input.provider,
+        input.providerSessionId,
+        input.providerSessionId,
+      );
+      db.prepare('DELETE FROM sessions WHERE parent_session_id = ?').run(input.appSessionId);
+      db.prepare(
+        `UPDATE sessions SET
+           provider_session_id = ?,
+           jsonl_path = ?,
+           updated_at = CURRENT_TIMESTAMP
+         WHERE session_id = ?`
+      ).run(input.providerSessionId, input.jsonlPath, input.appSessionId);
+      db.prepare(
+        `UPDATE session_provider_branches
+         SET state = 'current', jsonl_path = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE app_session_id = ? AND provider = ? AND provider_session_id = ?`
+      ).run(input.jsonlPath, input.appSessionId, input.provider, input.providerSessionId);
+    })();
+  },
+
+  /** Rewinds the first prompt by returning the stable app chat to an empty provider binding. */
+  resetProviderBranchForRewind(input: {
+    appSessionId: string;
+    provider: string;
+    expectedProviderSessionId: string;
+    forkPointId: string;
+  }): void {
+    const db = getConnection();
+    db.transaction(() => {
+      const session = db
+        .prepare(
+          `SELECT provider, provider_session_id, jsonl_path FROM sessions
+           WHERE session_id = ? AND ${TOP_LEVEL_SESSION_CLAUSE}`
+        )
+        .get(input.appSessionId) as {
+          provider: string;
+          provider_session_id: string | null;
+          jsonl_path: string | null;
+        } | undefined;
+      if (
+        !session
+        || session.provider !== input.provider
+        || session.provider_session_id !== input.expectedProviderSessionId
+      ) {
+        throw new Error('Session provider branch changed before rewind could reset it.');
+      }
+
+      db.prepare(
+        `UPDATE session_provider_branches
+         SET state = 'superseded', updated_at = CURRENT_TIMESTAMP
+         WHERE app_session_id = ? AND state = 'current'`
+      ).run(input.appSessionId);
+      db.prepare(
+        `INSERT INTO session_provider_branches (
+           app_session_id, provider, provider_session_id, jsonl_path, state,
+           fork_point_id
+         ) VALUES (?, ?, ?, ?, 'superseded', ?)
+         ON CONFLICT(provider, provider_session_id) DO UPDATE SET
+           app_session_id = excluded.app_session_id,
+           jsonl_path = COALESCE(session_provider_branches.jsonl_path, excluded.jsonl_path),
+           state = 'superseded',
+           updated_at = CURRENT_TIMESTAMP`
+      ).run(
+        input.appSessionId,
+        input.provider,
+        input.expectedProviderSessionId,
+        session.jsonl_path,
+        input.forkPointId,
+      );
+      db.prepare('DELETE FROM sessions WHERE parent_session_id = ?').run(input.appSessionId);
+      db.prepare(
+        `UPDATE sessions SET
+           provider_session_id = NULL,
+           jsonl_path = NULL,
+           updated_at = CURRENT_TIMESTAMP
+         WHERE session_id = ?`
+      ).run(input.appSessionId);
+    })();
   },
 
   updateSessionCustomName(sessionId: string, customName: string): void {
@@ -343,6 +665,32 @@ export const sessionsDb = {
        SET custom_name = ?
        WHERE session_id = ?`
     ).run(customName, sessionId);
+  },
+
+  /**
+   * Stores the carried-over context (a handoff summary or rendered transcript
+   * fallback) on a freshly forked session row. NULL clears it.
+   */
+  setForkContext(sessionId: string, context: string | null): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE sessions
+       SET fork_context = ?
+       WHERE session_id = ?`
+    ).run(context, sessionId);
+  },
+
+  /**
+   * Marks the carried-over context as consumed so it is prepended to only the
+   * first chat.send of the forked session.
+   */
+  markForkContextConsumed(sessionId: string): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE sessions
+       SET fork_context_consumed = 1
+       WHERE session_id = ?`
+    ).run(sessionId);
   },
 
   /**

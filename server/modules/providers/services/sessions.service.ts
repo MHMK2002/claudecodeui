@@ -5,13 +5,10 @@ import path from 'node:path';
 import readline from 'node:readline';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
-import { chatRunRegistry, broadcastSessionRewound } from '@/modules/websocket/index.js';
+import { chatRunRegistry } from '@/modules/websocket/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
+import { forkContextService } from '@/modules/providers/services/fork-context.service.js';
 import { parseAgentTools } from '@/modules/providers/list/claude/claude-sessions.provider.js';
-import {
-  findJsonlLine,
-  truncateJsonlAtLine,
-} from '@/modules/providers/shared/jsonl-truncate.js';
 import type {
   FetchHistoryOptions,
   FetchHistoryResult,
@@ -25,6 +22,23 @@ type CreateAppSessionResult = {
   provider: LLMProvider;
   projectPath: string;
   providerProfileId: number | null;
+  /** Whether a handoff summary from the source session was stored on this fork. */
+  forkContextCarried: boolean;
+};
+
+type SessionContext = {
+  sessionId: string;
+  provider: LLMProvider;
+  providerProfileId: number | null;
+  projectId: string | null;
+  projectPath: string | null;
+  title: string;
+  parentSessionId: string | null;
+  agentType: string | null;
+  isSubagent: boolean;
+  /** Carried-over handoff summary, present until the first chat.send consumes it. */
+  forkContext: string | null;
+  forkContextConsumed: boolean;
 };
 
 type ArchivedSessionListItem = {
@@ -310,7 +324,132 @@ export const sessionsService = {
       provider,
       projectPath: normalizedProjectPath,
       providerProfileId,
+      forkContextCarried: false,
     };
+  },
+
+  /**
+   * Resolves the canonical application identity behind one persisted
+   * transcript id. Sub-agent rows are returned as children of their root
+   * session so callers can redirect legacy `/session/<agent-id>` links to the
+   * parent-scoped route instead of selecting the transcript as a session.
+   */
+  getSessionContext(sessionId: string): SessionContext {
+    const session = sessionsDb.getSessionById(sessionId);
+    if (!session) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    const projectPath = session.project_path ?? null;
+    const project = projectPath ? projectsDb.getProjectPath(projectPath) : null;
+
+    return {
+      sessionId: session.session_id,
+      provider: session.provider as LLMProvider,
+      providerProfileId: session.provider_profile_id ?? null,
+      projectId: project?.project_id ?? null,
+      projectPath,
+      title: session.custom_name?.trim() || 'Untitled Session',
+      parentSessionId: session.parent_session_id ?? null,
+      agentType: session.agent_type ?? null,
+      isSubagent: Boolean(session.parent_session_id),
+      forkContext: session.fork_context ?? null,
+      forkContextConsumed: Boolean(session.fork_context_consumed),
+    };
+  },
+
+  /**
+   * Starts a fresh sibling chat ("fork") in the same project, inheriting the
+   * source session's provider and active profile. The new row is a brand-new
+   * conversation — no transcript is cloned — and is returned so the caller can
+   * navigate to it immediately. When `carryContext` is set (default true) and the
+   * source has history, a short handoff summary is generated and stored on the
+   * new row; the chat gateway prepends it to the forked session's first message
+   * only, so a cross-provider fork (e.g. Claude → Codex) keeps its context.
+   *
+   * Refuses to fork when the source is itself a sub-agent row: those sessions
+   * carry `parent_session_id`, have no own transcript to fork from, and would
+   * otherwise leak a child session outside the agent tree.
+   */
+  async forkSession(
+    sourceSessionId: string,
+    options: {
+      provider?: LLMProvider;
+      providerProfileId?: number | null;
+      carryContext?: boolean;
+      userId?: number | null;
+    } = {},
+  ): Promise<CreateAppSessionResult> {
+    const source = sessionsDb.getSessionById(sourceSessionId);
+    if (!source) {
+      throw new AppError(`Session "${sourceSessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    if (source.parent_session_id) {
+      throw new AppError(
+        'Cannot fork a sub-agent transcript; fork its parent session instead.',
+        { code: 'SESSION_FORK_NOT_ALLOWED', statusCode: 400 },
+      );
+    }
+
+    const inheritedProvider = (source.provider ?? '') as LLMProvider;
+    const provider = options.provider ?? inheritedProvider;
+    if (!provider || !providerRegistry.resolveProvider(provider)) {
+      throw new AppError(
+        `Cannot fork: provider "${provider || 'unknown'}" is not supported.`,
+        { code: 'PROVIDER_UNSUPPORTED', statusCode: 400 },
+      );
+    }
+
+    const projectPath = source.project_path ?? '';
+    if (!projectPath) {
+      throw new AppError('Cannot fork: source session has no project path.', {
+        code: 'SESSION_FORK_NOT_ALLOWED',
+        statusCode: 400,
+      });
+    }
+
+    // When the caller doesn't pass providerProfileId we inherit the source's
+    // profile (null if the source was on Local CLI). Explicit null means
+    // "force Local CLI on the forked session".
+    const providerProfileId = options.providerProfileId === undefined
+      ? (source.provider_profile_id ?? null)
+      : options.providerProfileId;
+    const created = this.createAppSession(provider, projectPath, { providerProfileId });
+
+    // Optionally condense the source session's history into a handoff summary
+    // and store it on the new row. The summary step never throws — it degrades
+    // to a transcript or null — so a fork cannot fail because of it.
+    const carryContext = options.carryContext !== false;
+    if (carryContext) {
+      try {
+        const history = await this.fetchHistory(sourceSessionId, { limit: 60 });
+        const summary = await forkContextService.buildForkContext({
+          messages: history.messages,
+          sourceProvider: (source.provider ?? '') as LLMProvider,
+          sourceProviderProfileId: source.provider_profile_id ?? null,
+          projectPath: source.project_path ?? null,
+          userId: options.userId ?? null,
+        });
+        if (summary) {
+          sessionsDb.setForkContext(created.sessionId, summary);
+          return { ...created, forkContextCarried: true };
+        }
+      } catch (error) {
+        console.warn(
+          `[forkSession] Carrying context for "${sourceSessionId}" failed; continuing without it:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
+
+    return created;
   },
 
   /**
@@ -366,9 +505,9 @@ export const sessionsService = {
   /**
    * Lists the sub-agents one session spawned, for the sidebar's third tree level.
    *
-   * Each entry is itself an addressable session row, so the returned
-   * `sessionId` can be opened through the normal message endpoint to read the
-   * agent's own transcript.
+   * Each entry identifies a parent-scoped transcript. The persistence layer
+   * still stores a child row so the shared history reader can load it, but the
+   * frontend must not promote that row to an independently selected session.
    *
    * Claude entries carry live tool activity parsed from the agent transcript;
    * Codex entries currently expose metadata only (its rollouts use a different
@@ -519,173 +658,6 @@ export const sessionsService = {
 
     sessionsDb.updateSessionIsArchived(sessionId, false);
     return { sessionId, isArchived: false };
-  },
-
-  /**
-   * Rewinds a session transcript back to one user message and drops
-   * everything that came after it.
-   *
-   * The targeted line is the JSONL row that produces the user message whose
-   * server uuid equals `messageId`; we never truncate mid-tool-call. The
-   * rewrite is atomic on disk and a `.bak.<ts>` snapshot is preserved next
-   * to the original file when a successful write completes.
-   *
-   * Rejects with 404 for missing/archived sessions, missing transcripts, or
-   * a `messageId` that cannot be located on disk. Rejects with 409 when the
-   * session is mid-run — caller should abort first via `chat.abort` and retry.
-   */
-  async rewindSession(
-    sessionId: string,
-    options: { messageId: string; keepMessage?: boolean },
-  ): Promise<{
-    sessionId: string;
-    truncatedAt: string;
-    kept: number;
-    backupPath: string | null;
-    cancelledRun: boolean;
-  }> {
-    const session = sessionsDb.getSessionById(sessionId);
-    if (!session) {
-      throw new AppError(`Session "${sessionId}" was not found.`, {
-        code: 'SESSION_NOT_FOUND',
-        statusCode: 404,
-      });
-    }
-    if (session.isArchived) {
-      throw new AppError(`Session "${sessionId}" is archived and cannot be rewound.`, {
-        code: 'SESSION_ARCHIVED',
-        statusCode: 409,
-      });
-    }
-    if (!session.jsonl_path) {
-      throw new AppError(`Session "${sessionId}" has no transcript on disk yet.`, {
-        code: 'SESSION_HAS_NO_TRANSCRIPT',
-        statusCode: 409,
-      });
-    }
-    if (!options?.messageId || typeof options.messageId !== 'string') {
-      throw new AppError('messageId is required.', {
-        code: 'INVALID_REQUEST_BODY',
-        statusCode: 400,
-      });
-    }
-
-    const provider = session.provider as LLMProvider;
-    const jsonlPath = session.jsonl_path;
-
-    // Mid-run safety. Cancelling the writer flips the run to completed so any
-    // subsequent event-bus fan-out is a no-op; we still truncate below even
-    // if a live runtime appends new lines afterwards (the runtime keeps the
-    // file descriptor open and may write more — those writes will land on
-    // the truncated file, which is acceptable because the user is rolling
-    // back the conversation anyway).
-    const cancelledRun = chatRunRegistry.cancelRun(sessionId);
-
-    // Locate the JSONL line whose uuid matches the targeted message and that
-    // is a real user message (not a Claude compact summary, local command
-    // stdout, or a Codex environment_context / boEntries row).
-    //
-    // Codex rollout rows carry no uuid; there the id is a timestamp-derived
-    // `codex_ts_<epochMs>` and we match on the row's timestamp instead.
-    const codexTargetMs = provider === 'codex'
-      ? Number(options.messageId.replace(/^codex_ts_/, ''))
-      : NaN;
-    const search = await findJsonlLine(jsonlPath, (parsed) => {
-      if (!parsed || typeof parsed !== 'object') return false;
-      const record = parsed as Record<string, unknown>;
-
-      if (provider === 'codex') {
-        if (!Number.isFinite(codexTargetMs)) return false;
-        const recordMs = Date.parse(String(record.timestamp ?? ''));
-        if (recordMs !== codexTargetMs) return false;
-        const payload = record.payload as Record<string, unknown> | undefined;
-        if (!payload) return false;
-        if (payload.type !== 'user_message') return false;
-        if (payload.kind && payload.kind !== 'plain') return false;
-        return typeof payload.message === 'string' && payload.message.trim().length > 0;
-      }
-
-      // Claude and any future uuid-bearing providers locate by uuid.
-      if (record.uuid !== options.messageId) return false;
-      if (provider === 'claude') {
-        const message = record.message as { role?: string } | undefined;
-        return message?.role === 'user' && record.isMeta !== true;
-      }
-
-      return false;
-    });
-
-    if (!search.found) {
-      throw new AppError(
-        `Message "${options.messageId}" was not found in this session's transcript.`,
-        {
-          code: 'REWIND_TARGET_NOT_FOUND',
-          statusCode: 404,
-        },
-      );
-    }
-
-    // keepMessage=true → keep the user row itself; false → drop it too.
-    const cutoff = options.keepMessage === false ? search.match.index : search.match.index + 1;
-
-    const result = await truncateJsonlAtLine(jsonlPath, cutoff, { backup: true });
-    sessionsDb.bumpSessionUpdatedAt(sessionId);
-
-    const truncatedAt = new Date().toISOString();
-    broadcastSessionRewound(sessionId, { truncatedAt, backupPath: result.backupPath });
-
-    return {
-      sessionId,
-      truncatedAt,
-      kept: result.kept,
-      backupPath: result.backupPath,
-      cancelledRun,
-    };
-  },
-
-  /**
-   * Edit a user message in-place. Semantically equivalent to rewinding with
-   * `keepMessage: false` and then resubmitting via `chat.send` from the client.
-   *
-   * The transcript is truncated at the line BEFORE the targeted user message
-   * (atomic JSONL rewrite — see `rewindSession`). The client is expected to
-   * dispatch a fresh `chat.send` with the new content as the resubmit step.
-   * `cancelledRun` reports whether an active run was flipped to completed; the
-   * frontend treats this the same as a rewind.
-   */
-  async editUserMessage(
-    sessionId: string,
-    payload: { messageId: string; content: string; images?: unknown[] },
-  ): Promise<{
-    sessionId: string;
-    truncatedAt: string;
-    backupPath: string | null;
-    cancelledRun: boolean;
-  }> {
-    if (!payload?.messageId || typeof payload.messageId !== 'string') {
-      throw new AppError('messageId is required.', {
-        code: 'INVALID_REQUEST_BODY',
-        statusCode: 400,
-      });
-    }
-    if (!payload.content || typeof payload.content !== 'string' || !payload.content.trim()) {
-      throw new AppError('content is required.', {
-        code: 'INVALID_REQUEST_BODY',
-        statusCode: 400,
-      });
-    }
-
-    const rewind = await this.rewindSession(sessionId, {
-      messageId: payload.messageId,
-      keepMessage: false,
-    });
-
-    return {
-      sessionId: rewind.sessionId,
-      truncatedAt: rewind.truncatedAt,
-      backupPath: rewind.backupPath,
-      cancelledRun: rewind.cancelledRun,
-    };
   },
 
   /**

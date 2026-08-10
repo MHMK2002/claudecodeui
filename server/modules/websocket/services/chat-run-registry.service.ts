@@ -215,6 +215,8 @@ export const chatRunRegistry = {
     providerSessionId: string | null;
     connection: RealtimeClientConnection;
     userId: string | number | null;
+    onFirstProviderEvent?: (message: NormalizedMessage) => void;
+    onProviderEvent?: (message: NormalizedMessage) => void;
   }): ChatRun | null {
     const existing = runs.get(input.appSessionId);
     if (existing && existing.status === 'running') {
@@ -242,6 +244,8 @@ export const chatRunRegistry = {
         recordProviderSessionId(run, providerSessionId);
       },
       decorateOutboundEvent: (message) => decorateAndRecordEvent(run, message),
+      onFirstProviderEvent: input.onFirstProviderEvent,
+      onProviderEvent: input.onProviderEvent,
     });
 
     runs.set(input.appSessionId, run);
@@ -332,28 +336,6 @@ export const chatRunRegistry = {
     }
 
     run.writer.sendComplete(opts);
-  },
-
-  /**
-   * Cancels one active run from outside the websocket protocol (e.g. the
-   * rewind HTTP route). Idempotent: a missing or already-completed run is a
-   * no-op. Returns true when a cancellation was actually dispatched.
-   *
-   * Note: this only emits the terminal `complete` event so the writer stops
-   * streaming the rest of the response to clients. It does not kill the
-   * provider process — that hookup lives in `chat-websocket.service.ts` and
-   * is reachable through the `chat.abort` WS message. The rewind path does
-   * not need to kill the process: it just needs the writer to stop emitting
-   * before the file is truncated, and `completeRun` covers that.
-   */
-  cancelRun(appSessionId: string): boolean {
-    const run = runs.get(appSessionId);
-    if (!run || run.status !== 'running') {
-      return false;
-    }
-
-    run.writer.sendComplete({ exitCode: 0, aborted: true });
-    return true;
   },
 
   /**

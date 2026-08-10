@@ -6,10 +6,9 @@ import type { VoiceConfig } from '../hooks/useVoiceConfig';
 import {
   buildDirectTranscriptionBody,
   buildProxyTranscriptionBody,
-  cleanupVoiceTranscript,
+  enhanceText,
   isUnsupportedSttContextError,
   transcribeVoice,
-  type VoiceCleanupOutcome,
 } from './voiceApi';
 
 class MemoryStorage {
@@ -40,7 +39,8 @@ function config(overrides: Partial<VoiceConfig> = {}): VoiceConfig {
     ttsFormat: '',
     sonioxApiKey: '',
     cleanupEnabled: false,
-    cleanupModel: 'gpt-4o-mini',
+    cleanupProviderProfileId: null,
+    cleanupModel: 'gpt-5.6-luna',
     cleanupPrompt: 'Only conservative edits.',
     micDeviceId: '',
     ...overrides,
@@ -141,92 +141,67 @@ test('classifies only explicit 400/422 optional-context compatibility failures',
   );
 });
 
-test('direct cleanup masks protected spans, accepts a safe edit, and preserves outer whitespace', async () => {
-  installConfig(config({ baseUrl: 'https://voice.example/v1', cleanupEnabled: true }));
+test('enhance sends raw text to the server proxy and returns the edited candidate', async () => {
+  installConfig(config({
+    baseUrl: 'https://voice.example/v1',
+    cleanupEnabled: true,
+    cleanupProviderProfileId: 17,
+  }));
+  let requestUrl = '';
   let requestBody: Record<string, unknown> | undefined;
-  mockFetch(async (_input, init) => {
+  mockFetch(async (input, init) => {
+    requestUrl = String(input);
     requestBody = JSON.parse(String(init?.body));
-    const messages = requestBody?.messages as Array<{ content: string }>;
-    const userData = JSON.parse(messages[1].content) as { transcript: string };
-    assert.equal(userData.transcript.includes('useVoiceInput'), false);
-    const edited = userData.transcript.replace('um ', '').replace('works', 'works.');
-    return Response.json({
-      choices: [{ message: { content: JSON.stringify({ action: 'edit', text: edited }) } }],
-    });
-  });
-  const outcomes: VoiceCleanupOutcome[] = [];
-
-  const cleaned = await cleanupVoiceTranscript('  um useVoiceInput works  \n', {
-    onOutcome: (outcome) => outcomes.push(outcome),
+    const raw = String(requestBody?.text);
+    assert.equal(raw.includes('useVoiceInput'), true);
+    const edited = raw.replace('um ', '').replace('works', 'works.');
+    return Response.json(
+      { action: 'edit', text: edited },
+      { headers: { 'X-Voice-Cleanup-Outcome': 'model_decision' } },
+    );
   });
 
-  assert.equal(cleaned, '  useVoiceInput works.  \n');
-  assert.deepEqual(outcomes, ['edited']);
-  assert.equal(requestBody?.model, 'gpt-4o-mini');
+  const result = await enhanceText('  um useVoiceInput works  \n');
+
+  assert.equal(result.status, 'edited');
+  if (result.status === 'edited') {
+    assert.equal(result.text, '  useVoiceInput works.  \n');
+  }
+  assert.equal(requestUrl, '/api/voice/cleanup');
+  assert.equal(requestBody?.providerProfileId, 17);
+  assert.equal(requestBody?.model, 'gpt-5.6-luna');
 });
 
-test('cleanup is a no-request exact no-op while disabled', async () => {
-  const raw = '  untouched raw transcript\n';
+test('enhance is a no-request error while disabled', async () => {
   installConfig(config({ cleanupEnabled: false }));
   mockFetch(async () => {
     throw new Error('fetch must not be called');
   });
-  const outcomes: VoiceCleanupOutcome[] = [];
 
-  assert.equal(
-    await cleanupVoiceTranscript(raw, {
-      onOutcome: (outcome) => outcomes.push(outcome),
-    }),
-    raw,
-  );
-  assert.deepEqual(outcomes, ['disabled']);
+  const result = await enhanceText('  untouched raw transcript\n');
+  assert.equal(result.status, 'error');
 });
 
-test('cleanup skips a transcript whose protected placeholders exceed the request limit', async () => {
-  const raw = Array.from({ length: 1000 }, () => 'useVoiceInput').join(' ');
+test('enhance returns an error for an invalid schema response', async () => {
   installConfig(config({ baseUrl: 'https://voice.example/v1', cleanupEnabled: true }));
-  mockFetch(async () => {
-    throw new Error('fetch must not be called');
-  });
-  const outcomes: VoiceCleanupOutcome[] = [];
+  mockFetch(async () => Response.json('not-json'));
 
-  assert.equal(
-    await cleanupVoiceTranscript(raw, {
-      onOutcome: (outcome) => outcomes.push(outcome),
-    }),
-    raw,
-  );
-  assert.deepEqual(outcomes, ['ineligible']);
+  const result = await enhanceText('  do not rename useVoiceInput\n');
+  assert.equal(result.status, 'error');
 });
 
-test('invalid schema and unsafe edits return the exact untrimmed raw transcript', async () => {
-  const raw = '  do not rename useVoiceInput\n';
+test('enhance accepts an aggressive edit without validation (user reviews)', async () => {
   installConfig(config({ baseUrl: 'https://voice.example/v1', cleanupEnabled: true }));
-  let responseContent = 'not-json';
-  mockFetch(async () => Response.json({ choices: [{ message: { content: responseContent } }] }));
+  mockFetch(async () => Response.json({ action: 'edit', text: 'totally rewritten text' }));
 
-  const invalidOutcomes: VoiceCleanupOutcome[] = [];
-  assert.equal(
-    await cleanupVoiceTranscript(raw, {
-      onOutcome: (outcome) => invalidOutcomes.push(outcome),
-    }),
-    raw,
-  );
-  assert.deepEqual(invalidOutcomes, ['invalid_schema']);
-
-  responseContent = JSON.stringify({ action: 'edit', text: 'rename it' });
-  const unsafeOutcomes: VoiceCleanupOutcome[] = [];
-  assert.equal(
-    await cleanupVoiceTranscript(raw, {
-      onOutcome: (outcome) => unsafeOutcomes.push(outcome),
-    }),
-    raw,
-  );
-  assert.deepEqual(unsafeOutcomes, ['unsafe_edit']);
+  const result = await enhanceText('  do not rename useVoiceInput\n');
+  assert.equal(result.status, 'edited');
+  if (result.status === 'edited') {
+    assert.equal(result.text, 'totally rewritten text');
+  }
 });
 
-test('proxy cleanup sends the same masked contract and honors keep', async () => {
-  const raw = 'Keep useVoiceInput exactly.\n';
+test('enhance honors a keep decision', async () => {
   installConfig(config({ cleanupEnabled: true }));
   let capturedUrl = '';
   let capturedBody: Record<string, unknown> | undefined;
@@ -239,14 +214,16 @@ test('proxy cleanup sends the same masked contract and honors keep', async () =>
     );
   });
 
-  assert.equal(await cleanupVoiceTranscript(raw), raw);
+  const result = await enhanceText('Keep useVoiceInput exactly.\n');
+  assert.equal(result.status, 'kept');
   assert.equal(capturedUrl, '/api/voice/cleanup');
   assert.equal(capturedBody?.mode, 'clean_transcript');
-  assert.equal(String(capturedBody?.text).includes('useVoiceInput'), false);
+  assert.equal(String(capturedBody?.text).includes('useVoiceInput'), true);
+  assert.equal(capturedBody?.providerProfileId, null);
+  assert.equal(capturedBody?.model, 'gpt-5.6-luna');
 });
 
-test('cleanup timeout and caller cancellation both fail soft to the exact raw transcript', async () => {
-  const raw = '  keep this raw\n';
+test('enhance timeout and caller cancellation both surface as errors', async () => {
   installConfig(config({ baseUrl: 'https://voice.example/v1', cleanupEnabled: true }));
   mockFetch((_input, init) => new Promise<Response>((_resolve, reject) => {
     const signal = init?.signal;
@@ -255,23 +232,12 @@ test('cleanup timeout and caller cancellation both fail soft to the exact raw tr
     else signal?.addEventListener('abort', abort, { once: true });
   }));
 
-  const timeoutOutcomes: VoiceCleanupOutcome[] = [];
-  assert.equal(
-    await cleanupVoiceTranscript(raw, {
-      timeoutMs: 5,
-      onOutcome: (outcome) => timeoutOutcomes.push(outcome),
-    }),
-    raw,
-  );
-  assert.deepEqual(timeoutOutcomes, ['timeout']);
+  const timeoutResult = await enhanceText('  keep this raw\n', { timeoutMs: 5 });
+  assert.equal(timeoutResult.status, 'error');
 
   const controller = new AbortController();
-  const cancelledOutcomes: VoiceCleanupOutcome[] = [];
-  const pending = cleanupVoiceTranscript(raw, {
-    signal: controller.signal,
-    onOutcome: (outcome) => cancelledOutcomes.push(outcome),
-  });
+  const pending = enhanceText('  keep this raw\n', { signal: controller.signal });
   controller.abort();
-  assert.equal(await pending, raw);
-  assert.deepEqual(cancelledOutcomes, ['cancelled']);
+  const cancelledResult = await pending;
+  assert.equal(cancelledResult.status, 'error');
 });

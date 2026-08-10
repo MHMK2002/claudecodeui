@@ -17,7 +17,7 @@ import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { forkSession as forkClaudeSdkSession, query } from '@anthropic-ai/claude-agent-sdk';
 
 import { buildClaudeUserContent, normalizeImageDescriptors } from './shared/image-attachments.js';
 import { CLAUDE_FALLBACK_MODELS } from './modules/providers/list/claude/claude-models.provider.js';
@@ -258,7 +258,94 @@ function mapCliOptionsToSDK(options = {}) {
     sdkOptions.resume = sessionId;
   }
 
+  // Claude Code's native rewind menu depends on checkpoints being captured
+  // before edits happen. Enabling this on every CloudCLI turn makes future
+  // sessions eligible for Query.rewindFiles(); older turns simply report that
+  // no checkpoint is available.
+  sdkOptions.enableFileCheckpointing = true;
+
   return sdkOptions;
+}
+
+const waitForFile = async (filePath, timeoutMs = 3000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await fs.stat(filePath);
+      return;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
+  throw new Error(`Claude fork transcript was not created at ${filePath}`);
+};
+
+/**
+ * Creates a provider-native Claude branch through one retained message.
+ * The returned provider session is intentionally not exposed to the client;
+ * the database rebinds it behind the stable CloudCLI app session id.
+ */
+async function forkClaudeSessionAt({
+  sessionId,
+  jsonlPath,
+  projectPath,
+  upToMessageId,
+  title,
+}) {
+  const result = await forkClaudeSdkSession(sessionId, {
+    dir: projectPath || undefined,
+    upToMessageId,
+    title: title || undefined,
+  });
+  const forkJsonlPath = path.join(path.dirname(jsonlPath), `${result.sessionId}.jsonl`);
+  await waitForFile(forkJsonlPath);
+  return { sessionId: result.sessionId, jsonlPath: forkJsonlPath };
+}
+
+async function* keepClaudeControlSessionOpen(signal) {
+  await new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    signal.addEventListener('abort', resolve, { once: true });
+  });
+}
+
+/**
+ * Uses Claude's public checkpoint control API without sending a model prompt.
+ * A temporary streaming-input query is resumed solely so rewindFiles can issue
+ * its control request after the original turn's Query has already exited.
+ */
+async function rewindClaudeFiles({
+  sessionId,
+  cwd,
+  messageId,
+  dryRun = false,
+  claudeProviderProfile,
+}) {
+  const abortController = new AbortController();
+  const sdkOptions = mapCliOptionsToSDK({
+    sessionId,
+    cwd,
+    claudeProviderProfile,
+  });
+  sdkOptions.abortController = abortController;
+  sdkOptions.enableFileCheckpointing = true;
+
+  const controlQuery = query({
+    prompt: keepClaudeControlSessionOpen(abortController.signal),
+    options: sdkOptions,
+  });
+
+  try {
+    await controlQuery.initializationResult();
+    return await controlQuery.rewindFiles(messageId, { dryRun });
+  } finally {
+    abortController.abort();
+    controlQuery.close();
+  }
 }
 
 /**
@@ -517,7 +604,16 @@ async function queryClaudeSDK(command, options = {}, ws) {
       effortModels,
     });
 
-    const mcpServers = await loadMcpConfig(options.cwd);
+    const loadedMcpServers = await loadMcpConfig(options.cwd);
+    const mcpServers = options.taskMasterReadOnly && loadedMcpServers
+      ? Object.fromEntries(Object.entries(loadedMcpServers).filter(([name, config]) => {
+          const isTaskMaster = name.includes('task-master')
+            || String(config?.command ?? '').includes('task-master')
+            || (Array.isArray(config?.args)
+              && config.args.some((argument) => String(argument).includes('task-master')));
+          return !isTaskMaster;
+        }))
+      : loadedMcpServers;
     if (mcpServers) {
       sdkOptions.mcpServers = mcpServers;
     }
@@ -857,5 +953,8 @@ export {
   getActiveClaudeSDKSessions,
   resolveToolApproval,
   getPendingApprovalsForSession,
-  reconnectSessionWriter
+  reconnectSessionWriter,
+  forkClaudeSessionAt,
+  rewindClaudeFiles,
+  buildClaudeProviderProfileEnv,
 };

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
+import { useParams } from 'react-router-dom';
 
 import { api } from '../../../utils/api';
 import { usePaletteOps } from '../../../contexts/PaletteOpsContext';
@@ -52,7 +53,7 @@ type UseSidebarControllerArgs = {
 export function useSidebarController({
   projects,
   selectedProject,
-  selectedSession: _selectedSession,
+  selectedSession,
   activeSessions,
   isLoading,
   isMobile,
@@ -68,6 +69,7 @@ export function useSidebarController({
   sidebarVisible,
 }: UseSidebarControllerArgs) {
   const paletteOps = usePaletteOps();
+  const { subagentSessionId } = useParams<{ subagentSessionId?: string }>();
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
   const [subagentsBySessionId, setSubagentsBySessionId] = useState<Map<string, SubagentListItem[]>>(new Map());
@@ -320,6 +322,53 @@ export function useSidebarController({
       setLoadedSubagentSessionIds((previous) => new Set(previous).add(sessionId));
     }
   }, []);
+
+  // `session_upserted` carries the parent's current agentCount. Refresh any
+  // already-open agent list when that count changes so a just-created child is
+  // nested immediately, even if the parent run finishes before the next poll.
+  const expandedSessionAgentCountSignature = useMemo(() => {
+    const countBySessionId = new Map<string, number>();
+    for (const project of projects) {
+      for (const session of project.sessions ?? []) {
+        const sessionId = String(session.id);
+        if (expandedSessions.has(sessionId)) {
+          countBySessionId.set(sessionId, Number(session.agentCount ?? 0));
+        }
+      }
+    }
+
+    return [...expandedSessions]
+      .sort()
+      .map((sessionId) => `${sessionId}:${countBySessionId.get(sessionId) ?? 0}`)
+      .join('|');
+  }, [expandedSessions, projects]);
+
+  useEffect(() => {
+    if (!expandedSessionAgentCountSignature) {
+      return;
+    }
+
+    for (const sessionId of expandedSessions) {
+      void loadSubagents(sessionId);
+    }
+  }, [expandedSessionAgentCountSignature, expandedSessions, loadSubagents]);
+
+  // A fresh parent-scoped agent URL must reveal the hierarchy it represents.
+  // Navigation from an already expanded row needs no state change; direct
+  // links expand the parent and load its agent list exactly once.
+  useEffect(() => {
+    if (!subagentSessionId || !selectedSession?.id) {
+      return;
+    }
+
+    setExpandedSessions((previous) => {
+      if (previous.has(selectedSession.id)) {
+        return previous;
+      }
+      return new Set(previous).add(selectedSession.id);
+    });
+    void loadSubagents(selectedSession.id);
+  }, [loadSubagents, selectedSession?.id, subagentSessionId]);
 
   const toggleSessionAgents = useCallback((sessionId: string) => {
     setExpandedSessions((previous) => {

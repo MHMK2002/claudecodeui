@@ -2,6 +2,8 @@ import { useState } from 'react';
 import type { ComponentType } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 
+import { getTextDirection } from '../../../utils/textDirection';
+
 type AuthInputFieldProps = {
   id: string;
   label: string;
@@ -53,6 +55,7 @@ export default function AuthInputField({
           name={name ?? id}
           autoComplete={autoComplete}
           value={value}
+          dir={getTextDirection(value)}
           onChange={(event) => onChange(event.target.value)}
           className={`w-full rounded-xl border border-border bg-background/60 py-2.5 text-foreground shadow-sm transition-colors placeholder:text-muted-foreground/60 hover:border-foreground/20 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-60 ${
             Icon ? 'pl-10' : 'pl-3.5'

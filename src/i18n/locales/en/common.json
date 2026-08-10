@@ -95,7 +95,17 @@
     "createProjectDesktop": "Create a new project by clicking the folder icon in the sidebar",
     "newSession": "New Session",
     "untitledSession": "Untitled Session",
-    "projectFiles": "Project Files"
+    "projectFiles": "Project Files",
+    "forkSession": "Fork session",
+    "forkSessionTitle": "Start a new sibling chat in this project",
+    "exportSession": "Export chat",
+    "exportSessionTitle": "Download full transcript as a zip bundle",
+    "exportSessionError": "Could not export this session.",
+    "forkDialogTitle": "Fork session",
+    "forkDialogDescription": "Choose the provider and model for the new session.",
+    "forkDialogModelNote": "Leave unchanged to use the current model.",
+    "forkDialogConfirm": "Fork",
+    "forkDialogCancel": "Cancel"
   },
   "fileTree": {
     "loading": "Loading files...",

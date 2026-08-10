@@ -389,12 +389,9 @@ export default function SidebarSessionItem({
     </div>
 
     <SidebarSessionAgents
-      project={project}
       isExpanded={hasAgents && areAgentsExpanded}
       agents={agents}
       hasLoaded={haveAgentsLoaded}
-      selectedSession={selectedSession}
-      onSessionSelect={onSessionSelect}
       t={t}
     />
     </>

@@ -9,10 +9,12 @@ export default function MainContentHeader({
   setActiveTab,
   selectedProject,
   selectedSession,
+  selectedSubagent,
   shouldShowTasksTab,
   shouldShowBrowserTab,
   isMobile,
   onMenuClick,
+  onNavigateToSession,
 }: MainContentHeaderProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
@@ -43,7 +45,9 @@ export default function MainContentHeader({
             activeTab={activeTab}
             selectedProject={selectedProject}
             selectedSession={selectedSession}
+            selectedSubagent={selectedSubagent}
             shouldShowTasksTab={shouldShowTasksTab}
+            onNavigateToSession={onNavigateToSession}
           />
         </div>
 

@@ -92,7 +92,12 @@ export default function SidebarProjectSessions({
     return null;
   }
 
-  const hasSessions = sessions.length > 0;
+  // Sub-agent transcripts carry the id of the session that spawned them in
+  // `parentSessionId`. They must never appear at the project level — only the
+  // root session they belong to is rendered here, and the agent list lives one
+  // level deeper under that parent via SidebarSessionAgents.
+  const topLevelSessions = sessions.filter((session) => !session.parentSessionId);
+  const hasSessions = topLevelSessions.length > 0;
 
   return (
     <div className="ml-3 space-y-1 border-l border-border pl-3">
@@ -127,7 +132,7 @@ export default function SidebarProjectSessions({
         </div>
       ) : (
         <>
-          {sessions.map((session) => (
+          {topLevelSessions.map((session) => (
             <SidebarSessionItem
               key={session.id}
               project={project}

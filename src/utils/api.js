@@ -93,8 +93,10 @@ export const api = {
     const queryString = params.toString();
     return authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}/messages${queryString ? `?${queryString}` : ''}`);
   },
-  // Sub-agents spawned by a session. Each entry is itself an addressable
-  // session id, so its transcript loads through `unifiedSessionMessages`.
+  sessionContext: (sessionId) =>
+    authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}`),
+  // Sub-agents spawned by a session. Their ids address read-only transcripts,
+  // while parentSessionId remains the selected application session.
   sessionSubagents: (sessionId) =>
     authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}/subagents`),
   renameProject: (projectId, displayName) =>
@@ -133,22 +135,62 @@ export const api = {
       body: JSON.stringify({ summary }),
     }),
   /**
-   * Truncates the session JSONL at the row that produced the user message
-   * with `messageId`. `keepMessage: true` (default) keeps the target row;
-   * `false` deletes it too.
+   * Downloads the full session transcript as a zip bundle (chat.md + chat.json
+   * + attachments). The browser is redirected through a temp <a download>
+   * element so the auth header / token refresh path is preserved.
    *
    * @param {string} sessionId
-   * @param {{ messageId: string; keepMessage?: boolean }} options
+   * @param {'zip' | 'md'} [format]
    */
-  rewindSession: (sessionId, { messageId, keepMessage = true } = /** @type {{ messageId: string; keepMessage?: boolean }} */ ({})) =>
-    authenticatedFetch(`/api/providers/sessions/${sessionId}/rewind`, {
+  exportSession: (sessionId, format = 'zip') => {
+    const params = new URLSearchParams();
+    params.set('format', format);
+    return authenticatedFetch(
+      `/api/providers/sessions/${encodeURIComponent(sessionId)}/export?${params.toString()}`,
+    );
+  },
+  /**
+   * Forks one session into a fresh sibling chat in the same project. The
+   * caller may override the source session's provider / profile via the
+   * optional `overrides` arg; with an empty object the new session inherits
+   * the source's provider + profile (no transcript is copied).
+   *
+   * @param {string} sessionId
+   * @param {{ provider?: 'claude' | 'codex' | 'cursor' | 'opencode'; providerProfileId?: number | null; carryContext?: boolean }} [overrides]
+   */
+  forkSession: (sessionId, overrides = {}) =>
+    authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}/fork`, {
       method: 'POST',
-      body: JSON.stringify({ messageId, keepMessage }),
+      body: JSON.stringify(overrides),
     }),
   /**
-   * Edit a user message and resubmit. Truncates the transcript at the line
-   * before the targeted user message; the client is expected to follow up
-   * with a fresh `chat.send` carrying the new content.
+   * Resolves provider-native rewind capabilities at one persisted user turn.
+   * Claude may expose file checkpoint restoration; Codex is conversation-only.
+   *
+   * @param {string} sessionId
+   * @param {string} messageId
+   */
+  previewSessionRewind: (sessionId, messageId) =>
+    authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}/rewind/preview`, {
+      method: 'POST',
+      body: JSON.stringify({ messageId }),
+    }),
+  /**
+   * Rewinds through the provider's native fork/checkpoint API while preserving
+   * the application's stable session id.
+   *
+   * @param {string} sessionId
+   * @param {{ messageId: string; mode?: 'conversation' | 'code' | 'both' }} options
+   */
+  rewindSession: (sessionId, { messageId, mode = 'conversation' } = /** @type {{ messageId: string; mode?: 'conversation' | 'code' | 'both' }} */ ({})) =>
+    authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}/rewind`, {
+      method: 'POST',
+      body: JSON.stringify({ messageId, mode }),
+    }),
+  /**
+   * Edit a user message and resubmit. Adopts a provider-native branch before
+   * the targeted prompt; the client follows with a fresh `chat.send` carrying
+   * the new content.
    *
    * @param {string} sessionId
    * @param {string} messageId
@@ -316,4 +358,31 @@ export const api = {
     method: 'DELETE',
     ...options,
   }),
+
+  scheduledRuns: {
+    list: () => authenticatedFetch('/api/scheduled-runs'),
+    get: (id) => authenticatedFetch(`/api/scheduled-runs/${id}`),
+    create: (input) => authenticatedFetch('/api/scheduled-runs', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+    update: (id, patch) => authenticatedFetch(`/api/scheduled-runs/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+    remove: (id) => authenticatedFetch(`/api/scheduled-runs/${id}`, {
+      method: 'DELETE',
+    }),
+    enable: (id) => authenticatedFetch(`/api/scheduled-runs/${id}/enable`, {
+      method: 'POST',
+    }),
+    disable: (id) => authenticatedFetch(`/api/scheduled-runs/${id}/disable`, {
+      method: 'POST',
+    }),
+    runNow: (id) => authenticatedFetch(`/api/scheduled-runs/${id}/run-now`, {
+      method: 'POST',
+    }),
+    history: (id, limit = 50) =>
+      authenticatedFetch(`/api/scheduled-runs/${id}/history?limit=${limit}`),
+  },
 };

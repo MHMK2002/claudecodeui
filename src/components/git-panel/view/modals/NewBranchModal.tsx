@@ -1,6 +1,8 @@
 import { Plus, RefreshCw } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
+import { getTextDirection } from '../../../../utils/textDirection';
+
 type NewBranchModalProps = {
   isOpen: boolean;
   currentBranch: string;
@@ -67,6 +69,7 @@ export default function NewBranchModal({
               id="git-new-branch-name"
               type="text"
               value={newBranchName}
+              dir={getTextDirection(newBranchName)}
               onChange={(event) => setNewBranchName(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !isCreatingBranch) {

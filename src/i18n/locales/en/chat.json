@@ -138,10 +138,28 @@
       "delete": "Delete queued message"
     }
   },
+  "enhance": "Enhance",
+  "enhanceTitle": "Enhance text",
+  "enhancing": "Enhancing…",
+  "enhanceUse": "Use",
+  "enhanceCancel": "Cancel",
+  "enhanceNoChanges": "No changes needed.",
+  "enhanceFailed": "Enhance failed.",
   "providerSelection": {
     "title": "Choose Your AI Assistant",
     "description": "Select a provider to start a new conversation",
     "selectModel": "Select Model",
+    "loadingModels": "Loading models…",
+    "noModelsFound": "No models found.",
+    "searchModels": "Search models...",
+    "modelUnchanged": "Same as source",
+    "forkDialogTitle": "Fork session",
+    "forkDialogDescription": "Choose the provider and model for the new session.",
+    "forkDialogModelNote": "Leave unchanged to use the current model.",
+    "forkDialogCarryContext": "Carry over a summary of this chat so the new session has context.",
+    "forkContextBanner": "A summary of the previous chat will be included in your first message.",
+    "forkDialogConfirm": "Fork",
+    "forkDialogCancel": "Cancel",
     "providerInfo": {
       "anthropic": "by Anthropic",
       "openai": "by OpenAI",

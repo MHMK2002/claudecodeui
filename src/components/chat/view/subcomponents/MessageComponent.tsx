@@ -39,12 +39,12 @@ type MessageComponentProps = {
    * server-side uuid (rather than the optimistic `local_*` id used for
    * sent-but-not-yet-persisted messages) show a rewind affordance.
    */
-  onRequestRewind?: (messageId: string) => void;
+  onRequestRewind?: (messageId: string, content: string, images: ChatImage[]) => void;
   /**
    * Optional edit-and-resubmit callback. When supplied, the LAST user turn
    * whose id is a real server-side uuid shows a pencil affordance that
-   * truncates the transcript at the line BEFORE this user message and
-   * resubmits the new content via `chat.send`.
+   * adopts a provider-native branch before this prompt and resubmits the new
+   * content via `chat.send`.
    */
   onRequestEdit?: (messageId: string, content: string, images: ChatImage[]) => void;
   showRawParameters?: boolean;
@@ -181,7 +181,11 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
                     <button
                       type="button"
                       data-rewind-trigger="true"
-                      onClick={() => onRequestRewind?.(rewindIdentifier as string)}
+                      onClick={() => onRequestRewind?.(
+                        rewindIdentifier as string,
+                        userCopyContent,
+                        message.images ?? [],
+                      )}
                       className="rounded p-1 text-blue-100 transition hover:bg-blue-500 hover:text-white focus:outline-none focus:ring-1 focus:ring-white/40"
                       title={t('rewind.toHere', { defaultValue: 'Rewind to here' })}
                       aria-label={t('rewind.toHere', { defaultValue: 'Rewind to here' })}

@@ -1,6 +1,13 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
+
+import VoiceInputButton from '../../../view/subcomponents/VoiceInputButton';
+import { useVoiceInput } from '../../../hooks/useVoiceInput';
+import { useVoiceAvailable } from '../../../hooks/useVoiceAvailable';
+import { useHoldToTalk } from '../../../hooks/useHoldToTalk';
+import { useUiPreferences } from '../../../../../hooks/useUiPreferences';
 import type { PermissionPanelProps } from '../../configs/permissionPanelRegistry';
 import type { Question } from '../../../types/types';
+import { getTextDirection } from '../../../../../utils/textDirection';
 
 export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
   request,
@@ -130,6 +137,50 @@ export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
     }
   }, [currentStep, questions, toggleOption, toggleOther, handleSubmit, handleSkip]);
 
+  // Voice dictation into the "Other" text field. Hooks must run before the
+  // early-return below, so we always mount the recorder; `voiceToggle` and
+  // `useHoldToTalk` are gated on `isOtherOn` so the mic only activates when
+  // the user has actually opened the free-text option.
+  const isOtherOn = otherActive.get(currentStep) || false;
+  const otherValue = otherTexts.get(currentStep) || '';
+  const voiceAvailable = useVoiceAvailable();
+  const { preferences } = useUiPreferences();
+  const handleVoiceTranscript = useCallback(
+    (text: string) => {
+      if (!text) return;
+      setOtherTexts(prev => {
+        const next = new Map(prev);
+        const current = next.get(currentStep) || '';
+        const joined = current ? (current.endsWith(' ') || text.startsWith(' ') ? current + text : `${current} ${text}`) : text;
+        next.set(currentStep, joined);
+        return next;
+      });
+    },
+    [currentStep],
+  );
+  const handleVoiceError = useCallback((msg: string) => {
+    console.warn('[AskUserQuestionPanel] voice error:', msg);
+  }, []);
+  const noopInterim = useCallback((_t: string | null) => {}, []);
+  const { state: voiceState, start: voiceStart, stop: voiceStop } = useVoiceInput(
+    handleVoiceTranscript,
+    handleVoiceError,
+    noopInterim,
+  );
+  const voiceToggle = useCallback(() => {
+    if (!isOtherOn) return;
+    if (voiceState === 'recording') voiceStop({ send: false });
+    else if (voiceState === 'idle') voiceStart();
+  }, [isOtherOn, voiceState, voiceStart, voiceStop]);
+  useHoldToTalk(
+    isOtherOn && !!voiceAvailable && !!preferences.voiceEnabled && !!preferences.voiceHoldToTalk,
+    () => {
+      if (!isOtherOn) return;
+      voiceStart();
+    },
+    () => voiceStop({ send: false }),
+  );
+
   if (questions.length === 0) return null;
 
   const total = questions.length;
@@ -137,10 +188,9 @@ export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
   const q = questions[currentStep];
   const multi = q.multiSelect || false;
   const selected = selections.get(currentStep) || new Set<string>();
-  const isOtherOn = otherActive.get(currentStep) || false;
   const isLast = currentStep === total - 1;
   const isFirst = currentStep === 0;
-  const hasCurrentSelection = selected.size > 0 || (isOtherOn && (otherTexts.get(currentStep) || '').trim().length > 0);
+  const hasCurrentSelection = selected.size > 0 || (isOtherOn && otherValue.trim().length > 0);
 
   return (
     <div
@@ -302,32 +352,52 @@ export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
             </button>
 
             {/* Other text input — inline */}
-            {isOtherOn && (
-              <div className="pl-[30px] pr-0.5">
-                <div className="relative">
-                  <input
-                    ref={otherInputRef}
-                    type="text"
-                    value={otherTexts.get(currentStep) || ''}
-                    onChange={(e) => setOtherText(currentStep, e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        if (isLast) handleSubmit();
-                        else setCurrentStep(s => s + 1);
-                      }
-                      // Prevent container keydown from firing
-                      e.stopPropagation();
-                    }}
-                    placeholder="Type your answer..."
-                    className="w-full rounded-lg border-0 bg-gray-50 px-3 py-1.5 text-[13px] text-gray-900 outline-none ring-1 ring-gray-200 transition-shadow duration-200 placeholder:text-gray-400 focus:ring-2 focus:ring-blue-400 dark:bg-gray-900/60 dark:text-gray-100 dark:ring-gray-700 dark:placeholder:text-gray-600 dark:focus:ring-blue-500"
-                  />
-                  <kbd className="absolute right-2 top-1/2 -translate-y-1/2 rounded border border-gray-200 bg-gray-100 px-1 py-0.5 font-mono text-[9px] text-gray-300 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-600">
-                    Enter
-                  </kbd>
+            {isOtherOn && (() => {
+              const otherDir = getTextDirection(otherValue);
+              const isRtl = otherDir === 'rtl';
+              return (
+                <div className="pl-[30px] pr-0.5">
+                  <div
+                    dir={otherDir}
+                    className="flex items-center gap-1.5"
+                  >
+                    {isRtl && (
+                      <kbd className="flex-shrink-0 rounded border border-gray-200 bg-gray-100 px-1 py-0.5 font-mono text-[9px] text-gray-300 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-600">
+                        Enter
+                      </kbd>
+                    )}
+                    <input
+                      ref={otherInputRef}
+                      type="text"
+                      value={otherValue}
+                      dir={otherDir}
+                      onChange={(e) => setOtherText(currentStep, e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          if (isLast) handleSubmit();
+                          else setCurrentStep(s => s + 1);
+                        }
+                        // Prevent container keydown from firing so number-key
+                        // selection and hold-to-talk (Option+Space) stay scoped
+                        // to where they belong.
+                        e.stopPropagation();
+                      }}
+                      placeholder="Type your answer..."
+                      className="min-w-0 flex-1 rounded-lg border-0 bg-gray-50 px-3 py-1.5 text-[13px] text-gray-900 outline-none ring-1 ring-gray-200 transition-shadow duration-200 placeholder:text-gray-400 focus:ring-2 focus:ring-blue-400 dark:bg-gray-900/60 dark:text-gray-100 dark:ring-gray-700 dark:placeholder:text-gray-600 dark:focus:ring-blue-500"
+                    />
+                    {!isRtl && (
+                      <kbd className="flex-shrink-0 rounded border border-gray-200 bg-gray-100 px-1 py-0.5 font-mono text-[9px] text-gray-300 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-600">
+                        Enter
+                      </kbd>
+                    )}
+                    {voiceAvailable && preferences.voiceEnabled && (
+                      <VoiceInputButton state={voiceState} onToggle={voiceToggle} errorMsg={null} />
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
         </div>
 

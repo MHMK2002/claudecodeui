@@ -5,7 +5,6 @@ import {
   type VoiceTranscriptDelivery,
 } from '../../../lib/finalizeVoiceTranscript';
 import {
-  cleanupVoiceTranscript,
   getVoiceStreamWebSocketUrl,
   transcribeVoice,
 } from '../../../lib/voiceApi';
@@ -404,7 +403,6 @@ export function useVoiceInput(
             signal: pipelineController.signal,
             ownsUi: isCurrent,
             onTranscript,
-            cleanup: cleanupVoiceTranscript,
           });
 
         if (isSoniox) {

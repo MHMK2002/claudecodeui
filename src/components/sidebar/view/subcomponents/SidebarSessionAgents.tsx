@@ -1,18 +1,16 @@
 import { Bot, Check, Loader2 } from 'lucide-react';
 import type { TFunction } from 'i18next';
+import { useNavigate, useParams } from 'react-router-dom';
 
 import { buttonVariants } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
-import type { Project, ProjectSession } from '../../../../types/app';
-import type { SessionWithProvider, SubagentListItem } from '../../types/types';
+import { buildSubagentRoute } from '../../../../utils/subagentNavigation';
+import type { SubagentListItem } from '../../types/types';
 
 type SidebarSessionAgentsProps = {
-  project: Project;
   isExpanded: boolean;
   agents: SubagentListItem[] | undefined;
   hasLoaded: boolean;
-  selectedSession: ProjectSession | null;
-  onSessionSelect: (session: SessionWithProvider, projectId: string) => void;
   t: TFunction;
 };
 
@@ -88,14 +86,14 @@ function AgentListSkeleton() {
 }
 
 export default function SidebarSessionAgents({
-  project,
   isExpanded,
   agents,
   hasLoaded,
-  selectedSession,
-  onSessionSelect,
   t,
 }: SidebarSessionAgentsProps) {
+  const navigate = useNavigate();
+  const { subagentSessionId } = useParams<{ subagentSessionId?: string }>();
+
   if (!isExpanded) {
     return null;
   }
@@ -119,9 +117,9 @@ export default function SidebarSessionAgents({
   }
 
   return (
-    <div className="ml-3 space-y-0.5 border-l border-border pl-3">
+    <div className="space-y-0.5 pl-2">
       {agents.map((agent) => {
-        const isSelected = selectedSession?.id === agent.sessionId;
+        const isSelected = subagentSessionId === agent.sessionId;
         const isRunning = agent.status === 'running';
         const toolTarget = agent.currentTool
           ? formatToolTarget(agent.currentTool.toolName, agent.currentTool.toolInput)
@@ -129,27 +127,12 @@ export default function SidebarSessionAgents({
         const tokens = formatTokens(agent.totalTokens);
         const duration = formatDuration(agent.totalDurationMs);
 
-        // The agent transcript is a session row of its own, so selecting it
-        // goes through the same handler as any other session.
-        const selectAgentSession = () => {
-          onSessionSelect(
-            {
-              id: agent.sessionId,
-              summary: agent.name,
-              provider: agent.provider,
-              __provider: agent.provider,
-              parentSessionId: agent.parentSessionId,
-              agentType: agent.agentType,
-              lastActivity: agent.updatedAt ?? undefined,
-            },
-            project.projectId,
-          );
-        };
+        const agentRoute = buildSubagentRoute(agent.parentSessionId, agent.sessionId);
 
         return (
           <a
             key={agent.sessionId}
-            href={`/session/${agent.sessionId}`}
+            href={agentRoute}
             className={cn(
               buttonVariants({ variant: 'ghost' }),
               'h-auto w-full justify-start rounded-md p-1.5 text-left font-normal transition-colors',
@@ -158,7 +141,7 @@ export default function SidebarSessionAgents({
             onClick={(event) => {
               if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
               event.preventDefault();
-              selectAgentSession();
+              navigate(agentRoute);
             }}
           >
             <div className="flex w-full min-w-0 items-center gap-2">

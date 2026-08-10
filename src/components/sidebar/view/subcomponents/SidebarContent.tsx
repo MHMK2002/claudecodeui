@@ -119,88 +119,88 @@ export default function SidebarContent({
 
       <ScrollArea className="flex-1 overflow-y-auto overscroll-contain md:px-1.5 md:py-2">
         {searchMode === 'recent' ? (
-          isRecentProjectsLoading ? (
-            <div className="px-4 py-12 text-center md:py-8">
-              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-muted md:mb-3">
-                <div className="h-6 w-6 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
-              </div>
-              <p className="text-sm text-muted-foreground">
-                {t('recent.loading', 'Loading recent chats...')}
-              </p>
-            </div>
-          ) : projectListProps.filteredProjects.length === 0 ? (
-            <div className="px-4 py-12 text-center md:py-8">
-              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg border border-border/70 bg-muted/50 md:mb-3">
-                <Clock3 className="h-6 w-6 text-muted-foreground" />
-              </div>
-              <h3 className="mb-2 text-base font-medium text-foreground md:mb-1">
-                {recentSessionsCount > 0
-                  ? t('recent.noMatchingChats', 'No recent chats match this search')
-                  : t('recent.emptyTitle', 'No recent chats')}
-              </h3>
-              <p className="text-sm text-muted-foreground">
-                {recentSessionsCount > 0
-                  ? t('recent.tryDifferentSearch', 'Try a different search term.')
-                  : t('recent.emptyDescription', 'Chats will appear here as soon as they become active.')}
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <div className="mx-2 space-y-2">
-                <div className="flex items-center justify-between rounded-lg border border-border/60 bg-card/50 px-3 py-2 shadow-sm">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <span className="flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary">
-                      <Clock3 className="h-3.5 w-3.5" />
-                    </span>
-                    <span className="truncate text-xs font-normal text-foreground">
-                      {t('recent.title', 'Recent chats')}
-                    </span>
-                  </div>
-                  <span
-                    className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-normal text-primary"
-                    title={t('recent.windowMinutes', {
-                      defaultValue: '{{count}} minute window',
-                      count: recentSessionsWindowMinutes,
-                    })}
-                  >
-                    {recentSessionsCount}
+          <div className="space-y-2">
+            <div className="mx-2 space-y-2">
+              <div className="flex items-center justify-between rounded-lg border border-border/60 bg-card/50 px-3 py-2 shadow-sm">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary">
+                    <Clock3 className="h-3.5 w-3.5" />
+                  </span>
+                  <span className="truncate text-xs font-normal text-foreground">
+                    {t('recent.title', 'Recent chats')}
                   </span>
                 </div>
-                <div className="flex items-center justify-between gap-2 px-1">
-                  <span className="text-[11px] text-muted-foreground">
-                    {t('recent.windowLabel', 'Time window')}
-                  </span>
-                  <div className="flex items-center gap-0.5 rounded-md bg-muted/60 p-0.5">
-                    {RECENT_WINDOW_OPTIONS_MINUTES.map((minutes) => {
-                      const active = minutes === recentWindowMinutes;
-                      return (
-                        <button
-                          key={minutes}
-                          type="button"
-                          onClick={() => onRecentWindowMinutesChange(minutes)}
-                          aria-pressed={active}
-                          className={cn(
-                            'rounded px-2 py-0.5 text-[11px] font-medium transition-colors',
-                            active
-                              ? 'bg-background text-foreground shadow-sm'
-                              : 'text-muted-foreground hover:text-foreground',
-                          )}
-                        >
-                          {formatWindowLabel(minutes, t)}
-                        </button>
-                      );
-                    })}
-                  </div>
+                <span
+                  className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-normal text-primary"
+                  title={t('recent.windowMinutes', {
+                    defaultValue: '{{count}} minute window',
+                    count: recentSessionsWindowMinutes,
+                  })}
+                >
+                  {recentSessionsCount}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2 px-1">
+                <span className="text-[11px] text-muted-foreground">
+                  {t('recent.windowLabel', 'Time window')}
+                </span>
+                <div className="flex items-center gap-0.5 rounded-md bg-muted/60 p-0.5">
+                  {RECENT_WINDOW_OPTIONS_MINUTES.map((minutes) => {
+                    const active = minutes === recentWindowMinutes;
+                    return (
+                      <button
+                        key={minutes}
+                        type="button"
+                        onClick={() => onRecentWindowMinutesChange(minutes)}
+                        aria-pressed={active}
+                        className={cn(
+                          'rounded px-2 py-0.5 text-[11px] font-medium transition-colors',
+                          active
+                            ? 'bg-background text-foreground shadow-sm'
+                            : 'text-muted-foreground hover:text-foreground',
+                        )}
+                      >
+                        {formatWindowLabel(minutes, t)}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
+            </div>
+            {isRecentProjectsLoading ? (
+              <div className="px-4 py-12 text-center md:py-8">
+                <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-muted md:mb-3">
+                  <div className="h-6 w-6 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  {t('recent.loading', 'Loading recent chats...')}
+                </p>
+              </div>
+            ) : projectListProps.filteredProjects.length === 0 ? (
+              <div className="px-4 py-12 text-center md:py-8">
+                <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg border border-border/70 bg-muted/50 md:mb-3">
+                  <Clock3 className="h-6 w-6 text-muted-foreground" />
+                </div>
+                <h3 className="mb-2 text-base font-medium text-foreground md:mb-1">
+                  {recentSessionsCount > 0
+                    ? t('recent.noMatchingChats', 'No recent chats match this search')
+                    : t('recent.emptyTitle', 'No recent chats')}
+                </h3>
+                <p className="text-sm text-muted-foreground">
+                  {recentSessionsCount > 0
+                    ? t('recent.tryDifferentSearch', 'Try a different search term.')
+                    : t('recent.emptyDescription', 'Chats will appear here as soon as they become active.')}
+                </p>
+              </div>
+            ) : (
               <SidebarProjectList
                 {...projectListProps}
                 projects={recentProjects}
                 isLoading={false}
                 loadingProgress={null}
               />
-            </div>
-          )
+            )}
+          </div>
         ) : searchMode === 'running' ? (
           projectListProps.filteredProjects.length === 0 ? (
             <div className="px-4 py-12 text-center md:py-8">

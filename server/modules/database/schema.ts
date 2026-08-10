@@ -136,12 +136,43 @@ CREATE TABLE IF NOT EXISTS sessions (
     project_path TEXT,
     jsonl_path TEXT,
     isArchived BOOLEAN DEFAULT 0,
+    -- Carried-over context when this session was forked from another. A short
+    -- handoff summary (or rendered transcript fallback) of the source session,
+    -- prepended to the FIRST chat.send only, then marked consumed. NULL for
+    -- sessions that were not forked, or were forked without context carry-over.
+    fork_context TEXT,
+    fork_context_consumed INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (session_id),
     FOREIGN KEY (project_path) REFERENCES projects(project_path)
     ON DELETE SET NULL
     ON UPDATE CASCADE
+);
+`;
+
+/**
+ * Provider-native conversation branches owned by one stable CloudCLI chat.
+ *
+ * Rewind may create a new Claude/Codex session internally, but the frontend
+ * must keep using the same `sessions.session_id`. Superseded/staged branches
+ * stay recorded here so filesystem synchronizers never rediscover them as
+ * standalone sidebar sessions.
+ */
+export const SESSION_PROVIDER_BRANCHES_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS session_provider_branches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_session_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    provider_session_id TEXT NOT NULL,
+    jsonl_path TEXT,
+    state TEXT NOT NULL CHECK (state IN ('staged', 'current', 'superseded', 'abandoned')),
+    forked_from_provider_session_id TEXT,
+    fork_point_id TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(provider, provider_session_id),
+    FOREIGN KEY (app_session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
 );
 `;
 
@@ -157,6 +188,49 @@ CREATE TABLE IF NOT EXISTS app_config (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`;
+
+export const SCHEDULED_RUNS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS scheduled_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    project_path TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    cron_expression TEXT NOT NULL,
+    timezone TEXT NOT NULL DEFAULT 'UTC',
+    notify_on_success BOOLEAN NOT NULL DEFAULT 0,
+    notify_on_failure BOOLEAN NOT NULL DEFAULT 1,
+    notify_channels_json TEXT,
+    is_enabled BOOLEAN NOT NULL DEFAULT 1,
+    last_run_at DATETIME,
+    next_run_at DATETIME NOT NULL,
+    in_flight_run_id INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_path) REFERENCES projects(project_path) ON DELETE CASCADE
+);
+`;
+
+export const SCHEDULED_RUN_HISTORY_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS scheduled_run_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    schedule_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    trigger TEXT NOT NULL,
+    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    finished_at DATETIME,
+    duration_ms INTEGER,
+    output_summary TEXT,
+    error_message TEXT,
+    notification_dispatched BOOLEAN DEFAULT 0,
+    FOREIGN KEY (schedule_id) REFERENCES scheduled_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 `;
 
@@ -205,7 +279,24 @@ CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id);
 -- NOTE: This index is created in migrations after sessions is rebuilt to include project_path.
 -- Creating it here can fail on upgraded installs where the legacy sessions table has no project_path.
 
+${SESSION_PROVIDER_BRANCHES_TABLE_SCHEMA_SQL}
+CREATE INDEX IF NOT EXISTS idx_session_provider_branches_app ON session_provider_branches(app_session_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_session_provider_branches_current
+ON session_provider_branches(app_session_id)
+WHERE state = 'current';
+
 ${LAST_SCANNED_AT_SQL}
 
 ${APP_CONFIG_TABLE_SCHEMA_SQL}
+
+${SCHEDULED_RUNS_TABLE_SCHEMA_SQL}
+CREATE INDEX IF NOT EXISTS idx_scheduled_runs_user_id ON scheduled_runs(user_id);
+CREATE INDEX IF NOT EXISTS idx_scheduled_runs_due ON scheduled_runs(is_enabled, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_scheduled_runs_project ON scheduled_runs(project_path);
+CREATE INDEX IF NOT EXISTS idx_scheduled_runs_in_flight ON scheduled_runs(in_flight_run_id);
+
+${SCHEDULED_RUN_HISTORY_TABLE_SCHEMA_SQL}
+CREATE INDEX IF NOT EXISTS idx_scheduled_run_history_schedule ON scheduled_run_history(schedule_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_scheduled_run_history_user ON scheduled_run_history(user_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_scheduled_run_history_running ON scheduled_run_history(status) WHERE status = 'running';
 `;

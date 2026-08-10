@@ -5,20 +5,25 @@ import {
   Eye,
   Flag,
   List,
+  Loader2,
   Play,
   Settings,
   Target,
   Terminal,
   Zap,
 } from 'lucide-react';
+
 import { cn } from '../../../lib/utils';
 import { useTaskMaster } from '../context/TaskMasterContext';
+import type { TaskMasterTask } from '../types';
+
 import TaskDetailModal from './TaskDetailModal';
 import TaskMasterSetupModal from './modals/TaskMasterSetupModal';
 
 type NextTaskBannerProps = {
   onShowAllTasks?: (() => void) | null;
-  onStartTask?: (() => void) | null;
+  onStartTask?: ((task: TaskMasterTask) => void) | null;
+  isStartingTask?: boolean;
   className?: string;
 };
 
@@ -46,7 +51,12 @@ function PriorityIndicator({ priority }: { priority?: string }) {
   );
 }
 
-export default function NextTaskBanner({ onShowAllTasks = null, onStartTask = null, className = '' }: NextTaskBannerProps) {
+export default function NextTaskBanner({
+  onShowAllTasks = null,
+  onStartTask = null,
+  isStartingTask = false,
+  className = '',
+}: NextTaskBannerProps) {
   const {
     nextTask,
     tasks,
@@ -139,11 +149,12 @@ export default function NextTaskBanner({ onShowAllTasks = null, onStartTask = nu
 
             <div className="flex flex-shrink-0 items-center gap-1">
               <button
-                onClick={() => onStartTask?.()}
-                className="flex items-center gap-1 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                onClick={() => onStartTask?.(nextTask)}
+                disabled={isStartingTask}
+                className="flex items-center gap-1 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                <Play className="h-3 w-3" />
-                Start Task
+                {isStartingTask ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+                {isStartingTask ? 'Starting…' : 'Start Task'}
               </button>
 
               <button

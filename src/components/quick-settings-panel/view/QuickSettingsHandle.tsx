@@ -2,12 +2,8 @@ import type {
   MouseEvent as ReactMouseEvent,
   TouchEvent as ReactTouchEvent,
 } from 'react';
-import {
-  ChevronLeft,
-  ChevronRight,
-  GripVertical,
-} from 'lucide-react';
-import { useTranslation } from 'react-i18next';
+import { ChevronLeft, ChevronRight, GripVertical } from 'lucide-react';
+
 import type { QuickSettingsHandleStyle } from '../types';
 
 type QuickSettingsHandleProps = {
@@ -27,9 +23,7 @@ export default function QuickSettingsHandle({
   onMouseDown,
   onTouchStart,
 }: QuickSettingsHandleProps) {
-  const { t } = useTranslation('settings');
-
-  const placementClass = isOpen ? 'right-64' : 'right-0';
+  const placementClass = isOpen ? 'right-80' : 'right-0';
   const borderClass = isDragging
     ? 'border-blue-500 dark:border-blue-400'
     : 'border-gray-200 dark:border-gray-700';
@@ -38,13 +32,13 @@ export default function QuickSettingsHandle({
     : 'transition-all duration-150 ease-out';
   const cursorClass = isDragging ? 'cursor-grabbing' : 'cursor-pointer';
   const ariaLabel = isDragging
-    ? t('quickSettings.dragHandle.dragging')
+    ? 'Moving project drawer'
     : isOpen
-      ? t('quickSettings.dragHandle.closePanel')
-      : t('quickSettings.dragHandle.openPanel');
+      ? 'Close project drawer'
+      : 'Open project drawer';
   const title = isDragging
-    ? t('quickSettings.dragHandle.draggingStatus')
-    : t('quickSettings.dragHandle.toggleAndMove');
+    ? 'Moving project drawer'
+    : 'Open, close, or drag the project drawer';
 
   return (
     <button

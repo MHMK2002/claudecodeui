@@ -13,12 +13,12 @@ export type FinalizeVoiceTranscriptOptions = {
     origin?: unknown,
     delivery?: VoiceTranscriptDelivery,
   ) => void | Promise<void>;
-  cleanup: (text: string, options: { signal?: AbortSignal }) => Promise<string>;
 };
 
 /**
- * Shared terminal path for batch and streaming STT. It owns the single cleanup
- * attempt and the single delivery callback for one committed recording.
+ * Shared terminal path for batch and streaming STT. Delivers the raw transcript
+ * through a single delivery callback for one committed recording. Text polishing
+ * is now an on-demand user action (Enhance), not part of this pipeline.
  */
 export async function finalizeVoiceTranscript({
   rawText,
@@ -27,14 +27,10 @@ export async function finalizeVoiceTranscript({
   signal,
   ownsUi,
   onTranscript,
-  cleanup,
 }: FinalizeVoiceTranscriptOptions): Promise<VoiceTranscriptFinalizationResult> {
   if (!rawText.trim()) return 'empty';
   if (signal?.aborted) return 'cancelled';
 
-  const finalText = await cleanup(rawText, { signal });
-  if (signal?.aborted) return 'cancelled';
-
-  await onTranscript(finalText, send, origin, { ownsUi: ownsUi?.() ?? true });
+  await onTranscript(rawText, send, origin, { ownsUi: ownsUi?.() ?? true });
   return 'delivered';
 }

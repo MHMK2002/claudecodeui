@@ -11,6 +11,7 @@ import type {
 } from "../../../../types/app";
 import SessionProviderLogo from "../../../llm-logo-provider/SessionProviderLogo";
 import { NextTaskBanner } from "../../../task-master";
+import type { TaskMasterTask } from "../../../task-master/types";
 import {
   Dialog,
   DialogTrigger,
@@ -73,7 +74,8 @@ type ProviderSelectionEmptyStateProps = {
   tasksEnabled: boolean;
   isTaskMasterInstalled: boolean | null;
   onShowAllTasks?: (() => void) | null;
-  setInput: React.Dispatch<React.SetStateAction<string>>;
+  onStartTask?: ((task: TaskMasterTask) => void) | null;
+  isStartingTask?: boolean;
 };
 
 type ProviderGroup = {
@@ -139,7 +141,8 @@ export default function ProviderSelectionEmptyState({
   tasksEnabled,
   isTaskMasterInstalled,
   onShowAllTasks,
-  setInput,
+  onStartTask,
+  isStartingTask = false,
 }: ProviderSelectionEmptyStateProps) {
   const { t } = useTranslation("chat");
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -176,9 +179,6 @@ export default function ProviderSelectionEmptyState({
     });
   }, [claudeProfiles, codexProfiles, providerModelCatalog]);
 
-  const nextTaskPrompt = t("tasks.nextTaskPrompt", {
-    defaultValue: "Start the next task",
-  });
 
   const currentModel = getCurrentModel(
     provider,
@@ -411,7 +411,8 @@ export default function ProviderSelectionEmptyState({
           {provider && tasksEnabled && isTaskMasterInstalled && (
             <div className="mt-5">
               <NextTaskBanner
-                onStartTask={() => setInput(nextTaskPrompt)}
+                onStartTask={onStartTask}
+                isStartingTask={isStartingTask}
                 onShowAllTasks={onShowAllTasks}
               />
             </div>
@@ -435,7 +436,8 @@ export default function ProviderSelectionEmptyState({
           {tasksEnabled && isTaskMasterInstalled && (
             <div className="mt-5">
               <NextTaskBanner
-                onStartTask={() => setInput(nextTaskPrompt)}
+                onStartTask={onStartTask}
+                isStartingTask={isStartingTask}
                 onShowAllTasks={onShowAllTasks}
               />
             </div>

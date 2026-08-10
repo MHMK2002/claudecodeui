@@ -7,6 +7,8 @@ type UiPreferences = {
   sidebarVisible: boolean;
   voiceEnabled: boolean;
   voiceHoldToTalk: boolean;
+  rightSidebarVisible: boolean;
+  rightSidebarTabQuickSettings: boolean;
 };
 
 type UiPreferenceKey = keyof UiPreferences;
@@ -39,6 +41,8 @@ const DEFAULTS: UiPreferences = {
   sidebarVisible: true,
   voiceEnabled: false,
   voiceHoldToTalk: false,
+  rightSidebarVisible: false,
+  rightSidebarTabQuickSettings: false,
 };
 
 const PREFERENCE_KEYS = Object.keys(DEFAULTS) as UiPreferenceKey[];

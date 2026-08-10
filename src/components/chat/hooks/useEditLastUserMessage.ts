@@ -129,12 +129,12 @@ async function persistImagesForResubmit(images: ChatImage[]): Promise<StoredImag
  * Edit-and-resubmit controller for the LAST user message. The flow:
  *
  * 1. PATCH `/api/providers/sessions/:id/messages/:messageId` (server-side
- *    rewinds the JSONL at the line BEFORE the targeted user row, atomic).
+ *    creates and adopts a provider-native branch before the targeted prompt).
  * 2. Server broadcasts `session.rewound` — the realtime handler refreshes
  *    the slot, dropping the old user row and every assistant turn after it.
  * 3. Locally dispatch a `chat.send` so the provider runtime receives the new
  *    content (and re-persisted image attachments) and starts a fresh turn
- *    against the truncated transcript.
+ *    against the adopted branch.
  */
 export function useEditLastUserMessage({
   activeSessionId,
@@ -179,13 +179,22 @@ export function useEditLastUserMessage({
         // inline base64 attachments before the resubmit.
         const storedImages = await persistImagesForResubmit(nextImages);
 
-        await api.editUserMessage(activeSessionId, target.messageId, {
+        const response = await api.editUserMessage(activeSessionId, target.messageId, {
           content: trimmed,
           images: storedImages,
         });
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => null)) as {
+            error?: string | { message?: string };
+          } | null;
+          const apiError = typeof payload?.error === 'string'
+            ? payload.error
+            : payload?.error?.message;
+          throw new Error(apiError || 'Could not rewind this message.');
+        }
         // Server broadcast already refreshed the slot; dispatch a fresh
         // chat.send so the provider runtime starts a new turn against the
-        // truncated transcript.
+        // provider-native branch.
         sendMessage({
           type: 'chat.send',
           sessionId: activeSessionId,

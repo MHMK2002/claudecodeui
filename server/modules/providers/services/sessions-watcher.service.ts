@@ -124,20 +124,32 @@ function queuePendingWatcherUpdate(
 }
 
 /**
- * Builds one `session_upserted` delta event for a provider-native session id.
+ * Builds one top-level `session_upserted` delta event for a provider-native
+ * session id.
  *
  * The event carries everything a sidebar needs to upsert the session in place
  * (session summary plus owning-project metadata), so clients never need a full
- * project-list refetch when a transcript file changes on disk. Returns `null`
- * when the id cannot be resolved to an indexed session row.
+ * project-list refetch when a transcript file changes on disk. A sub-agent
+ * transcript change is represented as an update to its parent row, including
+ * the refreshed agent count; child rows must never enter the top-level session
+ * collection. Returns `null` when the id cannot be resolved to an indexed row.
  */
-async function buildSessionUpsertedEvent(updatedProviderSessionId: string): Promise<string | null> {
-  const row = sessionsDb.getSessionByProviderSessionId(updatedProviderSessionId)
+export async function buildSessionUpsertedEvent(updatedProviderSessionId: string): Promise<string | null> {
+  const updatedRow = sessionsDb.getSessionByProviderSessionId(updatedProviderSessionId)
     ?? sessionsDb.getSessionById(updatedProviderSessionId);
+  if (!updatedRow || updatedRow.isArchived) {
+    return null;
+  }
+
+  const row = updatedRow.parent_session_id
+    ? sessionsDb.getSessionById(updatedRow.parent_session_id)
+    : updatedRow;
   if (!row || row.isArchived) {
     return null;
   }
 
+  const agentCount = sessionsDb.countSubagentsByParentSessionIds([row.session_id])
+    .get(row.session_id) ?? 0;
   const projectPath = row.project_path;
   const project = projectPath ? projectsDb.getProjectPath(projectPath) : null;
   const displayName = project?.custom_project_name?.trim()
@@ -152,6 +164,7 @@ async function buildSessionUpsertedEvent(updatedProviderSessionId: string): Prom
       id: row.session_id,
       summary: row.custom_name || '',
       messageCount: 0,
+      agentCount,
       lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
     },
     project: project

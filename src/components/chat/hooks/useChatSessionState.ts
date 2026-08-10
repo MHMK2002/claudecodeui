@@ -5,7 +5,7 @@ import { api, authenticatedFetch } from '../../../utils/api';
 import type { MarkSessionIdle, SessionActivityMap } from '../../../hooks/useSessionProtection';
 import type { Project, ProjectSession, LLMProvider } from '../../../types/app';
 import type { SessionStore, NormalizedMessage } from '../../../stores/useSessionStore';
-import type { ChatMessage } from '../types/types';
+import type { ChatImage, ChatMessage } from '../types/types';
 import { createCachedDiffCalculator, type DiffCalculator } from '../utils/messageTransforms';
 
 import { normalizedToChatMessages } from './useChatMessages';
@@ -34,6 +34,46 @@ interface ScrollRestoreState {
   height: number;
   top: number;
 }
+
+export type SessionRewindMode = 'conversation' | 'code' | 'both';
+
+export type RewindTarget = {
+  messageId: string;
+  preview: string;
+  content: string;
+  images: ChatImage[];
+  loading: boolean;
+  pendingMode: SessionRewindMode | null;
+  provider?: 'claude' | 'codex';
+  canRestoreConversation: boolean;
+  canRestoreFiles: boolean;
+  filesChanged: string[];
+  insertions: number;
+  deletions: number;
+  fileRestoreError?: string | null;
+  error?: string;
+};
+
+type RewindPreviewResponse = {
+  success?: boolean;
+  data?: {
+    provider?: 'claude' | 'codex';
+    canRestoreConversation?: boolean;
+    canRestoreFiles?: boolean;
+    filesChanged?: unknown[];
+    insertions?: number;
+    deletions?: number;
+    fileRestoreError?: string | null;
+  };
+  error?: string | { message?: string };
+};
+
+const readApiError = async (response: Response, fallback: string): Promise<string> => {
+  const payload = (await response.json().catch(() => null)) as RewindPreviewResponse | null;
+  if (typeof payload?.error === 'string') return payload.error;
+  if (payload?.error && typeof payload.error.message === 'string') return payload.error.message;
+  return fallback;
+};
 
 /* ------------------------------------------------------------------ */
 /*  Helper: Convert a ChatMessage to a NormalizedMessage for the store */
@@ -307,51 +347,111 @@ export function useChatSessionState({
   /*  Rewind modal                                                     */
   /* ---------------------------------------------------------------- */
 
-  const [rewindTarget, setRewindTarget] = useState<{
-    messageId: string;
-    preview: string;
-    truncatedAt?: string;
-    pending: boolean;
-    error?: string;
-  } | null>(null);
+  const [rewindTarget, setRewindTarget] = useState<RewindTarget | null>(null);
 
-  const requestRewind = useCallback((messageId: string) => {
+  useEffect(() => {
+    setRewindTarget(null);
+  }, [activeSessionId, isProcessing]);
+
+  const requestRewind = useCallback(async (
+    messageId: string,
+    content: string,
+    images: ChatImage[],
+  ) => {
     if (!activeSessionId) return;
-    const slot = sessionStore.getSessionSlot(activeSessionId);
-    const messages = slot?.merged ?? [];
-    const target = messages.find((m) => m.id === messageId);
-    const preview =
-      target?.content?.slice(0, 200) ||
-      target?.displayText?.slice(0, 200) ||
-      '';
+    const preview = content.slice(0, 200);
     setRewindTarget({
       messageId,
-      preview: preview.length === target?.content?.length ? preview : `${preview}…`,
-      pending: false,
+      preview: preview.length === content.length ? preview : `${preview}…`,
+      content,
+      images,
+      loading: true,
+      pendingMode: null,
+      canRestoreConversation: false,
+      canRestoreFiles: false,
+      filesChanged: [],
+      insertions: 0,
+      deletions: 0,
     });
-  }, [activeSessionId, sessionStore]);
-
-  const cancelRewind = useCallback(() => {
-    setRewindTarget((current) => (current ? { ...current, pending: false, error: undefined } : current));
-  }, []);
-
-  const confirmRewind = useCallback(async () => {
-    if (!activeSessionId || !rewindTarget) return;
-    setRewindTarget((current) => (current ? { ...current, pending: true, error: undefined } : current));
     try {
-      await api.rewindSession(activeSessionId, /** @type {{ messageId: string; keepMessage: boolean }} */ ({
-        messageId: rewindTarget.messageId,
-        keepMessage: true,
-      }));
-      // The server broadcasts session.rewound; the realtime handler will
-      // refresh the slot. Close the modal optimistically — the listener
-      // will dedupe any double refresh.
-      setRewindTarget(null);
+      const response = await api.previewSessionRewind(activeSessionId, messageId);
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Could not inspect this rewind point.'));
+      }
+      const payload = (await response.json()) as RewindPreviewResponse;
+      const data = payload.data ?? {};
+      setRewindTarget((current) => (
+        current?.messageId === messageId
+          ? {
+              ...current,
+              loading: false,
+              provider: data.provider,
+              canRestoreConversation: data.canRestoreConversation === true,
+              canRestoreFiles: data.canRestoreFiles === true,
+              filesChanged: Array.isArray(data.filesChanged)
+                ? data.filesChanged.filter((file): file is string => typeof file === 'string')
+                : [],
+              insertions: Number(data.insertions) || 0,
+              deletions: Number(data.deletions) || 0,
+              fileRestoreError: data.fileRestoreError ?? null,
+            }
+          : current
+      ));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setRewindTarget((current) => (current ? { ...current, pending: false, error: message } : current));
+      setRewindTarget((current) => (
+        current?.messageId === messageId
+          ? { ...current, loading: false, error: message }
+          : current
+      ));
     }
-  }, [activeSessionId, rewindTarget]);
+  }, [activeSessionId]);
+
+  const cancelRewind = useCallback(() => {
+    setRewindTarget(null);
+  }, []);
+
+  const confirmRewind = useCallback(async (mode: SessionRewindMode): Promise<{
+    content: string;
+    images: ChatImage[];
+  } | null> => {
+    if (!activeSessionId || !rewindTarget || rewindTarget.loading || rewindTarget.pendingMode) {
+      return null;
+    }
+    setRewindTarget((current) => (
+      current ? { ...current, pendingMode: mode, error: undefined } : current
+    ));
+    try {
+      const response = await api.rewindSession(activeSessionId, {
+        messageId: rewindTarget.messageId,
+        mode,
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Could not rewind this conversation.'));
+      }
+
+      if (mode === 'conversation' || mode === 'both') {
+        // The WebSocket event performs the same refresh for other tabs. This
+        // local refresh makes composer restoration deterministic for the tab
+        // that initiated the rewind.
+        await sessionStore.refreshFromServer(activeSessionId).catch((error) => {
+          console.error('Failed to refresh the rewound session:', error);
+        });
+      }
+
+      const restoredDraft = mode === 'conversation' || mode === 'both'
+        ? { content: rewindTarget.content, images: rewindTarget.images }
+        : null;
+      setRewindTarget(null);
+      return restoredDraft;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setRewindTarget((current) => (
+        current ? { ...current, pendingMode: null, error: message } : current
+      ));
+      return null;
+    }
+  }, [activeSessionId, rewindTarget, sessionStore]);
 
   const scrollToBottom = useCallback(() => {
     const container = scrollContainerRef.current;

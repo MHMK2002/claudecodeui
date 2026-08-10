@@ -18,6 +18,8 @@ type NotificationPreferences = {
     actionRequired: boolean;
     stop: boolean;
     error: boolean;
+    scheduleRunSucceeded: boolean;
+    scheduleRunFailed: boolean;
   };
 };
 
@@ -32,6 +34,8 @@ const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
     actionRequired: true,
     stop: true,
     error: true,
+    scheduleRunSucceeded: false,
+    scheduleRunFailed: true,
   },
 };
 
@@ -57,6 +61,8 @@ function normalizeNotificationPreferences(value: unknown): NotificationPreferenc
       actionRequired: source.events?.actionRequired !== false,
       stop: source.events?.stop !== false,
       error: source.events?.error !== false,
+      scheduleRunSucceeded: source.events?.scheduleRunSucceeded === true,
+      scheduleRunFailed: source.events?.scheduleRunFailed !== false,
     },
   };
 }

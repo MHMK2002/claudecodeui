@@ -1422,6 +1422,33 @@ export function useChatComposerState({
     setIsTextareaExpanded(false);
   }, [exitHistoryNavigation, resetCommandMenuState]);
 
+  const setInputText = useCallback((next: string) => {
+    setInput(next);
+    inputValueRef.current = next;
+    exitHistoryNavigation();
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (textarea) resizeTextarea(textarea);
+    });
+  }, [exitHistoryNavigation, resizeTextarea]);
+
+  const restoreDraft = useCallback((content: string, images: File[] = []) => {
+    setInput(content);
+    inputValueRef.current = content;
+    setAttachedImages(images.slice(0, 5));
+    setUploadingImages(new Map());
+    setImageErrors(new Map());
+    exitHistoryNavigation();
+    resetCommandMenuState();
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      resizeTextarea(textarea);
+      textarea.focus();
+      textarea.setSelectionRange(content.length, content.length);
+    });
+  }, [exitHistoryNavigation, resetCommandMenuState, resizeTextarea]);
+
   const handleAbortSession = useCallback(() => {
     if (!canAbortSession) {
       return;
@@ -1533,6 +1560,8 @@ export function useChatComposerState({
     handleTextareaInput,
     syncInputOverlayScroll,
     handleClearInput,
+    setInputText,
+    restoreDraft,
     handleAbortSession,
     handlePermissionDecision,
     handleGrantToolPermission,

@@ -7,6 +7,7 @@ import MainContent from '../main-content/view/MainContent';
 import CommandPalette from '../command-palette/CommandPalette';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { PaletteOpsProvider, usePaletteOpsRegister } from '../../contexts/PaletteOpsContext';
+import { ScheduledRunsProvider } from '../../contexts/ScheduledRunsContext';
 import { useDeviceSettings } from '../../hooks/useDeviceSettings';
 import { useSessionProtection } from '../../hooks/useSessionProtection';
 import { useProjectsState } from '../../hooks/useProjectsState';
@@ -42,14 +43,19 @@ const parseStartedAt = (value: unknown): number | undefined => {
 export default function AppContent() {
   return (
     <PaletteOpsProvider>
-      <AppContentInner />
+      <ScheduledRunsProvider>
+        <AppContentInner />
+      </ScheduledRunsProvider>
     </PaletteOpsProvider>
   );
 }
 
 function AppContentInner() {
   const navigate = useNavigate();
-  const { sessionId } = useParams<{ sessionId?: string }>();
+  const { sessionId, subagentSessionId } = useParams<{
+    sessionId?: string;
+    subagentSessionId?: string;
+  }>();
   const { t } = useTranslation('common');
   const { isMobile } = useDeviceSettings({ trackPWA: false });
   const { ws, sendMessage, subscribe } = useWebSocket();
@@ -241,6 +247,7 @@ function AppContentInner() {
         <MainContent
           selectedProject={selectedProject}
           selectedSession={selectedSession}
+          selectedSubagentSessionId={subagentSessionId ?? null}
           activeTab={activeTab}
           setActiveTab={setActiveTab}
           ws={ws}
@@ -270,6 +277,6 @@ function AppContentInner() {
         onOpenSettings={() => openSettings()}
         onShowTab={setActiveTab}
       />
-    </div>
+      </div>
   );
 }

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 
 import ChatInterface from '../../chat/view/ChatInterface';
 import FileTree from '../../file-tree/view/FileTree';
@@ -17,6 +17,7 @@ import { useEditorSidebar } from '../../code-editor/hooks/useEditorSidebar';
 import EditorSidebar from '../../code-editor/view/EditorSidebar';
 import type { Project } from '../../../types/app';
 import { TaskMasterPanel } from '../../task-master';
+import { useSubagentTranscript } from '../hooks/useSubagentTranscript';
 
 import MainContentHeader from './subcomponents/MainContentHeader';
 import MainContentStateView from './subcomponents/MainContentStateView';
@@ -36,6 +37,7 @@ type TasksSettingsContextValue = {
 function MainContent({
   selectedProject,
   selectedSession,
+  selectedSubagentSessionId,
   activeTab,
   setActiveTab,
   ws,
@@ -59,6 +61,39 @@ function MainContent({
   const { currentProject, setCurrentProject } = useTaskMaster() as TaskMasterContextValue;
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings() as TasksSettingsContextValue;
   const [browserUseEnabled, setBrowserUseEnabled] = useState(false);
+  const selectedSubagentState = useSubagentTranscript(
+    selectedSession?.id ?? null,
+    selectedSubagentSessionId,
+  );
+  const selectedSubagent = selectedSubagentState.transcript;
+
+  // Chat's existing history machinery consumes a ProjectSession-shaped
+  // target. Keep that adapter local to the transcript surface: application
+  // selection and every non-chat tab continue to use the root parent session.
+  const transcriptSession = useMemo(() => {
+    if (!selectedSubagent) {
+      return selectedSession;
+    }
+
+    return {
+      id: selectedSubagent.sessionId,
+      summary: selectedSubagent.name,
+      provider: selectedSubagent.provider,
+      __provider: selectedSubagent.provider,
+      parentSessionId: selectedSubagent.parentSessionId,
+      agentType: selectedSubagent.agentType,
+      __projectId: selectedSession?.__projectId,
+    };
+  }, [selectedSession, selectedSubagent]);
+
+  const isSubagentViewPending = Boolean(
+    selectedSubagentSessionId
+    && (!selectedSession || selectedSubagentState.status === 'idle' || selectedSubagentState.status === 'loading'),
+  );
+  const isSubagentViewInvalid = Boolean(
+    selectedSubagentSessionId
+    && (selectedSubagentState.status === 'not-found' || selectedSubagentState.status === 'error'),
+  );
 
   const shouldShowTasksTab = Boolean(tasksEnabled && isTaskMasterInstalled);
   const shouldShowBrowserTab = browserUseEnabled;
@@ -147,19 +182,39 @@ function MainContent({
         setActiveTab={setActiveTab}
         selectedProject={selectedProject}
         selectedSession={selectedSession}
+        selectedSubagent={selectedSubagent}
         shouldShowTasksTab={shouldShowTasksTab}
         shouldShowBrowserTab={shouldShowBrowserTab}
         isMobile={isMobile}
         onMenuClick={onMenuClick}
+        onNavigateToSession={onNavigateToSession}
       />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div className={`flex min-h-0 min-w-[200px] flex-col overflow-hidden ${editorExpanded ? 'hidden' : ''} flex-1`}>
           <div className={`h-full ${activeTab === 'chat' ? 'block' : 'hidden'}`}>
+            {isSubagentViewPending ? (
+              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                Loading agent transcript…
+              </div>
+            ) : isSubagentViewInvalid ? (
+              <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+                <span>Agent transcript was not found under this session.</span>
+                {selectedSession && (
+                  <button
+                    type="button"
+                    className="rounded-md bg-accent px-3 py-1.5 font-medium text-foreground"
+                    onClick={() => onNavigateToSession(selectedSession.id, { replace: true })}
+                  >
+                    Back to parent session
+                  </button>
+                )}
+              </div>
+            ) : (
             <ErrorBoundary showDetails>
               <ChatInterface
                 selectedProject={selectedProject}
-                selectedSession={selectedSession}
+                selectedSession={transcriptSession}
                 ws={ws}
                 sendMessage={sendMessage}
                 onFileOpen={handleFileOpen}
@@ -178,6 +233,7 @@ function MainContent({
                 onShowAllTasks={tasksEnabled ? () => setActiveTab('tasks') : null}
               />
             </ErrorBoundary>
+            )}
           </div>
 
           {activeTab === 'files' && (
@@ -203,7 +259,15 @@ function MainContent({
             </div>
           )}
 
-          {shouldShowTasksTab && <TaskMasterPanel isVisible={activeTab === 'tasks'} />}
+          {shouldShowTasksTab && (
+            <TaskMasterPanel
+              isVisible={activeTab === 'tasks'}
+              sendMessage={sendMessage}
+              onSessionEstablished={onSessionEstablished}
+              onNavigateToSession={(sessionId) => onNavigateToSession(sessionId)}
+              onSessionProcessing={onSessionProcessing}
+            />
+          )}
 
           {shouldShowBrowserTab && activeTab === 'browser' && (
             <div className="h-full overflow-hidden">

@@ -4,6 +4,8 @@ import * as React from 'react';
 import { SendHorizonalIcon, SquareIcon } from 'lucide-react';
 
 import { cn } from '../../../lib/utils';
+import { getTextDirection } from '../../../utils/textDirection';
+
 import { Button } from './Button';
 import Tooltip from './Tooltip';
 
@@ -89,17 +91,22 @@ PromptInputBody.displayName = 'PromptInputBody';
 export const PromptInputTextarea = React.forwardRef<
   HTMLTextAreaElement,
   React.TextareaHTMLAttributes<HTMLTextAreaElement>
->(({ className, ...props }, ref) => (
-  <textarea
-    ref={ref}
-    data-slot="prompt-input-textarea"
-    className={cn(
-      'chat-input-placeholder block max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent px-4 py-2 text-sm leading-6 text-foreground placeholder-muted-foreground/50 focus:outline-none sm:max-h-[300px]',
-      className
-    )}
-    {...props}
-  />
-));
+>(({ className, value, dir, ...props }, ref) => {
+  const resolvedDir = dir ?? (value != null ? getTextDirection(value) : undefined);
+  return (
+    <textarea
+      ref={ref}
+      data-slot="prompt-input-textarea"
+      dir={resolvedDir}
+      className={cn(
+        'chat-input-placeholder block max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent px-4 py-2 text-sm leading-6 text-foreground placeholder-muted-foreground/50 focus:outline-none sm:max-h-[300px]',
+        className
+      )}
+      value={value}
+      {...props}
+    />
+  );
+});
 PromptInputTextarea.displayName = 'PromptInputTextarea';
 
 /* ─── PromptInputFooter ──────────────────────────────────────────── */

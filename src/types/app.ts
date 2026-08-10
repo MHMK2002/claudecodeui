@@ -64,8 +64,8 @@ export interface ProjectSession {
   // Number of sub-agents this session spawned; drives the sidebar's
   // third-level expand affordance.
   agentCount?: number;
-  // Set only on sub-agent rows: the id of the session that spawned them.
-  // Present means the session is an agent transcript and is read-only.
+  // Defensive compatibility for legacy payloads. Canonical project session
+  // lists contain roots only; sub-agent transcripts use SubagentTranscript.
   parentSessionId?: string;
   agentType?: string | null;
   provider?: LLMProvider;
@@ -77,6 +77,24 @@ export interface ProjectSession {
   __projectId?: string;
   [key: string]: unknown;
 }
+
+export type SubagentStatus = 'running' | 'completed' | 'unknown';
+
+/** A read-only transcript nested under a root session, never a root session. */
+export type SubagentTranscript = {
+  sessionId: string;
+  provider: LLMProvider;
+  parentSessionId: string;
+  name: string;
+  agentType: string | null;
+  status: SubagentStatus;
+  toolCount: number;
+  currentTool: { toolName: string; toolInput: unknown } | null;
+  totalTokens: number | null;
+  totalDurationMs: number | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
 
 export interface ProjectSessionMeta {
   total?: number;

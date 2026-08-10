@@ -1,5 +1,6 @@
-import { FileText, Settings, Terminal } from 'lucide-react';
+import { FileText, Settings, Sparkles, Terminal } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+
 import { cn } from '../../../lib/utils';
 import type { PrdFile } from '../types';
 
@@ -9,6 +10,7 @@ type TaskEmptyStateProps = {
   existingPrds: PrdFile[];
   onOpenSetupModal: () => void;
   onCreatePrd: () => void;
+  onCreateTask: () => void;
   onOpenPrd: (prd: PrdFile) => void;
 };
 
@@ -18,6 +20,7 @@ export default function TaskEmptyState({
   existingPrds,
   onOpenSetupModal,
   onCreatePrd,
+  onCreateTask,
   onOpenPrd,
 }: TaskEmptyStateProps) {
   const { t } = useTranslation('tasks');
@@ -118,13 +121,22 @@ export default function TaskEmptyState({
             </div>
           </div>
 
-          <button
-            onClick={onCreatePrd}
-            className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-4 py-2 font-medium text-white hover:bg-purple-700"
-          >
-            <FileText className="h-4 w-4" />
-            {t('buttons.addPRD')}
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={onCreateTask}
+              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 font-medium text-white hover:bg-blue-700"
+            >
+              <Sparkles className="h-4 w-4" />
+              Clarify a task
+            </button>
+            <button
+              onClick={onCreatePrd}
+              className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-4 py-2 font-medium text-white hover:bg-purple-700"
+            >
+              <FileText className="h-4 w-4" />
+              {t('buttons.addPRD')}
+            </button>
+          </div>
         </div>
 
         <p className="text-sm text-gray-500 dark:text-gray-400">{t('gettingStarted.tip')}</p>

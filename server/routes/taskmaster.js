@@ -8,14 +8,16 @@
  * - TaskMaster state and metadata management
  */
 
-import express from 'express';
-import fs from 'fs';
+import fs, { promises as fsPromises } from 'fs';
 import path from 'path';
-import { promises as fsPromises } from 'fs';
+
+import express from 'express';
 // cross-spawn: drop-in spawn with Windows .cmd/PATHEXT resolution — required
 // here since task-master/npx are .cmd shims on Windows.
 import spawn from 'cross-spawn';
+
 import { projectsDb } from '../modules/database/index.js';
+import { taskmasterInitializerService, taskmasterWorkflowService } from '../modules/taskmaster/index.js';
 import { detectTaskMasterMCPServer } from '../utils/mcp-detector.js';
 import { broadcastTaskMasterProjectUpdate, broadcastTaskMasterTasksUpdate } from '../utils/taskmaster-websocket.js';
 
@@ -35,6 +37,31 @@ async function resolveProjectPathFromId(projectId) {
 }
 
 const router = express.Router();
+
+function readAuthenticatedUserId(req) {
+    const rawUserId = req.user?.id ?? req.user?.userId;
+    const parsed = typeof rawUserId === 'number'
+        ? rawUserId
+        : typeof rawUserId === 'string' && /^\d+$/.test(rawUserId.trim())
+            ? Number(rawUserId.trim())
+            : NaN;
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+        const error = new Error('Authenticated user is required.');
+        error.code = 'AUTHENTICATED_USER_REQUIRED';
+        error.statusCode = 401;
+        throw error;
+    }
+    return parsed;
+}
+
+function sendWorkflowError(res, error) {
+    const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 500;
+    res.status(statusCode).json({
+        success: false,
+        error: error?.code || 'TASKMASTER_WORKFLOW_ERROR',
+        message: error instanceof Error ? error.message : String(error),
+    });
+}
 
 /**
  * Check if TaskMaster CLI is installed globally
@@ -215,7 +242,10 @@ router.get('/tasks/:projectId', async (req, res) => {
                 }
             }
 
-            // Transform tasks to ensure all have required fields
+            const taskWorkflow = await taskmasterWorkflowService.getTaskWorkflowSummary(projectPath);
+
+            // Transform tasks to ensure all have required fields and expose
+            // durable CloudCLI session linkage after reload.
             const transformedTasks = tasks.map(task => ({
                 id: task.id,
                 title: task.title || 'Untitled Task',
@@ -227,7 +257,9 @@ router.get('/tasks/:projectId', async (req, res) => {
                 updatedAt: task.updatedAt || task.updated || new Date().toISOString(),
                 details: task.details || '',
                 testStrategy: task.testStrategy || task.test_strategy || '',
-                subtasks: task.subtasks || []
+                subtasks: task.subtasks || [],
+                workflow: taskWorkflow[String(task.id)] || null,
+                implementationSessionId: taskWorkflow[String(task.id)]?.implementationSessionId || null
             }));
 
             res.json({
@@ -499,178 +531,40 @@ router.post('/init/:projectId', async (req, res) => {
             });
         }
 
-        // Check if TaskMaster is already initialized
-        const taskMasterPath = path.join(projectPath, '.taskmaster');
-        try {
-            await fsPromises.access(taskMasterPath, fs.constants.F_OK);
-            return res.status(400).json({
-                error: 'TaskMaster already initialized',
-                message: 'TaskMaster is already configured for this project'
-            });
-        } catch (error) {
-            // Directory doesn't exist, we can proceed
+        const result = await taskmasterInitializerService.initializeOrRepair(projectPath);
+        if (req.app.locals.wss) {
+            broadcastTaskMasterProjectUpdate(
+                req.app.locals.wss,
+                projectId,
+                { hasTaskmaster: true, status: 'initialized' }
+            );
         }
-
-        // Run taskmaster init command
-        const initProcess = spawn('npx', ['task-master', 'init'], {
-            cwd: projectPath,
-            stdio: ['pipe', 'pipe', 'pipe']
+        return res.json({
+            projectId,
+            projectPath,
+            message: result.before.status === 'valid'
+                ? 'TaskMaster configuration verified successfully'
+                : 'TaskMaster initialized or repaired successfully',
+            result,
+            timestamp: new Date().toISOString()
         });
-
-        let stdout = '';
-        let stderr = '';
-
-        initProcess.stdout.on('data', (data) => {
-            stdout += data.toString();
-        });
-
-        initProcess.stderr.on('data', (data) => {
-            stderr += data.toString();
-        });
-
-        initProcess.on('close', (code) => {
-            if (code === 0) {
-                // Broadcast TaskMaster project update via WebSocket. The
-                // WebSocket payload keeps using `projectId` so the frontend
-                // can match notifications against the current selection.
-                if (req.app.locals.wss) {
-                    broadcastTaskMasterProjectUpdate(
-                        req.app.locals.wss,
-                        projectId,
-                        { hasTaskmaster: true, status: 'initialized' }
-                    );
-                }
-
-                res.json({
-                    projectId,
-                    projectPath,
-                    message: 'TaskMaster initialized successfully',
-                    output: stdout,
-                    timestamp: new Date().toISOString()
-                });
-            } else {
-                console.error('TaskMaster init failed:', stderr);
-                res.status(500).json({
-                    error: 'Failed to initialize TaskMaster',
-                    message: stderr || stdout,
-                    code
-                });
-            }
-        });
-
-        // Send 'yes' responses to automated prompts
-        initProcess.stdin.write('yes\n');
-        initProcess.stdin.end();
 
     } catch (error) {
         console.error('TaskMaster init error:', error);
-        res.status(500).json({
-            error: 'Failed to initialize TaskMaster',
-            message: error.message
-        });
+        return sendWorkflowError(res, error);
     }
 });
 
 /**
  * POST /api/taskmaster/add-task/:projectId
- * Add a new task to the project
+ * Retired: task creation must pass through clarified proposal approval.
  */
-router.post('/add-task/:projectId', async (req, res) => {
-    try {
-        const { projectId } = req.params;
-        const { prompt, title, description, priority = 'medium', dependencies } = req.body;
-
-        if (!prompt && (!title || !description)) {
-            return res.status(400).json({
-                error: 'Missing required parameters',
-                message: 'Either "prompt" or both "title" and "description" are required'
-            });
-        }
-
-        const projectPath = await resolveProjectPathFromId(projectId);
-        if (!projectPath) {
-            return res.status(404).json({
-                error: 'Project not found',
-                message: `Project "${projectId}" does not exist`
-            });
-        }
-
-        // Build the task-master add-task command
-        const args = ['task-master-ai', 'add-task'];
-        
-        if (prompt) {
-            args.push('--prompt', prompt);
-            args.push('--research'); // Use research for AI-generated tasks
-        } else {
-            args.push('--prompt', `Create a task titled "${title}" with description: ${description}`);
-        }
-        
-        if (priority) {
-            args.push('--priority', priority);
-        }
-        
-        if (dependencies) {
-            args.push('--dependencies', dependencies);
-        }
-
-        // Run task-master add-task command
-        const addTaskProcess = spawn('npx', args, {
-            cwd: projectPath,
-            stdio: ['pipe', 'pipe', 'pipe']
-        });
-
-        let stdout = '';
-        let stderr = '';
-
-        addTaskProcess.stdout.on('data', (data) => {
-            stdout += data.toString();
-        });
-
-        addTaskProcess.stderr.on('data', (data) => {
-            stderr += data.toString();
-        });
-
-        addTaskProcess.on('close', (code) => {
-            console.log('Add task process completed with code:', code);
-            console.log('Stdout:', stdout);
-            console.log('Stderr:', stderr);
-            
-            if (code === 0) {
-                // Broadcast task update via WebSocket using the projectId so
-                // clients subscribed to this project get notified immediately.
-                if (req.app.locals.wss) {
-                    broadcastTaskMasterTasksUpdate(
-                        req.app.locals.wss,
-                        projectId
-                    );
-                }
-
-                res.json({
-                    projectId,
-                    projectPath,
-                    message: 'Task added successfully',
-                    output: stdout,
-                    timestamp: new Date().toISOString()
-                });
-            } else {
-                console.error('Add task failed:', stderr);
-                res.status(500).json({
-                    error: 'Failed to add task',
-                    message: stderr || stdout,
-                    code
-                });
-            }
-        });
-
-        addTaskProcess.stdin.end();
-
-    } catch (error) {
-        console.error('Add task error:', error);
-        res.status(500).json({
-            error: 'Failed to add task',
-            message: error.message
-        });
-    }
+router.post('/add-task/:projectId', (_req, res) => {
+    return res.status(409).json({
+        success: false,
+        error: 'APPROVAL_REQUIRED',
+        message: 'Create tasks through Task intake and explicitly approve the clarified proposal.'
+    });
 });
 
 /**
@@ -692,6 +586,7 @@ router.put('/update-task/:projectId/:taskId', async (req, res) => {
 
         // If only updating status, use set-status command
         if (status && Object.keys(req.body).length === 1) {
+            taskmasterWorkflowService.assertStatusChangeAllowed({ projectPath, taskId, status });
             const setStatusProcess = spawn('npx', ['task-master-ai', 'set-status', `--id=${taskId}`, `--status=${status}`], {
                 cwd: projectPath,
                 stdio: ['pipe', 'pipe', 'pipe']
@@ -799,100 +694,14 @@ router.put('/update-task/:projectId/:taskId', async (req, res) => {
 
 /**
  * POST /api/taskmaster/parse-prd/:projectId
- * Parse a PRD file to generate tasks
+ * Retired: bulk task creation cannot bypass clarified proposal approval.
  */
-router.post('/parse-prd/:projectId', async (req, res) => {
-    try {
-        const { projectId } = req.params;
-        const { fileName = 'prd.txt', numTasks, append = false } = req.body;
-
-        const projectPath = await resolveProjectPathFromId(projectId);
-        if (!projectPath) {
-            return res.status(404).json({
-                error: 'Project not found',
-                message: `Project "${projectId}" does not exist`
-            });
-        }
-
-        const prdPath = path.join(projectPath, '.taskmaster', 'docs', fileName);
-        
-        // Check if PRD file exists
-        try {
-            await fsPromises.access(prdPath, fs.constants.F_OK);
-        } catch (error) {
-            return res.status(404).json({
-                error: 'PRD file not found',
-                message: `File "${fileName}" does not exist in .taskmaster/docs/`
-            });
-        }
-
-        // Build the command args
-        const args = ['task-master-ai', 'parse-prd', prdPath];
-        
-        if (numTasks) {
-            args.push('--num-tasks', numTasks.toString());
-        }
-        
-        if (append) {
-            args.push('--append');
-        }
-        
-        args.push('--research'); // Use research for better PRD parsing
-
-        // Run task-master parse-prd command
-        const parsePRDProcess = spawn('npx', args, {
-            cwd: projectPath,
-            stdio: ['pipe', 'pipe', 'pipe']
-        });
-
-        let stdout = '';
-        let stderr = '';
-
-        parsePRDProcess.stdout.on('data', (data) => {
-            stdout += data.toString();
-        });
-
-        parsePRDProcess.stderr.on('data', (data) => {
-            stderr += data.toString();
-        });
-
-        parsePRDProcess.on('close', (code) => {
-            if (code === 0) {
-                // Broadcast task update via WebSocket
-                if (req.app.locals.wss) {
-                    broadcastTaskMasterTasksUpdate(
-                        req.app.locals.wss,
-                        projectId
-                    );
-                }
-
-                res.json({
-                    projectId,
-                    projectPath,
-                    prdFile: fileName,
-                    message: 'PRD parsed and tasks generated successfully',
-                    output: stdout,
-                    timestamp: new Date().toISOString()
-                });
-            } else {
-                console.error('Parse PRD failed:', stderr);
-                res.status(500).json({
-                    error: 'Failed to parse PRD',
-                    message: stderr || stdout,
-                    code
-                });
-            }
-        });
-
-        parsePRDProcess.stdin.end();
-
-    } catch (error) {
-        console.error('Parse PRD error:', error);
-        res.status(500).json({
-            error: 'Failed to parse PRD',
-            message: error.message
-        });
-    }
+router.post('/parse-prd/:projectId', (_req, res) => {
+    return res.status(409).json({
+        success: false,
+        error: 'APPROVAL_REQUIRED',
+        message: 'Create tasks through Task intake and explicitly approve each clarified proposal.'
+    });
 });
 
 /**
@@ -1424,6 +1233,150 @@ router.post('/apply-template/:projectId', async (req, res) => {
             error: 'Failed to apply PRD template',
             message: error.message
         });
+    }
+});
+
+/**
+ * POST /api/taskmaster/workflow/:projectId/intakes
+ * Creates a clarification-only intake record. Session allocation remains in
+ * the authenticated provider session gateway and is bound separately below.
+ */
+router.post('/workflow/:projectId/intakes', async (req, res) => {
+    try {
+        const { projectId } = req.params;
+        const projectPath = await resolveProjectPathFromId(projectId);
+        if (!projectPath) {
+            return res.status(404).json({ success: false, error: 'PROJECT_NOT_FOUND', message: 'Project not found.' });
+        }
+        const result = await taskmasterWorkflowService.createIntake({
+            projectPath,
+            projectId,
+            userId: readAuthenticatedUserId(req),
+            brief: req.body?.brief,
+            provider: req.body?.provider,
+            providerProfileId: req.body?.providerProfileId,
+        });
+        return res.status(201).json({ success: true, data: result });
+    } catch (error) {
+        return sendWorkflowError(res, error);
+    }
+});
+
+router.get('/workflow/:projectId/intakes', async (req, res) => {
+    try {
+        const { projectId } = req.params;
+        const projectPath = await resolveProjectPathFromId(projectId);
+        if (!projectPath) {
+            return res.status(404).json({ success: false, error: 'PROJECT_NOT_FOUND', message: 'Project not found.' });
+        }
+        const intakes = await taskmasterWorkflowService.listIntakes({
+            projectPath,
+            userId: readAuthenticatedUserId(req),
+        });
+        return res.json({ success: true, data: { intakes } });
+    } catch (error) {
+        return sendWorkflowError(res, error);
+    }
+});
+
+router.post('/workflow/:projectId/intakes/:intakeId/bind', async (req, res) => {
+    try {
+        const { projectId, intakeId } = req.params;
+        const projectPath = await resolveProjectPathFromId(projectId);
+        if (!projectPath) {
+            return res.status(404).json({ success: false, error: 'PROJECT_NOT_FOUND', message: 'Project not found.' });
+        }
+        const intake = await taskmasterWorkflowService.bindIntakeSession({
+            projectPath,
+            intakeId,
+            userId: readAuthenticatedUserId(req),
+            sessionId: req.body?.sessionId,
+        });
+        return res.json({ success: true, data: { intake } });
+    } catch (error) {
+        return sendWorkflowError(res, error);
+    }
+});
+
+router.post('/workflow/:projectId/intakes/:intakeId/approve', async (req, res) => {
+    try {
+        const { projectId, intakeId } = req.params;
+        const projectPath = await resolveProjectPathFromId(projectId);
+        if (!projectPath) {
+            return res.status(404).json({ success: false, error: 'PROJECT_NOT_FOUND', message: 'Project not found.' });
+        }
+        const result = await taskmasterWorkflowService.approveIntake({
+            projectPath,
+            intakeId,
+            userId: readAuthenticatedUserId(req),
+            approved: req.body?.approved,
+            proposalHash: req.body?.proposalHash,
+            idempotencyKey: req.body?.idempotencyKey,
+        });
+        if (req.app.locals.wss) {
+            broadcastTaskMasterTasksUpdate(req.app.locals.wss, projectId);
+        }
+        return res.json({ success: true, data: result });
+    } catch (error) {
+        return sendWorkflowError(res, error);
+    }
+});
+
+router.post('/workflow/:projectId/tasks/:taskId/launch', async (req, res) => {
+    try {
+        const { projectId, taskId } = req.params;
+        const projectPath = await resolveProjectPathFromId(projectId);
+        if (!projectPath) {
+            return res.status(404).json({ success: false, error: 'PROJECT_NOT_FOUND', message: 'Project not found.' });
+        }
+        const attempt = await taskmasterWorkflowService.beginLaunch({
+            projectPath,
+            taskId,
+            userId: readAuthenticatedUserId(req),
+            provider: req.body?.provider,
+            providerProfileId: req.body?.providerProfileId,
+            idempotencyKey: req.body?.idempotencyKey,
+        });
+        return res.status(201).json({ success: true, data: { attempt } });
+    } catch (error) {
+        return sendWorkflowError(res, error);
+    }
+});
+
+router.post('/workflow/:projectId/launches/:attemptId/bind', async (req, res) => {
+    try {
+        const { projectId, attemptId } = req.params;
+        const projectPath = await resolveProjectPathFromId(projectId);
+        if (!projectPath) {
+            return res.status(404).json({ success: false, error: 'PROJECT_NOT_FOUND', message: 'Project not found.' });
+        }
+        const attempt = await taskmasterWorkflowService.bindLaunchSession({
+            projectPath,
+            attemptId,
+            userId: readAuthenticatedUserId(req),
+            sessionId: req.body?.sessionId,
+        });
+        return res.json({ success: true, data: { attempt } });
+    } catch (error) {
+        return sendWorkflowError(res, error);
+    }
+});
+
+router.get('/workflow/:projectId/launches/:attemptId', async (req, res) => {
+    try {
+        const { projectId, attemptId } = req.params;
+        const projectPath = await resolveProjectPathFromId(projectId);
+        if (!projectPath) {
+            return res.status(404).json({ success: false, error: 'PROJECT_NOT_FOUND', message: 'Project not found.' });
+        }
+        const attempt = await taskmasterWorkflowService.getLaunch({
+            projectPath,
+            attemptId,
+            userId: readAuthenticatedUserId(req),
+        });
+        return res.json({ success: true, data: { attempt } });
+    } catch (error) {
+        return sendWorkflowError(res, error);
     }
 });
 

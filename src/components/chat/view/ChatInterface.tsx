@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowDownIcon, Bot } from 'lucide-react';
+import { ArrowDownIcon, Bot, GitFork } from 'lucide-react';
 
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
@@ -12,7 +12,12 @@ import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '../hooks/useChatComposerState';
 import { useEditLastUserMessage } from '../hooks/useEditLastUserMessage';
+import type { SessionRewindMode } from '../hooks/useChatSessionState';
+import { materializeChatImages } from '../utils/materializeChatImages';
 import { useSessionStore } from '../../../stores/useSessionStore';
+import { startTaskImplementation } from '../../task-master/workflow';
+import type { TaskMasterTask } from '../../task-master/types';
+import { useTaskMaster } from '../../task-master/context/TaskMasterContext';
 
 import ChatMessagesPane from './subcomponents/ChatMessagesPane';
 import ChatComposer from './subcomponents/ChatComposer';
@@ -40,6 +45,7 @@ function ChatInterface({
   onShowAllTasks,
 }: ChatInterfaceProps) {
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
+  const { refreshTasks } = useTaskMaster();
   const { subscribe } = useWebSocket();
   const { t } = useTranslation('chat');
   // Sub-agent sessions carry the id of the session that spawned them; they are
@@ -47,6 +53,7 @@ function ChatInterface({
   const isAgentTranscript = Boolean(selectedSession?.parentSessionId);
 
   const sessionStore = useSessionStore();
+  const [startingTaskId, setStartingTaskId] = useState<string | null>(null);
   const streamTimerRef = useRef<number | null>(null);
   const accumulatedStreamRef = useRef('');
   // When each session's `chat.subscribe` was last sent; idle acks older than
@@ -160,9 +167,45 @@ function ChatInterface({
     onNavigateToSession?.(sessionId);
   }, [setCurrentSessionId, onSessionEstablished, onNavigateToSession]);
 
+  const handleStartTask = useCallback(async (task: TaskMasterTask) => {
+    if (!selectedProject || startingTaskId) return;
+    setStartingTaskId(String(task.id));
+    try {
+      await startTaskImplementation({
+        project: selectedProject,
+        task,
+        selection: {
+          provider,
+          providerProfileId: provider === 'claude'
+            ? selectedClaudeProfileId
+            : provider === 'codex'
+              ? selectedCodexProfileId
+              : null,
+        },
+        sendMessage,
+        onSessionEstablished: handleSessionEstablished,
+        onSessionProcessing,
+      });
+      await refreshTasks();
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Failed to start implementation.');
+    } finally {
+      setStartingTaskId(null);
+    }
+  }, [
+    handleSessionEstablished,
+    onSessionProcessing,
+    provider,
+    refreshTasks,
+    selectedClaudeProfileId,
+    selectedCodexProfileId,
+    selectedProject,
+    sendMessage,
+    startingTaskId,
+  ]);
+
   const {
     input,
-    setInput,
     textareaRef,
     inputHighlightRef,
     isTextareaExpanded,
@@ -203,6 +246,8 @@ function ChatInterface({
     handleTextareaInput,
     syncInputOverlayScroll,
     handleClearInput,
+    setInputText,
+    restoreDraft,
     handleAbortSession,
     handlePermissionDecision,
     handleGrantToolPermission,
@@ -245,9 +290,16 @@ function ChatInterface({
     resolvePermissionModeForProvider,
   });
 
+  const handleConfirmRewind = useCallback(async (mode: SessionRewindMode) => {
+    const draft = await confirmRewind(mode);
+    if (!draft) return;
+    const files = await materializeChatImages(draft.images, selectedProject?.projectId);
+    restoreDraft(draft.content, files);
+  }, [confirmRewind, restoreDraft, selectedProject?.projectId]);
+
   // Edit-and-resubmit for the LAST user message. The hook owns the inline
-  // edit modal state and orchestrates: PATCH → truncate (atomic, server-side
-  // rewind) → fresh `chat.send` against the truncated transcript.
+  // editor and orchestrates: PATCH → provider-native branch adoption → fresh
+  // `chat.send` against that branch.
   const editController = useEditLastUserMessage({
     activeSessionId: currentSessionId || selectedSession?.id || null,
     sendMessage,
@@ -354,9 +406,24 @@ function ChatInterface({
     );
   }
 
+  const forkContextBannerSessionId = currentSessionId || selectedSession?.id || null;
+  const showForkContextBanner = Boolean(
+    forkContextBannerSessionId && sessionStore.getSessionSlot(forkContextBannerSessionId)?.pendingForkContext,
+  );
+
   return (
     <PermissionContext.Provider value={permissionContextValue}>
       <div className="flex h-full min-h-0 flex-col">
+        {showForkContextBanner && (
+          <div className="flex flex-shrink-0 items-center gap-2 border-b border-border/60 bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            <GitFork className="h-3.5 w-3.5 flex-shrink-0" aria-hidden />
+            <span>
+              {t('providerSelection.forkContextBanner', {
+                defaultValue: 'A summary of the previous chat will be included in your first message.',
+              })}
+            </span>
+          </div>
+        )}
         <ChatMessagesPane
           scrollContainerRef={scrollContainerRef}
           onWheel={handleScroll}
@@ -391,7 +458,10 @@ function ChatInterface({
           tasksEnabled={tasksEnabled}
           isTaskMasterInstalled={isTaskMasterInstalled}
           onShowAllTasks={onShowAllTasks}
-          setInput={setInput}
+          onStartTask={(task) => {
+            void handleStartTask(task);
+          }}
+          isStartingTask={startingTaskId !== null}
           isLoadingMoreMessages={isLoadingMoreMessages}
           hasMoreMessages={hasMoreMessages}
           totalMessages={totalMessages}
@@ -408,7 +478,7 @@ function ChatInterface({
           onFileOpen={onFileOpen}
           onShowSettings={onShowSettings}
           onGrantToolPermission={handleGrantToolPermission}
-          onRequestRewind={requestRewind}
+          onRequestRewind={!isProcessing && !rewindTarget ? requestRewind : undefined}
           onRequestEdit={editController.beginEdit}
           editingMessageId={editController.target?.messageId ?? null}
           editInitialContent={editController.target?.initialContent ?? ''}
@@ -507,6 +577,7 @@ function ChatInterface({
           onVoiceTranscript={handleVoiceTranscript}
           onVoiceInterim={handleVoiceInterim}
           onVoiceCommit={captureVoiceOrigin}
+          onApplyEnhancedText={setInputText}
           viewedSessionKey={voiceViewKey}
           onInputChange={handleInputChange}
           onTextareaClick={handleTextareaClick}
@@ -533,7 +604,12 @@ function ChatInterface({
         </div>
       </div>
 
-      <QuickSettingsPanel />
+      <QuickSettingsPanel
+        sendMessage={sendMessage}
+        onSessionEstablished={handleSessionEstablished}
+        onNavigateToSession={onNavigateToSession}
+        onSessionProcessing={onSessionProcessing}
+      />
 
       <CommandResultModal
         payload={commandModalPayload}
@@ -548,7 +624,7 @@ function ChatInterface({
 
       <RewindConfirmModal
         target={rewindTarget}
-        onConfirm={confirmRewind}
+        onConfirm={handleConfirmRewind}
         onCancel={cancelRewind}
       />
     </PermissionContext.Provider>

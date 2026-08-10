@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 
 import { Button, Input } from '../../../../shared/view/ui';
+import { getTextDirection } from '../../../../utils/textDirection';
 import {
   MCP_PROVIDER_NAMES,
   MCP_SUPPORTED_SCOPES,
@@ -276,6 +277,7 @@ export default function McpServerFormModal({
               </label>
               <textarea
                 value={formData.jsonInput}
+                dir={getTextDirection(formData.jsonInput)}
                 onChange={(event) => updateJsonInput(event.target.value)}
                 className={`w-full border px-3 py-2 ${
                   jsonValidationError ? 'border-red-500' : 'border-gray-300 dark:border-gray-600'
@@ -317,6 +319,7 @@ export default function McpServerFormModal({
                 </label>
                 <textarea
                   value={multilineText.args}
+                  dir={getTextDirection(multilineText.args)}
                   onChange={(event) => updateMultilineText('args', event.target.value)}
                   className="w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
                   rows={3}
@@ -361,6 +364,7 @@ export default function McpServerFormModal({
               </label>
               <textarea
                 value={multilineText.env}
+                dir={getTextDirection(multilineText.env)}
                 onChange={(event) => updateMultilineText('env', event.target.value)}
                 className="w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
                 rows={3}
@@ -376,6 +380,7 @@ export default function McpServerFormModal({
               </label>
               <textarea
                 value={multilineText.headers}
+                dir={getTextDirection(multilineText.headers)}
                 onChange={(event) => updateMultilineText('headers', event.target.value)}
                 className="w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
                 rows={3}
@@ -391,6 +396,7 @@ export default function McpServerFormModal({
               </label>
               <textarea
                 value={multilineText.envVars}
+                dir={getTextDirection(multilineText.envVars)}
                 onChange={(event) => updateMultilineText('envVars', event.target.value)}
                 className="w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
                 rows={3}

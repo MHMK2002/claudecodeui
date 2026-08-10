@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertCircle,
   ArrowRight,
@@ -9,13 +10,17 @@ import {
   Clock,
   Copy,
   Edit,
+  Loader2,
   Pause,
+  Play,
   Save,
   X,
 } from 'lucide-react';
+
 import { cn } from '../../../lib/utils';
 import { copyTextToClipboard } from '../../../utils/clipboard';
 import { api } from '../../../utils/api';
+import { getTextDirection } from '../../../utils/textDirection';
 import { useTaskMaster } from '../context/TaskMasterContext';
 import type { TaskId, TaskMasterTask, TaskReference } from '../types';
 
@@ -27,6 +32,9 @@ type TaskDetailModalProps = {
   onEdit?: ((task: TaskMasterTask) => void) | null;
   onStatusChange?: ((taskId: TaskId, status: string) => void) | null;
   onTaskClick?: ((task: TaskReference) => void) | null;
+  onStartImplementation?: ((task: TaskMasterTask) => void) | null;
+  onOpenImplementation?: ((sessionId: string) => void) | null;
+  isStartingImplementation?: boolean;
 };
 
 const STATUS_OPTIONS = [
@@ -62,6 +70,9 @@ export default function TaskDetailModal({
   onEdit = null,
   onStatusChange = null,
   onTaskClick = null,
+  onStartImplementation = null,
+  onOpenImplementation = null,
+  isStartingImplementation = false,
 }: TaskDetailModalProps) {
   const { currentProject, refreshTasks } = useTaskMaster();
 
@@ -77,13 +88,16 @@ export default function TaskDetailModal({
   }, [task]);
 
   const StatusIcon = useMemo(() => getStatusIcon(task?.status), [task?.status]);
+  const implementationSessionId = typeof task?.implementationSessionId === 'string'
+    ? task.implementationSessionId
+    : null;
 
   if (!isOpen || !task || !editableTask) {
     return null;
   }
 
   const handleSaveChanges = async () => {
-    if (!currentProject?.name) {
+    if (!currentProject?.projectId) {
       return;
     }
 
@@ -108,7 +122,7 @@ export default function TaskDetailModal({
 
     setIsSaving(true);
     try {
-      const response = await api.taskmaster.updateTask(currentProject.name, task.id, updates);
+      const response = await api.taskmaster.updateTask(currentProject.projectId, task.id, updates);
       if (!response.ok) {
         const errorPayload = (await response.json()) as { message?: string };
         throw new Error(errorPayload.message ?? 'Failed to update task');
@@ -126,12 +140,12 @@ export default function TaskDetailModal({
   };
 
   const handleStatusSelect = async (nextStatus: string) => {
-    if (!currentProject?.name || nextStatus === task.status) {
+    if (!currentProject?.projectId || nextStatus === task.status) {
       return;
     }
 
     try {
-      const response = await api.taskmaster.updateTask(currentProject.name, task.id, { status: nextStatus });
+      const response = await api.taskmaster.updateTask(currentProject.projectId, task.id, { status: nextStatus });
       if (!response.ok) {
         const errorPayload = (await response.json()) as { message?: string };
         throw new Error(errorPayload.message ?? 'Failed to update task status');
@@ -145,7 +159,7 @@ export default function TaskDetailModal({
     }
   };
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 md:p-4">
       <div
         className={cn(
@@ -180,6 +194,28 @@ export default function TaskDetailModal({
           </div>
 
           <div className="flex items-center gap-2">
+            {!isEditMode && implementationSessionId && onOpenImplementation && (
+              <button
+                type="button"
+                onClick={() => onOpenImplementation(implementationSessionId)}
+                className="inline-flex items-center gap-1.5 rounded-md border border-blue-300 px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50 dark:border-blue-700 dark:text-blue-300 dark:hover:bg-blue-950/40"
+              >
+                <ArrowRight className="h-4 w-4" />
+                Open implementation
+              </button>
+            )}
+            {!isEditMode && task.status === 'pending' && onStartImplementation && (
+              <button
+                type="button"
+                onClick={() => onStartImplementation(task)}
+                disabled={isStartingImplementation}
+                className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                title="Start this approved task in a fresh session"
+              >
+                {isStartingImplementation ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                {isStartingImplementation ? 'Starting…' : 'Start implementation'}
+              </button>
+            )}
             {isEditMode ? (
               <>
                 <button
@@ -270,6 +306,7 @@ export default function TaskDetailModal({
               <textarea
                 rows={4}
                 value={editableTask.description ?? ''}
+                dir={getTextDirection(editableTask.description ?? '')}
                 onChange={(event) => setEditableTask({ ...editableTask, description: event.target.value })}
                 className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-800"
               />
@@ -313,6 +350,7 @@ export default function TaskDetailModal({
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

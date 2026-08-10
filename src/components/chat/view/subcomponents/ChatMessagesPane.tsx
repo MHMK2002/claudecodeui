@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { memo, useCallback, useMemo } from 'react';
-import type { Dispatch, RefObject, SetStateAction } from 'react';
+import type { RefObject } from 'react';
 
 import type { ChatMessage } from '../../types/types';
 import type {
@@ -13,6 +13,7 @@ import type {
 } from '../../../../types/app';
 import { getIntrinsicMessageKey } from '../../utils/messageKeys';
 import { groupConsecutiveTools, isToolGroupItem } from '../../utils/toolGrouping';
+import type { TaskMasterTask } from '../../../task-master/types';
 
 import MessageComponent from './MessageComponent';
 import MessageEditComposer from './MessageEditComposer';
@@ -56,7 +57,8 @@ interface ChatMessagesPaneProps {
   tasksEnabled: boolean;
   isTaskMasterInstalled: boolean | null;
   onShowAllTasks?: (() => void) | null;
-  setInput: Dispatch<SetStateAction<string>>;
+  onStartTask?: ((task: TaskMasterTask) => void) | null;
+  isStartingTask?: boolean;
   isLoadingMoreMessages: boolean;
   hasMoreMessages: boolean;
   totalMessages: number;
@@ -77,12 +79,15 @@ interface ChatMessagesPaneProps {
    * Per-message rewind handler. Forwarded to `MessageComponent`; only user
    * turns with a server-persisted uuid render the affordance.
    */
-  onRequestRewind?: (messageId: string) => void;
+  onRequestRewind?: (
+    messageId: string,
+    content: string,
+    images: import('../../types/types').ChatImage[],
+  ) => void;
   /**
-   * Per-message edit handler for the LAST user turn. Truncates the
-   * transcript at the line before the targeted user message and resubmits
-   * via `chat.send`. The pencil affordance only renders on the most recent
-   * user turn.
+   * Per-message edit handler for the LAST user turn. Rewinds through a
+   * provider-native branch and resubmits via `chat.send`. The pencil
+   * affordance only renders on the most recent user turn.
    */
   onRequestEdit?: (messageId: string, content: string, images: import('../../types/types').ChatImage[]) => void;
   /**
@@ -134,7 +139,8 @@ function ChatMessagesPane({
   tasksEnabled,
   isTaskMasterInstalled,
   onShowAllTasks,
-  setInput,
+  onStartTask,
+  isStartingTask = false,
   isLoadingMoreMessages,
   hasMoreMessages,
   totalMessages,
@@ -249,7 +255,8 @@ function ChatMessagesPane({
           tasksEnabled={tasksEnabled}
           isTaskMasterInstalled={isTaskMasterInstalled}
           onShowAllTasks={onShowAllTasks}
-          setInput={setInput}
+          onStartTask={onStartTask}
+          isStartingTask={isStartingTask}
         />
       ) : (
         <>
@@ -375,8 +382,8 @@ function ChatMessagesPane({
                   onFileOpen={onFileOpen}
                   onShowSettings={onShowSettings}
                   onGrantToolPermission={onGrantToolPermission}
-                  onRequestRewind={onRequestRewind}
-                  onRequestEdit={onRequestEdit}
+                  onRequestRewind={isProcessing ? undefined : onRequestRewind}
+                  onRequestEdit={isProcessing ? undefined : onRequestEdit}
                   showRawParameters={showRawParameters}
                   showThinking={showThinking}
                   selectedProject={selectedProject}

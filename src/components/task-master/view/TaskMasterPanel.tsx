@@ -1,22 +1,32 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+
 import PRDEditor from '../../prd-editor';
 import { useTaskMaster } from '../context/TaskMasterContext';
 import { useProjectPrdFiles } from '../hooks/useProjectPrdFiles';
 import type { PrdFile, TaskMasterTask, TaskSelection } from '../types';
+import { startTaskImplementation, type TaskWorkflowCallbacks } from '../workflow';
+
 import TaskBoard from './TaskBoard';
 import TaskDetailModal from './TaskDetailModal';
 
-type TaskMasterPanelProps = {
+type TaskMasterPanelProps = TaskWorkflowCallbacks & {
   isVisible: boolean;
 };
 
 const PRD_SAVE_MESSAGE = 'PRD saved successfully!';
 
-export default function TaskMasterPanel({ isVisible }: TaskMasterPanelProps) {
+export default function TaskMasterPanel({
+  isVisible,
+  sendMessage,
+  onSessionEstablished,
+  onNavigateToSession,
+  onSessionProcessing,
+}: TaskMasterPanelProps) {
   const { tasks, currentProject, refreshTasks } = useTaskMaster();
 
   const [selectedTask, setSelectedTask] = useState<TaskMasterTask | null>(null);
   const [isTaskDetailOpen, setIsTaskDetailOpen] = useState(false);
+  const [launchingTaskId, setLaunchingTaskId] = useState<string | null>(null);
 
   const [isPrdEditorOpen, setIsPrdEditorOpen] = useState(false);
   const [selectedPrd, setSelectedPrd] = useState<PrdFile | null>(null);
@@ -76,6 +86,36 @@ export default function TaskMasterPanel({ isVisible }: TaskMasterPanelProps) {
     [tasks],
   );
 
+  const handleStartImplementation = useCallback(async (task: TaskMasterTask) => {
+    if (!currentProject || launchingTaskId) return;
+    setLaunchingTaskId(String(task.id));
+    try {
+      await startTaskImplementation({
+        project: currentProject,
+        task,
+        sendMessage,
+        onSessionEstablished,
+        onNavigateToSession,
+        onSessionProcessing,
+      });
+      setIsTaskDetailOpen(false);
+      setSelectedTask(null);
+      await refreshTasks();
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Failed to start implementation.');
+    } finally {
+      setLaunchingTaskId(null);
+    }
+  }, [
+    currentProject,
+    launchingTaskId,
+    onNavigateToSession,
+    onSessionEstablished,
+    onSessionProcessing,
+    refreshTasks,
+    sendMessage,
+  ]);
+
   return (
     <>
       <div className={`h-full ${isVisible ? 'block' : 'hidden'}`}>
@@ -87,6 +127,10 @@ export default function TaskMasterPanel({ isVisible }: TaskMasterPanelProps) {
             className="flex-1 overflow-y-auto p-4"
             currentProject={currentProject}
             onTaskCreated={refreshTasks}
+            sendMessage={sendMessage}
+            onSessionEstablished={onSessionEstablished}
+            onNavigateToSession={onNavigateToSession}
+            onSessionProcessing={onSessionProcessing}
             onShowPRDEditor={(prd) => {
               setSelectedPrd(prd ?? null);
               setIsPrdEditorOpen(true);
@@ -110,6 +154,15 @@ export default function TaskMasterPanel({ isVisible }: TaskMasterPanelProps) {
           void refreshTasks();
         }}
         onTaskClick={handleTaskClick}
+        onStartImplementation={(task) => {
+          void handleStartImplementation(task);
+        }}
+        onOpenImplementation={(sessionId) => {
+          setIsTaskDetailOpen(false);
+          setSelectedTask(null);
+          onNavigateToSession?.(sessionId);
+        }}
+        isStartingImplementation={Boolean(selectedTask && launchingTaskId === String(selectedTask.id))}
       />
 
       {isPrdEditorOpen && (

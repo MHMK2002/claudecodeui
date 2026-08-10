@@ -1,14 +1,19 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 
-import { DEFAULT_CLEANUP_GUIDANCE } from '../../shared/voice-cleanup-contract';
+import {
+  DEFAULT_CODEX_CLEANUP_MODEL,
+  DEFAULT_CLEANUP_GUIDANCE,
+  normalizeCleanupInstructions,
+  normalizeCleanupModel,
+} from '../../shared/voice-cleanup-contract';
 
 /**
- * Default user guidance for the transcript cleanup step. The fixed system
- * safety policy lives in shared/voice-cleanup-contract.ts; this value only
- * narrows the desired cleanup behavior and can be edited in settings.
+ * Compact cleanup guidance sent with the transcript as the only Responses API
+ * input. It can be edited in Voice Settings.
  */
 export const DEFAULT_CLEANUP_PROMPT =
   DEFAULT_CLEANUP_GUIDANCE;
+export { DEFAULT_CODEX_CLEANUP_MODEL };
 
 export type VoiceSttProvider = 'openai' | 'soniox';
 
@@ -28,6 +33,7 @@ export type VoiceConfig = {
   ttsFormat: string;
   sonioxApiKey: string;
   cleanupEnabled: boolean;
+  cleanupProviderProfileId: number | null;
   cleanupModel: string;
   cleanupPrompt: string;
   /**
@@ -53,7 +59,8 @@ const DEFAULTS: VoiceConfig = {
   ttsFormat: '',
   sonioxApiKey: '',
   cleanupEnabled: false,
-  cleanupModel: 'gpt-4o-mini',
+  cleanupProviderProfileId: null,
+  cleanupModel: DEFAULT_CODEX_CLEANUP_MODEL,
   cleanupPrompt: DEFAULT_CLEANUP_PROMPT,
   micDeviceId: '',
 };
@@ -68,6 +75,20 @@ export const VOICE_STT_TERM_MAX_CHARS = 128;
 
 function readString(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
+}
+
+function normalizeCleanupProviderProfileId(value: unknown): number | null {
+  const parsed = typeof value === 'number'
+    ? value
+    : typeof value === 'string' && /^\d+$/.test(value.trim())
+      ? Number(value)
+      : NaN;
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function readCleanupModel(value: unknown): string {
+  const normalized = normalizeCleanupModel(value, DEFAULT_CODEX_CLEANUP_MODEL);
+  return normalized === 'gpt-4o-mini' ? DEFAULT_CODEX_CLEANUP_MODEL : normalized;
 }
 
 export function normalizeSttPrompt(value: unknown): string {
@@ -146,8 +167,9 @@ export function readVoiceConfig(): VoiceConfig {
       sonioxApiKey: readString(src.sonioxApiKey, DEFAULTS.sonioxApiKey),
       cleanupEnabled:
         typeof src.cleanupEnabled === 'boolean' ? src.cleanupEnabled : DEFAULTS.cleanupEnabled,
-      cleanupModel: readString(src.cleanupModel, DEFAULTS.cleanupModel),
-      cleanupPrompt: readString(src.cleanupPrompt, DEFAULTS.cleanupPrompt),
+      cleanupProviderProfileId: normalizeCleanupProviderProfileId(src.cleanupProviderProfileId),
+      cleanupModel: readCleanupModel(src.cleanupModel),
+      cleanupPrompt: normalizeCleanupInstructions(src.cleanupPrompt, DEFAULTS.cleanupPrompt),
       micDeviceId: readString(src.micDeviceId, DEFAULTS.micDeviceId),
     };
   } catch {
@@ -168,7 +190,6 @@ export function voiceConfigHeaders(): Record<string, string> {
   if (c.ttsModel) h['x-voice-tts-model'] = c.ttsModel;
   if (c.ttsVoice) h['x-voice-tts-voice'] = c.ttsVoice;
   if (c.ttsFormat.trim()) h['x-voice-tts-format'] = c.ttsFormat.trim();
-  if (c.cleanupEnabled) h['x-voice-cleanup'] = '1';
   return h;
 }
 
@@ -177,7 +198,7 @@ export function useVoiceConfig() {
     typeof window === 'undefined' ? { ...DEFAULTS, sttLanguages: [], sttTerms: [] } : readVoiceConfig(),
   );
 
-  const update = (patch: Partial<VoiceConfig>) => {
+  const update = useCallback((patch: Partial<VoiceConfig>) => {
     setConfig((prev) => {
       const next = {
         ...prev,
@@ -187,6 +208,13 @@ export function useVoiceConfig() {
           ? { sttLanguages: normalizeSttLanguages(patch.sttLanguages) }
           : {}),
         ...(patch.sttTerms !== undefined ? { sttTerms: normalizeSttTerms(patch.sttTerms) } : {}),
+        ...(patch.cleanupProviderProfileId !== undefined
+          ? { cleanupProviderProfileId: normalizeCleanupProviderProfileId(patch.cleanupProviderProfileId) }
+          : {}),
+        ...(patch.cleanupModel !== undefined ? { cleanupModel: readCleanupModel(patch.cleanupModel) } : {}),
+        ...(patch.cleanupPrompt !== undefined
+          ? { cleanupPrompt: normalizeCleanupInstructions(patch.cleanupPrompt, DEFAULT_CLEANUP_PROMPT) }
+          : {}),
       };
       try {
         const stored: Partial<VoiceConfig> = { ...next };
@@ -199,7 +227,7 @@ export function useVoiceConfig() {
       }
       return next;
     });
-  };
+  }, []);
 
   return { config, update };
 }

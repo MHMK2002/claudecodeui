@@ -13,14 +13,18 @@ import { Readable } from 'node:stream';
 import express from 'express';
 
 import {
-  buildCleanupMessages,
   CLEANUP_TEXT_MAX_CHARS,
+  DEFAULT_CODEX_CLEANUP_MODEL,
   DEFAULT_CLEANUP_GUIDANCE,
   normalizeCleanupInstructions,
   normalizeCleanupModel,
-  parseCleanupDecision,
 } from '../shared/voice-cleanup-contract.js';
 import { isUnsupportedSttContextError } from '../shared/voice-stt-context.js';
+
+import {
+  CodexVoiceCleanupError,
+  codexVoiceCleanupService,
+} from './modules/providers/list/codex/codex-voice-cleanup.service.js';
 
 const ENV = {
   baseUrl: (process.env.VOICE_API_BASE_URL || '').replace(/\/$/, ''),
@@ -28,8 +32,6 @@ const ENV = {
   sttModel: process.env.VOICE_STT_MODEL || 'whisper-1',
   ttsModel: process.env.VOICE_TTS_MODEL || 'tts-1',
   ttsVoice: process.env.VOICE_TTS_VOICE || 'alloy',
-  cleanupModel: process.env.VOICE_CLEANUP_MODEL || 'gpt-4o-mini',
-  cleanupPrompt: process.env.VOICE_CLEANUP_PROMPT || DEFAULT_CLEANUP_GUIDANCE,
 };
 
 const STT_PROMPT_MAX_CHARS = 4000;
@@ -95,7 +97,7 @@ export { isUnsupportedSttContextError };
  * (server/modules/websocket/services/voice-stream-proxy.service.ts), which resolves
  * its own key independently.
  * @param {import('express').Request} req
- * @returns {{baseUrl: string, apiKey: string, sttModel: string, ttsModel: string, ttsVoice: string, ttsFormat: string, cleanup: boolean, cleanupModel: string, cleanupPrompt: string}}
+ * @returns {{baseUrl: string, apiKey: string, sttModel: string, ttsModel: string, ttsVoice: string, ttsFormat: string}}
  */
 function resolveConfig(req) {
   const h = req.headers;
@@ -108,9 +110,6 @@ function resolveConfig(req) {
     ttsModel: String(h['x-voice-tts-model'] || '') || ENV.ttsModel,
     ttsVoice: String(h['x-voice-tts-voice'] || '') || ENV.ttsVoice,
     ttsFormat: String(h['x-voice-tts-format'] || '').trim(),
-    cleanup: String(h['x-voice-cleanup'] || '') === '1',
-    cleanupModel: String(h['x-voice-cleanup-model'] || '') || ENV.cleanupModel,
-    cleanupPrompt: String(h['x-voice-cleanup-prompt'] || '') || ENV.cleanupPrompt,
   };
 }
 
@@ -123,13 +122,6 @@ const _parsedTimeout = Number(process.env.VOICE_TIMEOUT_MS);
 const VOICE_TIMEOUT_MS = Number.isFinite(_parsedTimeout) && _parsedTimeout > 0
   ? _parsedTimeout
   : DEFAULT_VOICE_TIMEOUT_MS;
-const DEFAULT_CLEANUP_TIMEOUT_MS = 10000;
-const _parsedCleanupTimeout = Number(process.env.VOICE_CLEANUP_TIMEOUT_MS);
-const VOICE_CLEANUP_TIMEOUT_MS =
-  Number.isFinite(_parsedCleanupTimeout) && _parsedCleanupTimeout > 0
-    ? _parsedCleanupTimeout
-    : DEFAULT_CLEANUP_TIMEOUT_MS;
-
 /**
  * fetch() with an AbortController timeout so a stalled backend can't hold the
  * request open indefinitely. Aborts after VOICE_TIMEOUT_MS.
@@ -341,41 +333,77 @@ router.post('/tts', async (req, res) => {
 });
 
 /**
- * POST /api/voice/cleanup { text, mode, model?, instructions? } -> CleanupDecision.
- * The fixed system prompt owns the schema and safety boundary; user guidance is
- * subordinate data. Legacy cleanup headers remain a one-release fallback, with
- * body fields authoritative when both are present.
+ * POST /api/voice/cleanup { text, mode, providerProfileId?, model?, instructions? }
+ * -> CleanupDecision. Credentials and provider URLs are resolved server-side;
+ * the browser can only select an owned Codex profile and supported model.
  */
 router.post('/cleanup', async (req, res) => {
-  const cfg = resolveConfig(req);
-  if (!cfg.baseUrl) return res.status(503).json({ error: 'No voice backend configured' });
-  if (!isAllowedBackendUrl(cfg.baseUrl)) return res.status(400).json({ error: 'Invalid voice backend URL.' });
   const text = req.body?.text;
   if (typeof text !== 'string' || !text.trim() || text.length > CLEANUP_TEXT_MAX_CHARS) {
     return res.status(400).json({ error: 'valid text required' });
   }
   const mode = req.body?.mode ?? 'clean_transcript';
   if (mode !== 'clean_transcript') return res.status(400).json({ error: 'invalid cleanup mode' });
-  const model = normalizeCleanupModel(req.body?.model, cfg.cleanupModel);
-  const instructions = normalizeCleanupInstructions(req.body?.instructions, cfg.cleanupPrompt);
+
+  const rawUserId = req.user?.id ?? req.user?.userId;
+  const userId = typeof rawUserId === 'number'
+    ? rawUserId
+    : typeof rawUserId === 'string' && /^\d+$/.test(rawUserId.trim())
+      ? Number(rawUserId.trim())
+      : NaN;
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return res.status(401).json({ error: 'Authenticated user required' });
+  }
+
+  const rawProfileId = req.body?.providerProfileId;
+  const providerProfileId = rawProfileId === undefined || rawProfileId === null
+    ? null
+    : typeof rawProfileId === 'number'
+      ? rawProfileId
+      : typeof rawProfileId === 'string' && /^\d+$/.test(rawProfileId.trim())
+        ? Number(rawProfileId.trim())
+        : NaN;
+  if (providerProfileId !== null && (!Number.isInteger(providerProfileId) || providerProfileId <= 0)) {
+    return res.status(400).json({ error: 'invalid Codex provider profile' });
+  }
+
+  const model = normalizeCleanupModel(req.body?.model, DEFAULT_CODEX_CLEANUP_MODEL);
+  const instructions = normalizeCleanupInstructions(req.body?.instructions, DEFAULT_CLEANUP_GUIDANCE);
+  const controller = new AbortController();
+  const abortOnRequest = () => controller.abort();
+  const abortOnResponseClose = () => {
+    if (!res.writableEnded) controller.abort();
+  };
+  req.once('aborted', abortOnRequest);
+  res.once('close', abortOnResponseClose);
+
   try {
-    const { response: r, body } = await fetchTextWithTimeout(`${cfg.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeader(cfg.apiKey) },
-      body: JSON.stringify({
-        model,
-        messages: buildCleanupMessages(text, instructions),
-        temperature: 0,
-      }),
-    }, VOICE_CLEANUP_TIMEOUT_MS);
-    if (!r.ok) return upstreamError(res, r.status, body);
-    let data;
-    try { data = JSON.parse(body); } catch { data = {}; }
-    const decision = parseCleanupDecision(data?.choices?.[0]?.message?.content);
-    res.setHeader('X-Voice-Cleanup-Outcome', decision ? 'model_decision' : 'invalid_schema');
-    res.json(decision || { action: 'keep' });
-  } catch (e) {
-    backendError(res, e, VOICE_CLEANUP_TIMEOUT_MS);
+    const result = await codexVoiceCleanupService.cleanup({
+      userId,
+      providerProfileId,
+      model,
+      transcript: text,
+      instructions,
+      signal: controller.signal,
+    });
+    res.setHeader('X-Voice-Cleanup-Outcome', 'model_decision');
+    res.setHeader('X-Voice-Cleanup-Model', result.model);
+    if (result.inputTokens !== null) {
+      res.setHeader('X-Voice-Cleanup-Input-Tokens', String(result.inputTokens));
+    }
+    return res.json(result.decision);
+  } catch (error) {
+    if (res.destroyed || res.headersSent) return undefined;
+    if (error instanceof CodexVoiceCleanupError) {
+      return res.status(error.statusCode).json({
+        error: 'Codex transcript cleanup failed.',
+        code: error.code,
+      });
+    }
+    return res.status(502).json({ error: 'Codex transcript cleanup failed.' });
+  } finally {
+    req.removeListener('aborted', abortOnRequest);
+    res.removeListener('close', abortOnResponseClose);
   }
 });
 

@@ -1,6 +1,8 @@
 import { Check, ChevronDown, GitCommit, RefreshCw, Sparkles } from 'lucide-react';
 import { useState } from 'react';
+
 import type { ConfirmationRequest } from '../../types/types';
+import { getTextDirection } from '../../../../utils/textDirection';
 
 // Persists commit messages across unmount/remount, keyed by project path
 const commitMessageCache = new Map<string, string>();
@@ -122,6 +124,7 @@ export default function CommitComposer({
           <div className="relative">
             <textarea
               value={commitMessage}
+              dir={getTextDirection(commitMessage)}
               onChange={(event) => setCommitMessage(event.target.value)}
               placeholder="Message (Ctrl+Enter to commit)"
               className="w-full resize-none rounded-xl border border-border bg-background px-3 py-2 pr-20 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary/30 focus:outline-none focus:ring-2 focus:ring-primary/20"

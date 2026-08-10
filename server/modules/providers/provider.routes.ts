@@ -7,6 +7,11 @@ import { providerMcpService } from '@/modules/providers/services/mcp.service.js'
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
 import { providerSkillsService } from '@/modules/providers/services/skills.service.js';
 import { sessionConversationsSearchService } from '@/modules/providers/services/session-conversations-search.service.js';
+import { sessionExportService } from '@/modules/providers/services/session-export.service.js';
+import {
+  sessionRewindService,
+  type SessionRewindMode,
+} from '@/modules/providers/services/session-rewind.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import type {
   LLMProvider,
@@ -15,6 +20,7 @@ import type {
   ProviderChangeActiveModelInput,
   ProviderProfileAuthType,
   ProviderProfileProvider,
+  ProviderProfileRuntime,
   ProviderSkillCreateFile,
   ProviderSkillCreateInput,
   UpsertProviderMcpServerInput,
@@ -169,6 +175,48 @@ const parseOptionalProviderProfileId = (value: unknown): number | null => {
 const isProfileProvider = (provider: LLMProvider): provider is ProviderProfileProvider => (
   provider === 'claude' || provider === 'codex'
 );
+
+const resolveSessionProviderProfile = (
+  req: Request,
+  sessionId: string,
+): ProviderProfileRuntime | null => {
+  const session = sessionsService.getSessionContext(sessionId);
+  if (session.providerProfileId === null) {
+    return null;
+  }
+  if (!isProfileProvider(session.provider)) {
+    throw new AppError('This session has an unsupported provider profile.', {
+      code: 'PROVIDER_PROFILE_UNSUPPORTED',
+      statusCode: 400,
+    });
+  }
+
+  const profile = providerProfilesDb.getProviderProfileForRuntime(
+    readAuthenticatedUserId(req),
+    session.provider,
+    session.providerProfileId,
+  );
+  if (!profile) {
+    throw new AppError('Provider profile not found or inactive.', {
+      code: 'PROVIDER_PROFILE_NOT_FOUND',
+      statusCode: 404,
+    });
+  }
+  return profile;
+};
+
+const parseSessionRewindMode = (value: unknown): SessionRewindMode => {
+  if (value === undefined || value === null || value === '') {
+    return 'conversation';
+  }
+  if (value === 'conversation' || value === 'code' || value === 'both') {
+    return value;
+  }
+  throw new AppError('mode must be conversation, code, or both.', {
+    code: 'INVALID_REQUEST_BODY',
+    statusCode: 400,
+  });
+};
 
 const parseProfileProvider = (value: unknown): ProviderProfileProvider => {
   const provider = parseProvider(value);
@@ -875,6 +923,61 @@ router.post(
   }),
 );
 
+/**
+ * Forks one session: starts a fresh sibling chat in the same project. The
+ * caller may override the source session's provider and profile via the body
+ * (e.g. clone a Claude chat onto Codex). With an empty body, the new session
+ * inherits the source's provider + profile, preserving the historical default.
+ */
+router.post(
+  '/sessions/:sessionId/fork',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+
+    // Both fields are optional. We default to "use source's value" by passing
+    // undefined to the service, which falls back to the inherited path.
+    const hasProviderOverride = body.provider !== undefined && body.provider !== null && body.provider !== '';
+    const hasProfileOverride = body.providerProfileId !== undefined;
+
+    const provider = hasProviderOverride ? parseProvider(body.provider) : undefined;
+    const providerProfileId = hasProfileOverride
+      ? parseOptionalProviderProfileId(body.providerProfileId)
+      : undefined;
+    // carryContext defaults to true; an explicit false opts out of generating a
+    // handoff summary for the forked session.
+    const carryContext = body.carryContext !== false;
+    const userId = readAuthenticatedUserId(req);
+
+    if (providerProfileId !== undefined && providerProfileId !== null && (provider === undefined || !isProfileProvider(provider))) {
+      throw new AppError('providerProfileId is currently supported for Claude and Codex sessions only.', {
+        code: 'PROVIDER_PROFILE_UNSUPPORTED',
+        statusCode: 400,
+      });
+    }
+
+    if (providerProfileId !== undefined && providerProfileId !== null) {
+      const profileProvider = parseProfileProvider(provider);
+      const userId = readAuthenticatedUserId(req);
+      const profile = providerProfilesDb.getProviderProfileForRuntime(userId, profileProvider, providerProfileId);
+      if (!profile) {
+        throw new AppError('Provider profile not found or inactive.', {
+          code: 'PROVIDER_PROFILE_NOT_FOUND',
+          statusCode: 404,
+        });
+      }
+    }
+
+    const result = await sessionsService.forkSession(sessionId, {
+      provider,
+      providerProfileId,
+      carryContext,
+      userId,
+    });
+    res.status(201).json(createApiSuccessResponse(result));
+  }),
+);
+
 router.get(
   '/sessions/running',
   asyncHandler(async (_req: Request, res: Response) => {
@@ -888,6 +991,16 @@ router.get(
   asyncHandler(async (_req: Request, res: Response) => {
     const sessions = sessionsService.listArchivedSessions();
     res.json(createApiSuccessResponse({ sessions }));
+  }),
+);
+
+router.get(
+  '/sessions/:sessionId',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    res.json(createApiSuccessResponse({
+      session: sessionsService.getSessionContext(sessionId),
+    }));
   }),
 );
 
@@ -934,6 +1047,28 @@ router.put(
 );
 
 router.post(
+  '/sessions/:sessionId/rewind/preview',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const messageId = typeof body.messageId === 'string' ? body.messageId.trim() : '';
+    if (!messageId) {
+      throw new AppError('messageId is required.', {
+        code: 'INVALID_REQUEST_BODY',
+        statusCode: 400,
+      });
+    }
+
+    const result = await sessionRewindService.preview(
+      sessionId,
+      messageId,
+      resolveSessionProviderProfile(req, sessionId),
+    );
+    res.json(createApiSuccessResponse(result));
+  }),
+);
+
+router.post(
   '/sessions/:sessionId/rewind',
   asyncHandler(async (req: Request, res: Response) => {
     const sessionId = parseSessionId(req.params.sessionId);
@@ -946,11 +1081,11 @@ router.post(
       });
     }
 
-    const keepMessage = body.keepMessage === undefined
-      ? true
-      : body.keepMessage === true || body.keepMessage === 'true';
-
-    const result = await sessionsService.rewindSession(sessionId, { messageId, keepMessage });
+    const result = await sessionRewindService.rewind(sessionId, {
+      messageId,
+      mode: parseSessionRewindMode(body.mode),
+      providerProfile: resolveSessionProviderProfile(req, sessionId),
+    });
     res.json(createApiSuccessResponse(result));
   }),
 );
@@ -975,10 +1110,10 @@ router.patch(
       });
     }
     const images = Array.isArray(body.images) ? (body.images as unknown[]) : [];
-    const result = await sessionsService.editUserMessage(sessionId, {
+    const result = await sessionRewindService.rewind(sessionId, {
       messageId,
-      content,
-      images,
+      mode: 'conversation',
+      providerProfile: resolveSessionProviderProfile(req, sessionId),
     });
     res.json(createApiSuccessResponse(result));
   }),
@@ -1020,6 +1155,22 @@ router.get(
       offset,
     });
     res.json(createApiSuccessResponse(result));
+  }),
+);
+
+router.get(
+  '/sessions/:sessionId/export',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const rawFormat =
+      typeof req.query.format === 'string' ? req.query.format.trim().toLowerCase() : '';
+    const format: 'zip' | 'md' = rawFormat === 'md' ? 'md' : 'zip';
+
+    const result = await sessionExportService.exportSession(sessionId, format);
+    res.setHeader('Content-Type', result.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${sessionExportService.sanitizeFilename(result.filename)}"`);
+    res.setHeader('Content-Length', String(result.buffer.length));
+    res.send(result.buffer);
   }),
 );
 

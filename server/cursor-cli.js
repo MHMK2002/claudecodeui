@@ -5,6 +5,7 @@ import { notifyRunFailed, notifyRunStopped } from './services/notification-orche
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
+import { resolveCursorPermissionArgs } from './modules/taskmaster/taskmaster-provider-policy.js';
 import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell } from './shared/utils.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
@@ -30,7 +31,7 @@ function isWorkspaceTrustPrompt(text = '') {
 
 async function spawnCursor(command, options = {}, ws) {
   return new Promise(async (resolve, reject) => {
-    const { sessionId, projectPath, cwd, toolsSettings, skipPermissions, model, sessionSummary, images } = options;
+    const { sessionId, projectPath, cwd, toolsSettings, skipPermissions, model, sessionSummary, images, permissionMode } = options;
     const resolvedModel = await providerModelsService.resolveResumeModel('cursor', sessionId, model);
     let capturedSessionId = sessionId; // Track session ID throughout the process
     let sessionCreatedSent = false; // Track if we've already sent session-created event
@@ -48,7 +49,7 @@ async function spawnCursor(command, options = {}, ws) {
     };
 
     // Build Cursor CLI command
-    const baseArgs = [];
+    const baseArgs = resolveCursorPermissionArgs(permissionMode);
 
     // Build flags allowing both resume and prompt together (reply in existing session)
     // Treat presence of sessionId as intention to resume, regardless of resume flag
@@ -75,7 +76,7 @@ async function spawnCursor(command, options = {}, ws) {
     }
 
     // Add skip permissions flag if enabled
-    if (skipPermissions || settings.skipPermissions) {
+    if (permissionMode !== 'plan' && (skipPermissions || settings.skipPermissions)) {
       baseArgs.push('-f');
     }
 

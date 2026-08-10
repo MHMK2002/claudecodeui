@@ -101,6 +101,66 @@ test('session_created is swallowed and persisted as the provider-id mapping', as
   });
 });
 
+test('workflow acceptance hook runs once on the first real provider event, including swallowed session creation', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-workflow-1', 'claude', '/workspace/demo');
+    const connection = new FakeConnection();
+    const acceptedKinds: string[] = [];
+    const observedKinds: string[] = [];
+    const run = chatRunRegistry.startRun({
+      appSessionId: 'app-workflow-1',
+      provider: 'claude',
+      providerSessionId: null,
+      connection,
+      userId: 1,
+      onFirstProviderEvent: (message) => acceptedKinds.push(message.kind),
+      onProviderEvent: (message) => observedKinds.push(message.kind),
+    });
+    assert.ok(run);
+
+    run.writer.send({
+      kind: 'session_created',
+      provider: 'claude',
+      sessionId: 'native-workflow-1',
+      newSessionId: 'native-workflow-1',
+    });
+    run.writer.send({ kind: 'text', provider: 'claude', sessionId: 'native-workflow-1', content: 'ready' });
+
+    assert.deepEqual(acceptedKinds, ['session_created']);
+    assert.deepEqual(observedKinds, ['session_created', 'text']);
+    assert.equal(run.writer.hasSeenProviderEvent(), true);
+  });
+});
+
+test('synthetic gateway completion does not acknowledge provider delivery', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-workflow-2', 'codex', '/workspace/demo');
+    const connection = new FakeConnection();
+    let accepted = false;
+    let observed = false;
+    const run = chatRunRegistry.startRun({
+      appSessionId: 'app-workflow-2',
+      provider: 'codex',
+      providerSessionId: null,
+      connection,
+      userId: 1,
+      onFirstProviderEvent: () => {
+        accepted = true;
+      },
+      onProviderEvent: () => {
+        observed = true;
+      },
+    });
+    assert.ok(run);
+
+    run.writer.sendComplete({ exitCode: 1 });
+
+    assert.equal(accepted, false);
+    assert.equal(observed, false);
+    assert.equal(run.writer.hasSeenProviderEvent(), false);
+  });
+});
+
 test('complete marks the run finished and duplicate completes are dropped', async () => {
   await withIsolatedDatabase(() => {
     sessionsDb.createAppSession('app-run-3', 'codex', '/workspace/demo');

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  DEFAULT_CODEX_CLEANUP_MODEL,
   DEFAULT_CLEANUP_PROMPT,
   normalizeSttLanguages,
   normalizeSttPrompt,
@@ -51,10 +52,28 @@ test('migrates legacy stored voice config with safe defaults for new fields', ()
   const config = readVoiceConfig();
   assert.equal(config.baseUrl, 'https://voice.example/v1');
   assert.equal(config.cleanupEnabled, true);
+  assert.equal(config.cleanupProviderProfileId, null);
+  assert.equal(config.cleanupModel, DEFAULT_CODEX_CLEANUP_MODEL);
   assert.equal(config.cleanupPrompt, DEFAULT_CLEANUP_PROMPT);
   assert.deepEqual(config.sttLanguages, ['fa', 'en']);
   assert.deepEqual(config.sttTerms, ['useVoiceInput', '--force']);
   assert.equal(config.sttPrompt, '');
+});
+
+test('normalizes the selected Codex profile and migrates the legacy cleanup model', () => {
+  installStorage({
+    cleanupProviderProfileId: '23',
+    cleanupModel: 'gpt-4o-mini',
+  });
+
+  const config = readVoiceConfig();
+  assert.equal(config.cleanupProviderProfileId, 23);
+  assert.equal(config.cleanupModel, DEFAULT_CODEX_CLEANUP_MODEL);
+
+  installStorage({ cleanupProviderProfileId: '-1', cleanupModel: 'gpt-5.6' });
+  const invalidProfile = readVoiceConfig();
+  assert.equal(invalidProfile.cleanupProviderProfileId, null);
+  assert.equal(invalidProfile.cleanupModel, 'gpt-5.6');
 });
 
 test('falls back to defaults for malformed storage', () => {

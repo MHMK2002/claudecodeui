@@ -1,9 +1,12 @@
 import { useState } from 'react';
+
 import { cn } from '../../../lib/utils';
 import { api } from '../../../utils/api';
 import { useTaskMaster } from '../context/TaskMasterContext';
 import { useTaskBoardState } from '../hooks/useTaskBoardState';
 import type { PrdFile, TaskBoardView, TaskMasterProject, TaskMasterTask, TaskSelection } from '../types';
+import type { TaskWorkflowCallbacks } from '../workflow';
+
 import TaskBoardContent from './TaskBoardContent';
 import TaskBoardToolbar from './TaskBoardToolbar';
 import TaskEmptyState from './TaskEmptyState';
@@ -11,7 +14,7 @@ import CreateTaskModal from './modals/CreateTaskModal';
 import TaskHelpModal from './modals/TaskHelpModal';
 import TaskMasterSetupModal from './modals/TaskMasterSetupModal';
 
-type TaskBoardProps = {
+type TaskBoardProps = TaskWorkflowCallbacks & {
   tasks?: TaskMasterTask[];
   onTaskClick?: ((task: TaskSelection) => void) | null;
   className?: string;
@@ -35,6 +38,10 @@ export default function TaskBoard({
   onShowPRDEditor = null,
   existingPRDs = [],
   onRefreshPRDs = null,
+  sendMessage,
+  onSessionEstablished,
+  onNavigateToSession,
+  onSessionProcessing,
 }: TaskBoardProps) {
   const { projectTaskMaster, refreshProjects, refreshTasks, setCurrentProject } = useTaskMaster();
 
@@ -115,6 +122,7 @@ export default function TaskBoard({
           existingPrds={existingPRDs}
           onOpenSetupModal={() => setShowSetupModal(true)}
           onCreatePrd={() => onShowPRDEditor?.()}
+          onCreateTask={() => setShowCreateModal(true)}
           onOpenPrd={(prd) => {
             void loadPrdAndOpenEditor(prd);
           }}
@@ -125,6 +133,17 @@ export default function TaskBoard({
           project={currentProject}
           onClose={() => setShowSetupModal(false)}
           onAfterClose={refreshAfterSetup}
+        />
+
+        <CreateTaskModal
+          isOpen={showCreateModal}
+          project={currentProject}
+          sendMessage={sendMessage}
+          onSessionEstablished={onSessionEstablished}
+          onNavigateToSession={onNavigateToSession}
+          onSessionProcessing={onSessionProcessing}
+          onTaskCreated={onTaskCreated}
+          onClose={() => setShowCreateModal(false)}
         />
       </>
     );
@@ -177,9 +196,14 @@ export default function TaskBoard({
 
       <CreateTaskModal
         isOpen={showCreateModal}
+        project={currentProject}
+        sendMessage={sendMessage}
+        onSessionEstablished={onSessionEstablished}
+        onNavigateToSession={onNavigateToSession}
+        onSessionProcessing={onSessionProcessing}
+        onTaskCreated={onTaskCreated}
         onClose={() => {
           setShowCreateModal(false);
-          onTaskCreated?.();
         }}
       />
 

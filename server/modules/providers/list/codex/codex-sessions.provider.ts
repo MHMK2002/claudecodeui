@@ -308,7 +308,7 @@ export class CodexSessionsProvider implements IProviderSessions {
     const ts = raw.timestamp || new Date().toISOString();
     // Codex rollout rows carry no uuid. Use the timestamp (epoch ms) so the
     // id is stable across reloads AND round-trips back to a locatable row
-    // for rewind/edit (see sessions.service rewindSession).
+    // for provider-native rewind/edit boundary resolution.
     const baseId = raw.uuid || `codex_ts_${Date.parse(ts) || Date.now()}`;
 
     if (raw.type === 'thinking' || raw.isReasoning) {

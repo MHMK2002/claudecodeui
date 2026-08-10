@@ -96,6 +96,14 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
         continue;
       }
 
+      const branch = sessionsDb.getProviderBranch(this.provider, parsed.sessionId);
+      if (branch) {
+        sessionsDb.updateProviderBranchPath(this.provider, parsed.sessionId, filePath);
+        if (branch.state !== 'current') {
+          continue;
+        }
+      }
+
       const timestamps = await readFileTimestamps(filePath);
       sessionsDb.createSession(
         parsed.sessionId,
@@ -135,6 +143,14 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       return null;
     }
 
+    const branch = sessionsDb.getProviderBranch(this.provider, parsed.sessionId);
+    if (branch) {
+      sessionsDb.updateProviderBranchPath(this.provider, parsed.sessionId, filePath);
+      if (branch.state !== 'current') {
+        return null;
+      }
+    }
+
     const timestamps = await readFileTimestamps(filePath);
     return sessionsDb.createSession(
       parsed.sessionId,
@@ -161,8 +177,17 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
 
     // The rows inside an agent transcript carry the *parent's* provider session
     // id, which still has to be mapped onto the app-facing row id.
-    const parentSession = sessionsDb.getSessionByProviderSessionId(parsed.parentProviderSessionId)
-      ?? sessionsDb.getSessionById(parsed.parentProviderSessionId);
+    const parentBranch = sessionsDb.getProviderBranch(
+      this.provider,
+      parsed.parentProviderSessionId,
+    );
+    if (parentBranch && parentBranch.state !== 'current') {
+      return null;
+    }
+    const parentSession = parentBranch
+      ? sessionsDb.getSessionById(parentBranch.app_session_id)
+      : sessionsDb.getSessionByProviderSessionId(parsed.parentProviderSessionId)
+        ?? sessionsDb.getSessionById(parsed.parentProviderSessionId);
     if (!parentSession) {
       return null;
     }

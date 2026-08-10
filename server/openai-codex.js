@@ -13,6 +13,8 @@
  * - getActiveCodexSessions() - List all active sessions
  */
 
+import { spawn } from 'node:child_process';
+
 import { Codex } from '@openai/codex-sdk';
 
 import { buildCodexInputItems, normalizeImageDescriptors } from './shared/image-attachments.js';
@@ -20,6 +22,7 @@ import { notifyRunFailed, notifyRunStopped } from './services/notification-orche
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
+import { applyCodexTaskMasterPolicy, getCodexPlanOptions } from './modules/taskmaster/taskmaster-provider-policy.js';
 import { CODEX_MODEL_PROVIDER_ID } from './modules/providers/list/codex/codex-runtime.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
 
@@ -239,8 +242,10 @@ function transformCodexEvent(event) {
  * @param {string} permissionMode - 'default', 'acceptEdits', or 'bypassPermissions'
  * @returns {object} - { sandboxMode, approvalPolicy }
  */
-function mapPermissionModeToCodexOptions(permissionMode) {
+export function mapPermissionModeToCodexOptions(permissionMode) {
   switch (permissionMode) {
+    case 'plan':
+      return getCodexPlanOptions();
     case 'acceptEdits':
       return {
         sandboxMode: 'workspace-write',
@@ -275,6 +280,7 @@ export async function queryCodex(command, options = {}, ws) {
     model,
     effort,
     images,
+    taskMasterReadOnly = false,
     permissionMode = 'default'
   } = options;
 
@@ -304,7 +310,7 @@ export async function queryCodex(command, options = {}, ws) {
     const codexProviderOptions = buildCodexProviderProfileSdkOptions(options.codexProviderProfile);
     codex = new Codex({
       env: codexProviderOptions.env,
-      config: codexProviderOptions.config,
+      config: applyCodexTaskMasterPolicy(codexProviderOptions.config, taskMasterReadOnly),
     });
 
     const threadOptions = {
@@ -477,6 +483,110 @@ export async function queryCodex(command, options = {}, ws) {
 }
 
 /**
+ * Forks a persisted Codex thread through an inclusive completed turn using
+ * the app-server protocol that Codex's own Esc-Esc flow uses. The SDK wrapper
+ * currently exposes start/resume only, so this small client is deliberately
+ * scoped to one request and terminates immediately afterwards.
+ */
+export function forkCodexThreadAt({
+  sessionId,
+  lastTurnId,
+  codexProviderProfile,
+}) {
+  return new Promise((resolve, reject) => {
+    const profileOptions = buildCodexProviderProfileSdkOptions(codexProviderProfile);
+    const child = spawn('codex', ['app-server', '--stdio'], {
+      env: profileOptions.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdoutBuffer = '';
+    let stderr = '';
+    let settled = false;
+
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (!child.killed) child.kill('SIGTERM');
+      if (error) reject(error);
+      else resolve(value);
+    };
+
+    const send = (message) => {
+      if (!child.stdin) {
+        finish(new Error('Codex app-server has no stdin.'));
+        return;
+      }
+      child.stdin.write(`${JSON.stringify(message)}\n`);
+    };
+
+    const timer = setTimeout(() => {
+      finish(new Error('Codex thread fork timed out.'));
+    }, 15000);
+
+    child.stdout?.on('data', (chunk) => {
+      stdoutBuffer += chunk.toString();
+      const lines = stdoutBuffer.split(/\r?\n/);
+      stdoutBuffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let message;
+        try {
+          message = JSON.parse(line);
+        } catch {
+          finish(new Error('Codex app-server returned malformed JSON.'));
+          return;
+        }
+        if (message?.error) {
+          finish(new Error(message.error.message || 'Codex thread fork failed.'));
+          return;
+        }
+        if (message?.id === 1) {
+          send({ method: 'initialized', params: {} });
+          send({
+            id: 2,
+            method: 'thread/fork',
+            params: {
+              threadId: sessionId,
+              lastTurnId,
+              config: profileOptions.config,
+            },
+          });
+          continue;
+        }
+        if (message?.id !== 2) continue;
+        const thread = message?.result?.thread;
+        const forkedSessionId = typeof thread?.id === 'string' ? thread.id : null;
+        const jsonlPath = typeof thread?.path === 'string' ? thread.path : null;
+        if (!forkedSessionId || !jsonlPath) {
+          finish(new Error('Codex thread fork did not return an id and transcript path.'));
+          return;
+        }
+        finish(null, { sessionId: forkedSessionId, jsonlPath });
+      }
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', (error) => finish(error));
+    child.on('close', (code) => {
+      if (!settled) {
+        finish(new Error(stderr.trim() || `Codex app-server exited with code ${code}.`));
+      }
+    });
+
+    send({
+      id: 1,
+      method: 'initialize',
+      params: {
+        clientInfo: { name: 'cloudcli', version: '1.0.0' },
+        capabilities: { experimentalApi: true },
+      },
+    });
+  });
+}
+
+/**
  * Abort an active Codex session
  * @param {string} sessionId - Session ID to abort
  * @returns {boolean} - Whether abort was successful
@@ -548,7 +658,7 @@ function sendMessage(ws, data) {
 }
 
 // Clean up old completed sessions periodically
-setInterval(() => {
+const codexSessionCleanupTimer = setInterval(() => {
   const now = Date.now();
   const maxAge = 30 * 60 * 1000; // 30 minutes
 
@@ -561,3 +671,4 @@ setInterval(() => {
     }
   }
 }, 5 * 60 * 1000); // Every 5 minutes
+codexSessionCleanupTimer.unref?.();
