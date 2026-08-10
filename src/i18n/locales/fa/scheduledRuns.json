@@ -1,0 +1,88 @@
+{
+  "scheduledRuns": {
+    "panel": {
+      "title": "اجراهای زمان‌بندی‌شده",
+      "subtitle": "کارهای دوره‌ای هوش مصنوعی که در زمان‌بندی کرون اجرا می‌شوند.",
+      "newSchedule": "جدید",
+      "tabs": {
+        "scheduledRuns": "اجراهای زمان‌بندی‌شده",
+        "rightSidebar": "سایدبار راست",
+        "quickSettings": "تنظیمات سریع"
+      },
+      "empty": {
+        "title": "هنوز برنامه‌ای ندارید",
+        "body": "یک عامل هوش مصنوعی را برای اجرای دوره‌ای زمان‌بندی کنید و در پایان نتیجه را به شما اطلاع دهیم.",
+        "cta": "اولین برنامه را بسازید"
+      },
+      "card": {
+        "running": "در حال اجرا",
+        "enabled": "فعال",
+        "disabled": "غیرفعال",
+        "menu": {
+          "runNow": "اجرای فوری",
+          "edit": "ویرایش",
+          "enable": "فعال‌سازی",
+          "disable": "غیرفعال‌سازی",
+          "delete": "حذف"
+        },
+        "delete": {
+          "confirm": "این برنامه حذف شود؟ این عملیات قابل بازگشت نیست.",
+          "cancel": "انصراف",
+          "delete": "حذف"
+        },
+        "runNowAlreadyRunning": "یک اجرا از قبل در جریان است.",
+        "nextRun": "بعدی",
+        "lastRun": "آخرین",
+        "lastRunNever": "هرگز",
+        "prompt": "پرامپت",
+        "history": "اجراهای اخیر",
+        "historyEmpty": "بدون تاریخچه",
+        "historyDurationUnit": "ث"
+      }
+    },
+    "modal": {
+      "edit": "ویرایش برنامه‌ی اجرا",
+      "new": "برنامه‌ی اجرای جدید",
+      "fields": {
+        "title": "عنوان",
+        "titlePlaceholder": "دسته‌بندی Sentry صبحگاهی",
+        "cron": "عبارت کرون",
+        "cronHint": "پنج فیلد: دقیقه ساعت روز ماه روز-هفته",
+        "cronPlaceholder": "0 8 * * *",
+        "timezone": "منطقه‌ی زمانی",
+        "projectPath": "مسیر پروژه",
+        "projectPathPlaceholder": "/Users/you/projects/acme-api",
+        "provider": "ارائه‌دهنده",
+        "model": "مدل",
+        "prompt": "پرامپت",
+        "promptHint": "برای ذخیره Cmd+Enter (یا Ctrl+Enter) بزنید.",
+        "promptPlaceholder": "خطاهای حل‌نشده‌ی Sentry در ۲۴ ساعت گذشته را بررسی کن…",
+        "notifySuccess": "اعلان در موفقیت",
+        "notifyFailure": "اعلان در خطا"
+      },
+      "templates": {
+        "custom": "سفارشی",
+        "dailyDigest": "گزارش روزانه",
+        "weeklyCodeReview": "بازبینی هفتگی کد",
+        "nightlyTestRun": "اجرای شبانه‌ی تست‌ها"
+      },
+      "errors": {
+        "titleRequired": "عنوان الزامی است",
+        "projectRequired": "مسیر پروژه الزامی است",
+        "modelRequired": "مدل الزامی است",
+        "promptRequired": "پرامپت الزامی است"
+      },
+      "actions": {
+        "cancel": "انصراف",
+        "save": "در حال ذخیره…",
+        "saveCreate": "ساختن برنامه",
+        "saveEdit": "ذخیره‌ی تغییرات"
+      }
+    },
+    "sidebar": {
+      "openLabel": "باز کردن سایدبار راست",
+      "collapseLabel": "جمع کردن سایدبار راست",
+      "closeLabel": "بستن سایدبار راست"
+    }
+  }
+}

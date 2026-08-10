@@ -1,0 +1,88 @@
+{
+  "scheduledRuns": {
+    "panel": {
+      "title": "Scheduled Agent Runs",
+      "subtitle": "Recurring AI jobs that run on a cron schedule.",
+      "newSchedule": "New",
+      "tabs": {
+        "scheduledRuns": "Scheduled Runs",
+        "rightSidebar": "Right Sidebar",
+        "quickSettings": "Quick Settings"
+      },
+      "empty": {
+        "title": "No schedules yet",
+        "body": "Schedule an agent to run on a recurring cron and notify you when it's done.",
+        "cta": "Create your first schedule"
+      },
+      "card": {
+        "running": "running",
+        "enabled": "enabled",
+        "disabled": "disabled",
+        "menu": {
+          "runNow": "Run now",
+          "edit": "Edit",
+          "enable": "Enable",
+          "disable": "Disable",
+          "delete": "Delete"
+        },
+        "delete": {
+          "confirm": "Delete this schedule? This cannot be undone.",
+          "cancel": "Cancel",
+          "delete": "Delete"
+        },
+        "runNowAlreadyRunning": "A run is already in progress.",
+        "nextRun": "Next",
+        "lastRun": "Last",
+        "lastRunNever": "never",
+        "prompt": "Prompt",
+        "history": "Recent runs",
+        "historyEmpty": "no history",
+        "historyDurationUnit": "s"
+      }
+    },
+    "modal": {
+      "edit": "Edit scheduled run",
+      "new": "New scheduled run",
+      "fields": {
+        "title": "Title",
+        "titlePlaceholder": "Morning Sentry Triage",
+        "cron": "Cron expression",
+        "cronHint": "5 fields: minute hour day-of-month month day-of-week",
+        "cronPlaceholder": "0 8 * * *",
+        "timezone": "Timezone",
+        "projectPath": "Project path",
+        "projectPathPlaceholder": "/Users/you/projects/acme-api",
+        "provider": "Provider",
+        "model": "Model",
+        "prompt": "Prompt",
+        "promptHint": "Cmd+Enter (or Ctrl+Enter) to save.",
+        "promptPlaceholder": "Check Sentry for unresolved errors in the last 24 hours…",
+        "notifySuccess": "Notify on success",
+        "notifyFailure": "Notify on failure"
+      },
+      "templates": {
+        "custom": "Custom",
+        "dailyDigest": "Daily digest",
+        "weeklyCodeReview": "Weekly code review",
+        "nightlyTestRun": "Nightly test run"
+      },
+      "errors": {
+        "titleRequired": "Title is required",
+        "projectRequired": "Project path is required",
+        "modelRequired": "Model is required",
+        "promptRequired": "Prompt is required"
+      },
+      "actions": {
+        "cancel": "Cancel",
+        "save": "Saving…",
+        "saveCreate": "Create schedule",
+        "saveEdit": "Save changes"
+      }
+    },
+    "sidebar": {
+      "openLabel": "Open right sidebar",
+      "collapseLabel": "Collapse right sidebar",
+      "closeLabel": "Close right sidebar"
+    }
+  }
+}
