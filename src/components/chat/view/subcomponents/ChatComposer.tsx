@@ -510,7 +510,7 @@ export default function ChatComposer({
           <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
             <div
               dir="ltr"
-              className={`hidden text-xs text-muted-foreground/50 transition-opacity duration-200 2xl:block ${
+              className={`hidden text-xs whitespace-nowrap text-muted-foreground/50 transition-opacity duration-200 min-[1400px]:block ${
                 input.trim() && !canQueueDraft ? 'opacity-0' : 'opacity-100'
               }`}
             >
