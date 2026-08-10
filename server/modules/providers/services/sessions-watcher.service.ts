@@ -144,7 +144,7 @@ export async function buildSessionUpsertedEvent(updatedProviderSessionId: string
   }
 
   const row = updatedRow.parent_session_id
-    ? sessionsDb.getSessionById(updatedRow.parent_session_id)
+    ? sessionsDb.getTopLevelAncestorBySessionId(updatedRow.session_id) ?? null
     : updatedRow;
   if (!row || row.isArchived) {
     return null;

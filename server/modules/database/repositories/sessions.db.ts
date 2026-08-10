@@ -741,6 +741,47 @@ export const sessionsDb = {
   },
 
   /**
+   * Resolves the top-level ancestor of a session by walking its
+   * `parent_session_id` chain until it reaches a row with no parent.
+   *
+   * Sub-agent transcripts can nest — a Codex collaboration agent spawns its
+   * own agents — so a child's immediate parent may itself be a child. The
+   * session watcher consumes this to broadcast sidebar updates against the
+   * owning top-level row; emitting an intermediate child id would otherwise
+   * make the frontend insert that child as a brand-new top-level session until
+   * the next full project refetch. A visited set guards against malformed
+   * cyclic chains. Returns `null` when the starting id is missing or no
+   * top-level ancestor is reachable.
+   */
+  getTopLevelAncestorBySessionId(sessionId: string): SessionRow | null {
+    const db = getConnection();
+    const visited = new Set<string>();
+    let current = sessionId;
+
+    while (current && !visited.has(current)) {
+      visited.add(current);
+      const row = db
+        .prepare(
+          `SELECT ${SESSION_ROW_COLUMNS}
+           FROM sessions
+           WHERE session_id = ?
+           ORDER BY updated_at DESC
+           LIMIT 1`
+        )
+        .get(current) as SessionRow | undefined;
+      if (!row) {
+        return null;
+      }
+      if (!row.parent_session_id) {
+        return normalizeSessionRow(row) ?? null;
+      }
+      current = row.parent_session_id;
+    }
+
+    return null;
+  },
+
+  /**
    * Resolves one session row through the provider-native id.
    *
    * The filesystem watcher only knows provider ids (they come from transcript

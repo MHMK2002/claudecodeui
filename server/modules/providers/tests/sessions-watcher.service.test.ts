@@ -55,3 +55,44 @@ test('subagent file changes upsert the parent instead of creating a top-level se
     assert.equal(event.session?.agentCount, 1);
   });
 });
+
+test('nested subagent file changes upsert the top-level ancestor, not the intermediate parent', { concurrency: false }, async () => {
+  await withIsolatedDatabase(async () => {
+    const projectPath = '/workspace/watcher-nested-subagent';
+    sessionsDb.createSession('root-session', 'codex', projectPath, 'Root Session');
+    projectsDb.updateCustomProjectName(projectPath, 'Nested Watcher Project');
+
+    // A Codex collaboration agent (depth 1) that itself spawns an agent (depth 2).
+    sessionsDb.createSubagentSession({
+      agentSessionId: 'middle-agent',
+      provider: 'codex',
+      parentSessionId: 'root-session',
+      projectPath,
+      jsonlPath: '/transcripts/middle-agent.jsonl',
+      agentType: 'review',
+      customName: 'Curie',
+    });
+    sessionsDb.createSubagentSession({
+      agentSessionId: 'leaf-agent',
+      provider: 'codex',
+      parentSessionId: 'middle-agent',
+      projectPath,
+      jsonlPath: '/transcripts/leaf-agent.jsonl',
+      agentType: 'worker',
+      customName: 'Noether',
+    });
+
+    const serialized = await buildSessionUpsertedEvent('leaf-agent');
+    assert.ok(serialized);
+
+    const event = JSON.parse(serialized) as {
+      sessionId?: string;
+      session?: { id?: string };
+    };
+    // Must resolve to the top-level root, never the intermediate sub-agent id,
+    // otherwise the frontend adds the intermediate agent as a new top-level row.
+    assert.equal(event.sessionId, 'root-session');
+    assert.equal(event.session?.id, 'root-session');
+    assert.notEqual(event.sessionId, 'middle-agent');
+  });
+});
