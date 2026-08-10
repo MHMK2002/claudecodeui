@@ -5,6 +5,7 @@ import { providerAuthService } from '@/modules/providers/services/provider-auth.
 import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
 import { providerMcpService } from '@/modules/providers/services/mcp.service.js';
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
+import { providerTokenUsageService } from '@/modules/providers/services/provider-token-usage.service.js';
 import { providerSkillsService } from '@/modules/providers/services/skills.service.js';
 import { sessionConversationsSearchService } from '@/modules/providers/services/session-conversations-search.service.js';
 import { sessionExportService } from '@/modules/providers/services/session-export.service.js';
@@ -17,7 +18,6 @@ import type {
   LLMProvider,
   McpScope,
   McpTransport,
-  ProviderChangeActiveModelInput,
   ProviderProfileAuthType,
   ProviderProfileProvider,
   ProviderProfileRuntime,
@@ -632,7 +632,7 @@ const parseSessionSearchLimit = (value: unknown): number => {
   return Math.max(1, Math.min(parsed, 100));
 };
 
-const parseChangeActiveModelPayload = (payload: unknown): ProviderChangeActiveModelInput => {
+const parseSessionModelPayload = (payload: unknown): string => {
   if (!payload || typeof payload !== 'object') {
     throw new AppError('Request body must be an object.', {
       code: 'INVALID_REQUEST_BODY',
@@ -649,10 +649,7 @@ const parseChangeActiveModelPayload = (payload: unknown): ProviderChangeActiveMo
     });
   }
 
-  return {
-    sessionId: '',
-    model,
-  };
+  return model;
 };
 
 router.get(
@@ -757,17 +754,37 @@ router.get(
   }),
 );
 
+/**
+ * Reports which model one session is using. `requestedModel` lets the client
+ * pass the default it would otherwise send, so a session that has not been
+ * sent on yet resolves to that instead of the catalog default.
+ */
+router.get(
+  '/:provider/sessions/:sessionId/active-model',
+  asyncHandler(async (req: Request, res: Response) => {
+    const provider = parseProvider(req.params.provider);
+    const sessionId = parseSessionId(req.params.sessionId);
+    const requestedModel = readOptionalQueryString(req.query.requestedModel);
+    const result = await providerModelsService.resolveSessionModel(provider, {
+      sessionId,
+      requestedModel,
+    });
+    res.json(createApiSuccessResponse(result));
+  }),
+);
+
 router.post(
   '/:provider/sessions/:sessionId/active-model',
   asyncHandler(async (req: Request, res: Response) => {
     const provider = parseProvider(req.params.provider);
     const sessionId = parseSessionId(req.params.sessionId);
-    const payload = parseChangeActiveModelPayload(req.body);
-    const result = await providerModelsService.changeActiveModel(provider, {
-      ...payload,
-      sessionId,
-    });
-    res.json(createApiSuccessResponse(result));
+    const model = parseSessionModelPayload(req.body);
+    const stored = providerModelsService.setSessionModel(provider, sessionId, model);
+    // A session row only exists once the gateway has allocated one. Report the
+    // selection back either way so the client can hold it until the first send.
+    res.json(createApiSuccessResponse(
+      stored ?? { provider, sessionId, model, source: 'session' as const },
+    ));
   }),
 );
 
@@ -995,21 +1012,48 @@ router.get(
 );
 
 router.get(
-  '/sessions/:sessionId',
-  asyncHandler(async (req: Request, res: Response) => {
-    const sessionId = parseSessionId(req.params.sessionId);
-    res.json(createApiSuccessResponse({
-      session: sessionsService.getSessionContext(sessionId),
-    }));
-  }),
-);
-
-router.get(
   '/sessions/:sessionId/subagents',
   asyncHandler(async (req: Request, res: Response) => {
     const sessionId = parseSessionId(req.params.sessionId);
     const subagents = await sessionsService.listSubagents(sessionId);
     res.json(createApiSuccessResponse({ subagents }));
+  }),
+);
+
+router.get(
+  '/sessions/:sessionId/provider-id',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const providerSessionId = sessionsService.getProviderSessionId(sessionId);
+    res.json(createApiSuccessResponse({ sessionId: providerSessionId }));
+  }),
+);
+
+router.get(
+  '/sessions/:sessionId/token-usage',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const result = await providerTokenUsageService.getSessionTokenUsage(sessionId);
+    res.json(createApiSuccessResponse(result));
+  }),
+);
+
+// Must stay registered after the static and session-specific routes so their
+// literals never match the generic `:sessionId` parameter.
+//
+// The payload is a superset: the flat detail fields resolve the owning project
+// for deep links, and `session` carries the sub-agent / provider-profile
+// context. `getSessionDetailsById` also accepts a provider-native alias id, so
+// the context is looked up with the canonical id it resolves to.
+router.get(
+  '/sessions/:sessionId',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const details = sessionsService.getSessionDetailsById(sessionId);
+    res.json(createApiSuccessResponse({
+      ...details,
+      session: sessionsService.getSessionContext(details.sessionId),
+    }));
   }),
 );
 

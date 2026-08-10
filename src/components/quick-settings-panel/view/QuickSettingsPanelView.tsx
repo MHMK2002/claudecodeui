@@ -82,7 +82,9 @@ export default function QuickSettingsPanelView({
 
       <aside
         className={cn(
-          'fixed right-0 top-0 z-40 h-full w-80 transform border-l border-border bg-background shadow-xl',
+          // z-[9999] sits above the z-[9998] backdrop; both must clear the
+          // sidebars and file trees now that the panel renders at app level.
+          'fixed right-0 top-0 z-[9999] h-full w-80 transform border-l border-border bg-background shadow-xl',
           'transition-transform duration-150 ease-out',
           isOpen ? 'visible translate-x-0' : 'invisible translate-x-full',
           isMobile && 'h-screen',
@@ -146,7 +148,7 @@ export default function QuickSettingsPanelView({
 
       {isOpen && (
         <div
-          className="fixed inset-0 z-30 bg-background/80 backdrop-blur-sm transition-opacity duration-150 ease-out"
+          className="fixed inset-0 z-[9998] bg-background/80 backdrop-blur-sm transition-opacity duration-150 ease-out"
           onClick={() => setIsOpen(false)}
         />
       )}

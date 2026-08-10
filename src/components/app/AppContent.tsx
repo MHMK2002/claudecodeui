@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import Sidebar from '../sidebar/view/Sidebar';
 import MainContent from '../main-content/view/MainContent';
 import CommandPalette from '../command-palette/CommandPalette';
+import { QuickSettingsPanel } from '../quick-settings-panel';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { PaletteOpsProvider, usePaletteOpsRegister } from '../../contexts/PaletteOpsContext';
 import { ScheduledRunsProvider } from '../../contexts/ScheduledRunsContext';
@@ -83,6 +84,7 @@ function AppContentInner() {
     registerOptimisticSession,
     sidebarSharedProps,
     handleNewSession,
+    handleProjectSelect,
   } = useProjectsState({
     sessionId,
     navigate,
@@ -268,6 +270,8 @@ function AppContentInner() {
           onShowSettings={openSettings}
           externalMessageUpdate={externalMessageUpdate}
           newSessionTrigger={newSessionTrigger}
+          onProjectSelect={handleProjectSelect}
+          onProjectsRefresh={() => void refreshProjectsSilently()}
         />
       </div>
 
@@ -277,6 +281,18 @@ function AppContentInner() {
         onOpenSettings={() => openSettings()}
         onShowTab={setActiveTab}
       />
-      </div>
+
+      {/* Rendered at app level (not inside MainContent) so the drawer's
+          z-index escapes the content overflow context. The task/schedule tabs
+          drive chat runs, so it takes the same callbacks MainContent gets. */}
+      <QuickSettingsPanel
+        sendMessage={sendMessage}
+        onSessionEstablished={(targetSessionId, context) =>
+          registerOptimisticSession({ sessionId: targetSessionId, ...context })
+        }
+        onNavigateToSession={(targetSessionId: string) => navigate(`/session/${targetSessionId}`)}
+        onSessionProcessing={markSessionProcessing}
+      />
+    </div>
   );
 }

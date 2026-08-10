@@ -135,6 +135,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     custom_name TEXT,
     project_path TEXT,
     jsonl_path TEXT,
+    -- Model this session runs with. Written when the user picks a model for the
+    -- session and on every send, so reopening a session restores the model it
+    -- was last used with instead of falling back to the catalog default.
+    model TEXT,
     isArchived BOOLEAN DEFAULT 0,
     -- Carried-over context when this session was forked from another. A short
     -- handoff summary (or rendered transcript fallback) of the source session,

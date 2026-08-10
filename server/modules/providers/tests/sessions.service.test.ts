@@ -205,3 +205,38 @@ test('forkSession surfaces carried context via getSessionContext and marks it un
     assert.equal(after.forkContextConsumed, true);
   });
 });
+
+test('provider session id returns the mapped native id', { concurrency: false }, async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-session-id', 'codex', '/tmp/session-id-copy-project');
+    sessionsDb.assignProviderSessionId('app-session-id', 'codex-native-session-id');
+
+    assert.equal(sessionsService.getProviderSessionId('app-session-id'), 'codex-native-session-id');
+  });
+});
+
+test('provider session id is unavailable until the provider assigns one', { concurrency: false }, async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('pending-app-session', 'claude', '/tmp/session-id-copy-project');
+
+    assert.throws(
+      () => sessionsService.getProviderSessionId('pending-app-session'),
+      (error: unknown) => {
+        const typedError = error as { code?: string; statusCode?: number };
+        return typedError.code === 'PROVIDER_SESSION_ID_NOT_AVAILABLE' && typedError.statusCode === 409;
+      },
+    );
+  });
+});
+
+test('provider session id reports a missing app session', { concurrency: false }, async () => {
+  await withIsolatedDatabase(() => {
+    assert.throws(
+      () => sessionsService.getProviderSessionId('missing-session'),
+      (error: unknown) => {
+        const typedError = error as { code?: string; statusCode?: number };
+        return typedError.code === 'SESSION_NOT_FOUND' && typedError.statusCode === 404;
+      },
+    );
+  });
+});

@@ -91,6 +91,12 @@ export default function SidebarContent({
   projectListProps,
   t,
 }: SidebarContentProps) {
+  // On mobile the footer overlaps the on-screen keyboard, hiding the rename
+  // input; drop it while a rename is in flight.
+  const isRenamingOnMobile = isMobile && Boolean(
+    projectListProps.editingProject || projectListProps.editingSession,
+  );
+
   return (
     <div
       className="flex h-full flex-col bg-background/80 backdrop-blur-sm md:w-72 md:select-none"
@@ -239,16 +245,18 @@ export default function SidebarContent({
         )}
       </ScrollArea>
 
-      <SidebarFooter
-        updateAvailable={updateAvailable}
-        restartRequired={restartRequired}
-        releaseInfo={releaseInfo}
-        latestVersion={latestVersion}
-        currentVersion={currentVersion}
-        onShowVersionModal={onShowVersionModal}
-        onShowSettings={onShowSettings}
-        t={t}
-      />
+      {!isRenamingOnMobile && (
+        <SidebarFooter
+          updateAvailable={updateAvailable}
+          restartRequired={restartRequired}
+          releaseInfo={releaseInfo}
+          latestVersion={latestVersion}
+          currentVersion={currentVersion}
+          onShowVersionModal={onShowVersionModal}
+          onShowSettings={onShowSettings}
+          t={t}
+        />
+      )}
     </div>
   );
 }

@@ -53,6 +53,28 @@ type RegisterOptimisticSessionArgs = {
   summary?: string | null;
 };
 
+/**
+ * Shape of `GET /api/providers/sessions/:sessionId` — the authoritative
+ * session → owning-project resolution used when a `/session/<id>` URL points
+ * at a session that is not present in the paginated project payloads.
+ */
+type SessionDetailsApiPayload = {
+  data?: {
+    sessionId?: string;
+    provider?: string;
+    summary?: string;
+    createdAt?: string | null;
+    lastActivity?: string | null;
+    project?: {
+      projectId?: string;
+      path?: string;
+      fullPath?: string;
+      displayName?: string;
+      isStarred?: boolean;
+    } | null;
+  };
+};
+
 type ProjectSessionPage = Pick<Project, 'sessions' | 'sessionMeta'>;
 
 type SessionContextApiPayload = {
@@ -429,6 +451,18 @@ export function useProjectsState({
   selectedSessionRef.current = selectedSession;
   const activeSessionsRef = useRef(activeSessions);
   activeSessionsRef.current = activeSessions;
+  const selectedProjectRef = useRef(selectedProject);
+  selectedProjectRef.current = selectedProject;
+  const projectsRef = useRef(projects);
+  projectsRef.current = projects;
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
+  /** URL session id whose backend lookup already ran (or is in flight) — one attempt per id. */
+  const sessionLookupRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    sessionLookupRef.current = null;
+  }, [sessionId]);
 
   const markSessionAttention = useCallback((targetSessionId?: string | null) => {
     if (!targetSessionId) {
@@ -801,7 +835,7 @@ export function useProjectsState({
   }, [clearSessionAttention, selectedSession?.id, sessionId]);
 
   useEffect(() => {
-    if (!sessionId || projects.length === 0) {
+    if (!sessionId) {
       return;
     }
 
@@ -831,75 +865,130 @@ export function useProjectsState({
       return;
     }
 
-    let cancelled = false;
+    // Session id is in the URL but not present on any loaded project payload.
+    // The payloads are paginated (only each project's first session page is
+    // loaded), so this is normal for deep links to older sessions. Never guess
+    // the owning project from local state — that used to bind the session to
+    // whatever project happened to be selected. Ask the backend instead; one
+    // lookup per URL id.
+    if (sessionLookupRef.current === sessionId) {
+      return;
+    }
+    sessionLookupRef.current = sessionId;
 
-    const resolveRouteSession = async () => {
+    void (async () => {
+      let details: SessionDetailsApiPayload['data'] | null = null;
+      let context: NonNullable<SessionContextApiPayload['data']>['session'];
       try {
-        const response = await api.sessionContext(sessionId);
-        if (!response.ok) {
-          // Preserve the optimistic-session fallback for the narrow window in
-          // which a newly allocated id has not reached the sidebar payload.
-          if (!cancelled && selectedProject) {
-            setSelectedSession({
-              id: sessionId,
-              __provider: readSelectedProvider(),
-              __projectId: selectedProject.projectId,
-              summary: '',
-            });
-          }
-          return;
+        const response = await api.sessionDetails(sessionId);
+        if (response.ok) {
+          // One endpoint, two shapes: the flat detail fields drive project
+          // resolution, while the nested `session` context carries the
+          // sub-agent and provider-profile metadata.
+          const payload = (await response.json()) as SessionDetailsApiPayload & SessionContextApiPayload;
+          details = payload.data ?? null;
+          context = payload.data?.session;
         }
-
-        const payload = (await response.json()) as SessionContextApiPayload;
-        const context = payload.data?.session;
-        if (cancelled || typeof context?.sessionId !== 'string') {
-          return;
-        }
-
-        if (
-          context.isSubagent === true
-          && typeof context.parentSessionId === 'string'
-          && context.parentSessionId
-        ) {
-          navigate(buildSubagentRoute(context.parentSessionId, context.sessionId), { replace: true });
-          return;
-        }
-
-        const owningProject = projects.find((project) => (
-          (typeof context.projectId === 'string' && project.projectId === context.projectId)
-          || (typeof context.projectPath === 'string' && project.fullPath === context.projectPath)
-        ));
-        if (!owningProject) {
-          return;
-        }
-
-        const provider = typeof context.provider === 'string' && context.provider
-          ? context.provider as LLMProvider
-          : readSelectedProvider();
-        setSelectedProject(owningProject);
-        setSelectedSession({
-          id: context.sessionId,
-          summary: typeof context.title === 'string' ? context.title : '',
-          provider,
-          __provider: provider,
-          providerProfileId: typeof context.providerProfileId === 'number'
-            ? context.providerProfileId
-            : null,
-          __providerProfileId: typeof context.providerProfileId === 'number'
-            ? context.providerProfileId
-            : null,
-          __projectId: owningProject.projectId,
-        });
       } catch (error) {
-        console.error(`[Projects] Failed to resolve route session ${sessionId}:`, error);
+        console.error(`Error resolving session ${sessionId}:`, error);
       }
-    };
 
-    void resolveRouteSession();
-    return () => {
-      cancelled = true;
-    };
-  }, [navigate, projects, selectedProject, selectedSession?.id, selectedSession?.__provider, sessionId]);
+      // The user navigated elsewhere while the lookup was in flight.
+      if (sessionIdRef.current !== sessionId) {
+        return;
+      }
+
+      // A sub-agent id addresses a read-only transcript hanging off its parent;
+      // route to the parent and render the transcript there.
+      if (
+        context?.isSubagent === true
+        && typeof context.parentSessionId === 'string'
+        && context.parentSessionId
+        && typeof context.sessionId === 'string'
+      ) {
+        navigate(buildSubagentRoute(context.parentSessionId, context.sessionId), { replace: true });
+        return;
+      }
+
+      if (!details) {
+        // Unknown session id (or lookup failed). Fall back to the legacy
+        // behavior: host a placeholder under the currently selected project so
+        // chat state stays alive (without a `selectedSession`, chat clears
+        // `currentSessionId` and stops reading the session store).
+        const fallbackProject = selectedProjectRef.current;
+        if (!fallbackProject || selectedSessionRef.current?.id === sessionId) {
+          return;
+        }
+
+        setSelectedSession({
+          id: sessionId,
+          __provider: readSelectedProvider(),
+          __projectId: fallbackProject.projectId,
+          summary: '',
+        });
+        return;
+      }
+
+      // The URL carried a provider-native alias id: swap it for the canonical
+      // app-facing id and let this effect re-run against the new URL.
+      if (typeof details.sessionId === 'string' && details.sessionId && details.sessionId !== sessionId) {
+        navigate(`/session/${details.sessionId}`, { replace: true });
+        return;
+      }
+
+      const resolvedProjectId = details.project?.projectId;
+      if (resolvedProjectId) {
+        setSelectedProject((previousProject) => {
+          if (previousProject?.projectId === resolvedProjectId) {
+            return previousProject;
+          }
+
+          const loadedProject = projectsRef.current.find(
+            (candidate) => candidate.projectId === resolvedProjectId,
+          );
+          if (loadedProject) {
+            return loadedProject;
+          }
+
+          // Owning project is not in the active project list (e.g. archived):
+          // synthesize a minimal entry so the chat view still gets its paths.
+          return {
+            projectId: resolvedProjectId,
+            path: details.project?.path ?? details.project?.fullPath ?? '',
+            fullPath: details.project?.fullPath ?? details.project?.path ?? '',
+            displayName: details.project?.displayName ?? '',
+            isStarred: Boolean(details.project?.isStarred),
+            sessions: [],
+            sessionMeta: { hasMore: false, total: 0 },
+          };
+        });
+      }
+
+      const providerProfileId = typeof context?.providerProfileId === 'number'
+        ? context.providerProfileId
+        : null;
+
+      const resolvedSession: ProjectSession = {
+        id: sessionId,
+        summary: details.summary ?? '',
+        createdAt: details.createdAt ?? undefined,
+        lastActivity: details.lastActivity ?? undefined,
+        __provider:
+          typeof details.provider === 'string' && details.provider.trim()
+            ? (details.provider as LLMProvider)
+            : readSelectedProvider(),
+        providerProfileId,
+        __providerProfileId: providerProfileId,
+        __projectId: resolvedProjectId,
+      };
+
+      setSelectedSession((previousSession) =>
+        previousSession?.id === sessionId
+          ? { ...previousSession, ...resolvedSession }
+          : resolvedSession,
+      );
+    })();
+  }, [navigate, sessionId, projects, selectedProject, selectedSession?.id, selectedSession?.__provider]);
 
   const handleProjectSelect = useCallback(
     (project: Project) => {

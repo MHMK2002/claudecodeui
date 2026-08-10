@@ -214,6 +214,25 @@ function resolveSubagentStatus(
   return isComplete ? 'completed' : 'running';
 }
 
+type SessionDetails = {
+  /** Canonical app-facing session id (may differ from the looked-up id when a provider-native id was given). */
+  sessionId: string;
+  provider: LLMProvider;
+  summary: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  lastActivity: string | null;
+  isArchived: boolean;
+  project: {
+    projectId: string;
+    path: string;
+    fullPath: string;
+    displayName: string;
+    isStarred: boolean;
+    isArchived: boolean;
+  } | null;
+};
+
 /**
  * Removes one file if it exists.
  */
@@ -283,6 +302,23 @@ export const sessionsService = {
   },
 
   /**
+   * Resolves the provider-native session id a runtime needs for resume.
+   *
+   * Callers hand provider runtimes the stable app session id; the provider
+   * CLIs/SDKs only understand their own native id, which lives on the session
+   * row. Ids without a row are assumed to be provider-native already (direct
+   * API callers that reference sessions the watcher has not indexed yet).
+   */
+  resolveProviderSessionId(sessionId: string | null | undefined): string | null {
+    if (!sessionId) {
+      return null;
+    }
+
+    const session = sessionsDb.getSessionById(sessionId);
+    return session ? session.provider_session_id : sessionId;
+  },
+
+  /**
    * Normalizes one provider-native event into frontend session message events.
    */
   normalizeMessage(
@@ -325,39 +361,6 @@ export const sessionsService = {
       projectPath: normalizedProjectPath,
       providerProfileId,
       forkContextCarried: false,
-    };
-  },
-
-  /**
-   * Resolves the canonical application identity behind one persisted
-   * transcript id. Sub-agent rows are returned as children of their root
-   * session so callers can redirect legacy `/session/<agent-id>` links to the
-   * parent-scoped route instead of selecting the transcript as a session.
-   */
-  getSessionContext(sessionId: string): SessionContext {
-    const session = sessionsDb.getSessionById(sessionId);
-    if (!session) {
-      throw new AppError(`Session "${sessionId}" was not found.`, {
-        code: 'SESSION_NOT_FOUND',
-        statusCode: 404,
-      });
-    }
-
-    const projectPath = session.project_path ?? null;
-    const project = projectPath ? projectsDb.getProjectPath(projectPath) : null;
-
-    return {
-      sessionId: session.session_id,
-      provider: session.provider as LLMProvider,
-      providerProfileId: session.provider_profile_id ?? null,
-      projectId: project?.project_id ?? null,
-      projectPath,
-      title: session.custom_name?.trim() || 'Untitled Session',
-      parentSessionId: session.parent_session_id ?? null,
-      agentType: session.agent_type ?? null,
-      isSubagent: Boolean(session.parent_session_id),
-      forkContext: session.fork_context ?? null,
-      forkContextConsumed: Boolean(session.fork_context_consumed),
     };
   },
 
@@ -450,6 +453,62 @@ export const sessionsService = {
     }
 
     return created;
+  },
+
+  /**
+   * Resolves the canonical application identity behind one persisted
+   * transcript id. Sub-agent rows are returned as children of their root
+   * session so callers can redirect legacy `/session/<agent-id>` links to the
+   * parent-scoped route instead of selecting the transcript as a session.
+   */
+  getSessionContext(sessionId: string): SessionContext {
+    const session = sessionsDb.getSessionById(sessionId);
+    if (!session) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    const projectPath = session.project_path ?? null;
+    const project = projectPath ? projectsDb.getProjectPath(projectPath) : null;
+
+    return {
+      sessionId: session.session_id,
+      provider: session.provider as LLMProvider,
+      providerProfileId: session.provider_profile_id ?? null,
+      projectId: project?.project_id ?? null,
+      projectPath,
+      title: session.custom_name?.trim() || 'Untitled Session',
+      parentSessionId: session.parent_session_id ?? null,
+      agentType: session.agent_type ?? null,
+      isSubagent: Boolean(session.parent_session_id),
+      forkContext: session.fork_context ?? null,
+      forkContextConsumed: Boolean(session.fork_context_consumed),
+    };
+  },
+
+  /**
+   * Resolves the provider-native id only for an explicit user copy action.
+   * Normal session payloads continue to expose only the stable app id.
+   */
+  getProviderSessionId(sessionId: string): string {
+    const session = sessionsDb.getSessionById(sessionId);
+    if (!session) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    if (!session.provider_session_id) {
+      throw new AppError('This session ID is not available yet.', {
+        code: 'PROVIDER_SESSION_ID_NOT_AVAILABLE',
+        statusCode: 409,
+      });
+    }
+
+    return session.provider_session_id;
   },
 
   /**
@@ -556,6 +615,49 @@ export const sessionsService = {
         updatedAt: row.updated_at ?? null,
       };
     }));
+  },
+
+  /**
+   * Resolves one session (by app id, falling back to the provider-native id)
+   * to its metadata plus the owning project.
+   *
+   * This backs deep links like `/session/:sessionId`: the frontend's paginated
+   * project payloads only carry each project's first session page, so a
+   * session opened directly by URL may not be present client-side at all —
+   * this lookup is the authoritative way to learn which project owns it.
+   */
+  getSessionDetailsById(sessionId: string): SessionDetails {
+    const session =
+      sessionsDb.getSessionById(sessionId) ?? sessionsDb.getSessionByProviderSessionId(sessionId);
+    if (!session) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    const projectPath = session.project_path?.trim() ? session.project_path : null;
+    const project = projectPath ? projectsDb.getProjectPath(projectPath) : null;
+
+    return {
+      sessionId: session.session_id,
+      provider: session.provider as LLMProvider,
+      summary: session.custom_name?.trim() || '',
+      createdAt: session.created_at ?? null,
+      updatedAt: session.updated_at ?? null,
+      lastActivity: session.updated_at ?? session.created_at ?? null,
+      isArchived: Boolean(session.isArchived),
+      project: project && projectPath
+        ? {
+            projectId: project.project_id,
+            path: projectPath,
+            fullPath: projectPath,
+            displayName: resolveProjectDisplayName(projectPath, project.custom_project_name),
+            isStarred: Boolean(project.isStarred),
+            isArchived: Boolean(project.isArchived),
+          }
+        : null,
+    };
   },
 
   /**

@@ -10,12 +10,10 @@ import { broadcastSessionRewound, chatRunRegistry } from '@/modules/websocket/in
 import type { LLMProvider, ProviderProfileRuntime } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
-// The provider runtimes are legacy server-root modules and do not have a
-// module barrel yet; this service is their typed orchestration boundary.
-// eslint-disable-next-line boundaries/no-unknown
-import { forkClaudeSessionAt, rewindClaudeFiles } from '../../../claude-sdk.js';
-// eslint-disable-next-line boundaries/no-unknown
-import { forkCodexThreadAt } from '../../../openai-codex.js';
+// The provider runtimes now live beside their provider implementations; this
+// service is their typed orchestration boundary.
+import { forkClaudeSessionAt, rewindClaudeFiles } from '@/modules/providers/list/claude/claude-runtime.provider.js';
+import { forkCodexThreadAt } from '@/modules/providers/list/codex/codex-runtime.provider.js';
 
 export type SessionRewindMode = 'conversation' | 'code' | 'both';
 

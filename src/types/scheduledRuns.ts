@@ -50,4 +50,4 @@ export interface CreateScheduledRunInput {
   isEnabled: boolean;
 }
 
-export interface UpdateScheduledRunInput extends Partial<CreateScheduledRunInput> {}
+export type UpdateScheduledRunInput = Partial<CreateScheduledRunInput>;

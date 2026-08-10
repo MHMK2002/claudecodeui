@@ -54,6 +54,8 @@ function MainContent({
   onShowSettings,
   externalMessageUpdate,
   newSessionTrigger,
+  onProjectSelect,
+  onProjectsRefresh,
 }: MainContentProps) {
   const { preferences } = useUiPreferences();
   const { showRawParameters, showThinking, sendByCtrlEnter } = preferences;
@@ -255,7 +257,13 @@ function MainContent({
 
           {activeTab === 'git' && (
             <div className="h-full overflow-hidden">
-              <GitPanel selectedProject={selectedProject} isMobile={isMobile} onFileOpen={handleFileOpen} />
+              <GitPanel
+                selectedProject={selectedProject}
+                isMobile={isMobile}
+                onFileOpen={handleFileOpen}
+                onProjectSelect={onProjectSelect}
+                onProjectsRefresh={onProjectsRefresh}
+              />
             </div>
           )}
 

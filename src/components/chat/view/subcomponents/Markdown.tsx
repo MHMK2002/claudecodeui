@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -16,6 +17,8 @@ import { useTheme } from '../../../../contexts/ThemeContext';
 type MarkdownProps = {
   children: React.ReactNode;
   className?: string;
+  /** Render single newlines as hard line breaks (for user-typed messages). */
+  breaks?: boolean;
 };
 
 // Links to the wider web (or in-page anchors) keep normal browser navigation;
@@ -210,14 +213,29 @@ const markdownComponents = {
   h6: ({ children }: { children?: React.ReactNode }) => (
     <h6 dir={directionOfChildren(children)} className="bidi-isolate">{children}</h6>
   ),
+  // `list-outside` + `pl-5` keeps markers aligned; the padding flips with the
+  // element's own `dir`, so RTL lists indent from the right.
   ul: ({ children }: { children?: React.ReactNode }) => (
-    <ul dir={directionOfChildren(children)}>{children}</ul>
+    <ul
+      dir={directionOfChildren(children)}
+      className="mb-2 list-outside list-disc space-y-1 pl-5 marker:text-current last:mb-0"
+    >
+      {children}
+    </ul>
   ),
   ol: ({ children, start }: { children?: React.ReactNode; start?: number }) => (
-    <ol dir={directionOfChildren(children)} start={start}>{children}</ol>
+    <ol
+      dir={directionOfChildren(children)}
+      start={start}
+      className="mb-2 list-outside list-decimal space-y-1 pl-5 marker:text-current last:mb-0"
+    >
+      {children}
+    </ol>
   ),
   li: ({ children }: { children?: React.ReactNode }) => (
-    <li dir={directionOfChildren(children)} className="bidi-isolate">{children}</li>
+    <li dir={directionOfChildren(children)} className="bidi-isolate [&>div:last-child]:mb-0 [&>div]:mb-1">
+      {children}
+    </li>
   ),
   table: ({ children }: { children?: React.ReactNode }) => (
     <div className="my-2 overflow-x-auto">
@@ -244,9 +262,16 @@ const markdownComponents = {
 // keystroke in the composer, a streaming frame) re-parsed and re-highlighted
 // every block. All call sites pass a plain string child, so the default
 // shallow compare is enough; theme/palette still arrive via context.
-function MarkdownComponent({ children, className }: MarkdownProps) {
+function MarkdownComponent({ children, className, breaks = false }: MarkdownProps) {
   const content = useMemo(() => normalizeInlineCodeFences(String(children ?? '')), [children]);
-  const remarkPlugins = useMemo(() => [remarkGfm, remarkMath], []);
+  // singleDollarTextMath: false — otherwise plain dollar amounts ($20/psf)
+  // get parsed as LaTeX. Double-dollar display math still works.
+  const remarkPlugins = useMemo(
+    () => (breaks
+      ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkBreaks]
+      : [remarkGfm, [remarkMath, { singleDollarTextMath: false }]]) as any,
+    [breaks],
+  );
   const rehypePlugins = useMemo(() => [rehypeKatex], []);
   const { openFileInEditor } = usePaletteOps();
 

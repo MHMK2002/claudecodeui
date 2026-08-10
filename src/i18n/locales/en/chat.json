@@ -145,6 +145,14 @@
   "enhanceCancel": "Cancel",
   "enhanceNoChanges": "No changes needed.",
   "enhanceFailed": "Enhance failed.",
+  "composer": {
+    "reasoning": "Reasoning",
+    "model": "Model",
+    "effortDefault": "Default",
+    "loadingModels": "Loading models…",
+    "modelMenu": "Select model and reasoning effort",
+    "permissionHeading": "How should {{provider}} actions be approved?"
+  },
   "providerSelection": {
     "title": "Choose Your AI Assistant",
     "description": "Select a provider to start a new conversation",
