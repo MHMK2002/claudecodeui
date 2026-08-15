@@ -22,6 +22,8 @@ type CreateAppSessionResult = {
   provider: LLMProvider;
   projectPath: string;
   providerProfileId: number | null;
+  /** Model recorded on the row at creation time; always set by the gateway. */
+  model: string;
   /** Whether a handoff summary from the source session was stored on this fork. */
   forkContextCarried: boolean;
 };
@@ -337,11 +339,18 @@ export const sessionsService = {
    * chat, navigates to the returned id immediately, and the id never changes
    * for the lifetime of the conversation. The provider-native id is mapped to
    * this row later, when the provider runtime announces it mid-run.
+   *
+   * `model` is required and lands in the same INSERT as provider and profile —
+   * the row is never created half-configured, and no secondary model UPDATE
+   * happens on this path.
    */
   createAppSession(
     provider: LLMProvider,
     projectPath: string,
-    options: { providerProfileId?: number | null } = {},
+    options: {
+      providerProfileId: number | null;
+      model: string;
+    },
   ): CreateAppSessionResult {
     const normalizedProjectPath = projectPath.trim();
     if (!normalizedProjectPath) {
@@ -351,27 +360,42 @@ export const sessionsService = {
       });
     }
 
+    const model = options.model.trim();
+    if (!model) {
+      throw new AppError('model is required.', {
+        code: 'MODEL_REQUIRED',
+        statusCode: 400,
+      });
+    }
+
     const sessionId = randomUUID();
-    const providerProfileId = options.providerProfileId ?? null;
-    sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath, providerProfileId);
+    const providerProfileId = options.providerProfileId;
+    sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath, providerProfileId, model);
 
     return {
       sessionId,
       provider,
       projectPath: normalizedProjectPath,
       providerProfileId,
+      model,
       forkContextCarried: false,
     };
   },
 
   /**
-   * Starts a fresh sibling chat ("fork") in the same project, inheriting the
-   * source session's provider and active profile. The new row is a brand-new
-   * conversation — no transcript is cloned — and is returned so the caller can
-   * navigate to it immediately. When `carryContext` is set (default true) and the
-   * source has history, a short handoff summary is generated and stored on the
-   * new row; the chat gateway prepends it to the forked session's first message
-   * only, so a cross-provider fork (e.g. Claude → Codex) keeps its context.
+   * Starts a fresh sibling chat ("fork") in the same project. The new row is a
+   * brand-new conversation — no transcript is cloned — and is returned so the
+   * caller can navigate to it immediately. When `carryContext` is set (default
+   * true) and the source has history, a short handoff summary is generated and
+   * stored on the new row; the chat gateway prepends it to the forked session's
+   * first message only, so a cross-provider fork (e.g. Claude → Codex) keeps
+   * its context.
+   *
+   * `provider`, `providerProfileId`, and `model` form the complete target
+   * selection and are all required together — a fork is only created against a
+   * fully valid selection (the route validates before calling). The source
+   * session may itself be legacy (e.g. a Claude Local CLI row); forking it onto
+   * a valid target is the supported continuation path.
    *
    * Refuses to fork when the source is itself a sub-agent row: those sessions
    * carry `parent_session_id`, have no own transcript to fork from, and would
@@ -380,11 +404,12 @@ export const sessionsService = {
   async forkSession(
     sourceSessionId: string,
     options: {
-      provider?: LLMProvider;
-      providerProfileId?: number | null;
+      provider: LLMProvider;
+      providerProfileId: number | null;
+      model: string;
       carryContext?: boolean;
       userId?: number | null;
-    } = {},
+    },
   ): Promise<CreateAppSessionResult> {
     const source = sessionsDb.getSessionById(sourceSessionId);
     if (!source) {
@@ -401,8 +426,7 @@ export const sessionsService = {
       );
     }
 
-    const inheritedProvider = (source.provider ?? '') as LLMProvider;
-    const provider = options.provider ?? inheritedProvider;
+    const { provider } = options;
     if (!provider || !providerRegistry.resolveProvider(provider)) {
       throw new AppError(
         `Cannot fork: provider "${provider || 'unknown'}" is not supported.`,
@@ -418,13 +442,10 @@ export const sessionsService = {
       });
     }
 
-    // When the caller doesn't pass providerProfileId we inherit the source's
-    // profile (null if the source was on Local CLI). Explicit null means
-    // "force Local CLI on the forked session".
-    const providerProfileId = options.providerProfileId === undefined
-      ? (source.provider_profile_id ?? null)
-      : options.providerProfileId;
-    const created = this.createAppSession(provider, projectPath, { providerProfileId });
+    const created = this.createAppSession(provider, projectPath, {
+      providerProfileId: options.providerProfileId,
+      model: options.model,
+    });
 
     // Optionally condense the source session's history into a handoff summary
     // and store it on the new row. The summary step never throws — it degrades

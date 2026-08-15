@@ -20,6 +20,30 @@ function onDesktopStateUpdated(callback) {
   };
 }
 
+function isLocalCloudCliOrigin(location) {
+  return location.protocol === 'http:'
+    && (location.hostname === '127.0.0.1' || location.hostname === 'localhost');
+}
+
+if (isLocalCloudCliOrigin(window.location)) {
+  const storageKey = 'auth-token';
+  const persistedToken = ipcRenderer.sendSync('cloudcli-desktop:get-local-auth-token');
+  if (!window.localStorage.getItem(storageKey) && typeof persistedToken === 'string' && persistedToken) {
+    window.localStorage.setItem(storageKey, persistedToken);
+  }
+
+  let lastToken = window.localStorage.getItem(storageKey);
+  if (lastToken) {
+    ipcRenderer.send('cloudcli-desktop:update-local-auth-token', lastToken);
+  }
+  setInterval(() => {
+    const token = window.localStorage.getItem(storageKey);
+    if (token === lastToken) return;
+    lastToken = token;
+    ipcRenderer.send('cloudcli-desktop:update-local-auth-token', token);
+  }, 500);
+}
+
 if (isCloudCliAppOrigin(window.location)) {
   contextBridge.exposeInMainWorld('cloudcliDesktopNotifications', {
     getState: () => ipcRenderer.invoke('cloudcli-desktop:get-state'),
@@ -49,8 +73,6 @@ if (window.location.protocol === 'file:') {
     closeSettingsWindow: () => ipcRenderer.invoke('cloudcli-desktop:close-settings-window'),
     showActiveEnvironmentActionsMenu: () => ipcRenderer.invoke('cloudcli-desktop:show-active-environment-actions-menu'),
     showEnvironmentActionsMenu: (environmentId) => ipcRenderer.invoke('cloudcli-desktop:show-environment-actions-menu', environmentId),
-    switchTab: (tabId) => ipcRenderer.invoke('cloudcli-desktop:switch-tab', tabId),
-    closeTab: (tabId) => ipcRenderer.invoke('cloudcli-desktop:close-tab', tabId),
     updateSetting: (key, value) => ipcRenderer.invoke('cloudcli-desktop:update-setting', key, value),
     onStateUpdated: onDesktopStateUpdated,
     onLauncherCommand: (callback) => {

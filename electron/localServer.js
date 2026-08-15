@@ -1,10 +1,12 @@
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
+import { redactDiagnosticValue } from './diagnostics.js';
 import { ServerInstaller } from './serverInstaller.js';
 
 const DEFAULT_PORT = 3001;
@@ -12,6 +14,7 @@ const HOST = '127.0.0.1';
 const DISPLAY_HOST = 'localhost';
 const HEALTH_TIMEOUT_MS = 1000;
 const SERVER_START_TIMEOUT_MS = 30000;
+const MAX_SERVER_START_ATTEMPTS = 3;
 const MAX_STARTUP_LOG_LINES = 300;
 const SERVER_MARKER_PATH = path.join(os.homedir(), '.cloudcli', 'local-server.json');
 const LOCAL_SERVER_URL_ENV_KEYS = [
@@ -55,14 +58,40 @@ function requestJson(url, timeoutMs = HEALTH_TIMEOUT_MS) {
   });
 }
 
-async function isCloudCliServer(baseUrl) {
+async function getCloudCliHealth(baseUrl) {
   const response = await requestJson(`${baseUrl}/health`);
   return response.ok
     && response.json?.status === 'ok'
-    && typeof response.json?.installMode === 'string';
+    && typeof response.json?.installMode === 'string'
+    ? response.json
+    : null;
 }
 
-function isPortAvailable(port, host = HOST) {
+async function isCloudCliServer(baseUrl, expectedBuildId = null) {
+  const health = await getCloudCliHealth(baseUrl);
+  return Boolean(health && (!expectedBuildId || health.buildId === expectedBuildId));
+}
+
+function isPortListening(port, host = HOST) {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host, port });
+    let settled = false;
+    const finish = (listening) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(listening);
+    };
+    socket.setTimeout(250, () => finish(false));
+    socket.once('connect', () => finish(true));
+    socket.once('error', () => finish(false));
+  });
+}
+
+async function isPortAvailable(port, host = HOST) {
+  // Binding 127.0.0.1 can succeed alongside an existing 0.0.0.0 listener on
+  // some platforms. A real loopback connection catches that ambiguous case.
+  if (await isPortListening(port, HOST)) return false;
   return new Promise((resolve) => {
     const server = net.createServer();
 
@@ -74,7 +103,7 @@ function isPortAvailable(port, host = HOST) {
   });
 }
 
-function getFreePort() {
+function getFreePort(host = HOST) {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
 
@@ -84,16 +113,20 @@ function getFreePort() {
       const port = typeof address === 'object' && address ? address.port : DEFAULT_PORT;
       server.close(() => resolve(port));
     });
-    server.listen(0, HOST);
+    server.listen(0, host);
   });
 }
 
-async function chooseServerPort(host) {
-  if (await isPortAvailable(DEFAULT_PORT, host)) {
+async function chooseServerPort(host, excludedPorts = new Set()) {
+  if (!excludedPorts.has(DEFAULT_PORT) && await isPortAvailable(DEFAULT_PORT, host)) {
     return DEFAULT_PORT;
   }
 
-  return getFreePort();
+  let port = await getFreePort(host);
+  while (excludedPorts.has(port)) {
+    port = await getFreePort(host);
+  }
+  return port;
 }
 
 function getDesktopPath() {
@@ -232,12 +265,18 @@ async function getExistingServerCandidateUrls(defaultUrl) {
   return urls;
 }
 
-async function waitForCloudCliServer(baseUrl, timeoutMs) {
+async function waitForCloudCliServer(baseUrl, timeoutMs, expected = {}) {
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeoutMs) {
-    if (await isCloudCliServer(baseUrl)) {
-      return true;
+    const health = await getCloudCliHealth(baseUrl);
+    if (health
+      && (!expected.buildId || health.buildId === expected.buildId)
+      && (!expected.launchNonce || health.desktopLaunchNonce === expected.launchNonce)) {
+      return health;
+    }
+    if (expected.child && expected.child.exitCode !== null) {
+      return null;
     }
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
@@ -246,15 +285,19 @@ async function waitForCloudCliServer(baseUrl, timeoutMs) {
 }
 
 export class LocalServerController {
-  constructor({ appRoot, settingsPath, isPackaged = false, appVersion, onChange }) {
+  constructor({ appRoot, resourcesRoot = appRoot, settingsPath, isPackaged = false, appVersion, buildId = null, onChange, onLog }) {
     this.appRoot = appRoot;
+    this.resourcesRoot = resourcesRoot;
     this.settingsPath = settingsPath;
     this.isPackaged = isPackaged;
     this.appVersion = appVersion;
+    this.buildId = buildId;
     this.onChange = onChange;
+    this.onLog = onLog;
     this.localServerUrl = null;
     this.localServerPort = null;
     this.ownedServerProcess = null;
+    this.verifiedLocalOrigin = null;
     this.startupLogs = [];
     this.desktopSettings = {
       keepLocalServerRunning: false,
@@ -276,8 +319,12 @@ export class LocalServerController {
     return `http://${HOST}:${this.localServerPort}`;
   }
 
+  getVerifiedLocalOrigin() {
+    return this.verifiedLocalOrigin;
+  }
+
   appendStartupLog(line) {
-    const text = String(line || '').trimEnd();
+    const text = String(redactDiagnosticValue(String(line || ''))).trimEnd();
     if (!text) return;
     const timestamp = new Date().toLocaleTimeString();
     this.startupLogs.push(`[${timestamp}] ${text}`);
@@ -285,6 +332,7 @@ export class LocalServerController {
       this.startupLogs.splice(0, this.startupLogs.length - MAX_STARTUP_LOG_LINES);
     }
     this.onChange?.();
+    this.onLog?.(text);
   }
 
   getStartupLogs() {
@@ -371,15 +419,24 @@ export class LocalServerController {
     };
   }
 
-  /** Resolves the local server entry, installing the matching runtime if needed. */
+  /** Resolves the embedded customized server before considering a downloaded runtime. */
   async resolveServerEntry() {
     if (process.env.ELECTRON_SERVER_ENTRY) {
       return process.env.ELECTRON_SERVER_ENTRY;
     }
 
-    const bundledEntry = path.join(this.appRoot, 'dist-server', 'server', 'index.js');
-    if (process.env.CLOUDCLI_USE_INSTALLED_SERVER !== '1' && await pathExists(bundledEntry)) {
-      return bundledEntry;
+    const bundledEntries = [
+      path.join(this.resourcesRoot, 'server-runtime', 'dist-server', 'server', 'index.js'),
+      path.join(this.appRoot, 'server-runtime', 'dist-server', 'server', 'index.js'),
+      path.join(this.appRoot, 'dist-server', 'server', 'index.js'),
+    ].filter((entry, index, entries) => entries.indexOf(entry) === index);
+    if (process.env.CLOUDCLI_USE_INSTALLED_SERVER !== '1') {
+      for (const bundledEntry of bundledEntries) {
+        if (await pathExists(bundledEntry)) {
+          this.appendStartupLog(`Using bundled Local CloudCLI from ${bundledEntry}`);
+          return bundledEntry;
+        }
+      }
     }
 
     if (!this.appVersion) {
@@ -391,10 +448,18 @@ export class LocalServerController {
       bundleReleaseTag: bundleConfig.releaseTag,
       onLog: (line) => this.appendStartupLog(line),
     });
+    const embeddedArchive = path.join(
+      this.resourcesRoot,
+      'embedded-server',
+      installer.getBundleName(),
+    );
+    if (process.env.CLOUDCLI_USE_INSTALLED_SERVER !== '1' && await pathExists(embeddedArchive)) {
+      return installer.ensureInstalledFromArchive(embeddedArchive);
+    }
     return installer.ensureInstalled();
   }
 
-  startBundledServer(port, serverEntry) {
+  startBundledServer(port, serverEntry, launchNonce) {
     const bindHost = this.getServerBindHost();
     const runtime = getNodeRuntime(this.isPackaged);
     const serverCwd = getServerCwd(this.appRoot, serverEntry);
@@ -405,7 +470,7 @@ export class LocalServerController {
     this.appendStartupLog(`cwd: ${serverCwd}`);
     this.appendStartupLog(`HOST=${bindHost} SERVER_PORT=${port}`);
 
-    this.ownedServerProcess = spawn(runtime.command, [serverEntry], {
+    const child = spawn(runtime.command, [serverEntry], {
       cwd: serverCwd,
       detached: true,
       env: {
@@ -413,36 +478,40 @@ export class LocalServerController {
         ...runtime.env,
         HOST: bindHost,
         SERVER_PORT: String(port),
+        CLOUDCLI_DESKTOP_LAUNCH_NONCE: launchNonce,
+        CLOUDCLI_DISABLE_LOCAL_SERVER_MARKER: '1',
         PATH: getDesktopPath(),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     });
+    this.ownedServerProcess = child;
 
-    this.ownedServerProcess.once('error', (error) => {
+    child.once('error', (error) => {
       this.appendStartupLog(`failed to start process: ${error.message}`);
-      this.ownedServerProcess = null;
+      if (this.ownedServerProcess === child) this.ownedServerProcess = null;
     });
 
-    this.ownedServerProcess.stdout?.on('data', (chunk) => {
+    child.stdout?.on('data', (chunk) => {
       for (const line of String(chunk).split(/\r?\n/)) {
         this.appendStartupLog(line);
       }
     });
 
-    this.ownedServerProcess.stderr?.on('data', (chunk) => {
+    child.stderr?.on('data', (chunk) => {
       for (const line of String(chunk).split(/\r?\n/)) {
         this.appendStartupLog(`stderr: ${line}`);
       }
     });
 
-    this.ownedServerProcess.once('exit', (code, signal) => {
+    child.once('exit', (code, signal) => {
       this.appendStartupLog(`process exited with code ${code ?? 'null'} and signal ${signal ?? 'null'}`);
-      if (this.ownedServerProcess) {
+      if (this.ownedServerProcess === child) {
         console.error(`CloudCLI desktop server exited with code ${code ?? 'null'} and signal ${signal ?? 'null'}`);
+        this.ownedServerProcess = null;
       }
-      this.ownedServerProcess = null;
     });
+    return child;
   }
 
   async resolveLocalServerUrl() {
@@ -450,22 +519,25 @@ export class LocalServerController {
     const defaultDisplayUrl = `http://${DISPLAY_HOST}:${DEFAULT_PORT}`;
     const devUrl = process.env.ELECTRON_DEV_URL;
     const forceOwnServer = process.env.ELECTRON_FORCE_OWN_SERVER === '1';
+    const allowExistingServer = process.env.CLOUDCLI_DESKTOP_REUSE_EXISTING_SERVER === '1';
 
     if (devUrl) {
-      const ready = await waitForCloudCliServer(defaultUrl, SERVER_START_TIMEOUT_MS);
+      const ready = await waitForCloudCliServer(defaultUrl, SERVER_START_TIMEOUT_MS, { buildId: this.buildId });
       if (!ready) {
         throw new Error(`Development backend did not become ready at ${defaultDisplayUrl}`);
       }
       this.localServerPort = DEFAULT_PORT;
+      this.verifiedLocalOrigin = new URL(devUrl).origin;
       return devUrl;
     }
 
-    if (!forceOwnServer) {
+    if (!forceOwnServer && (!this.isPackaged || allowExistingServer)) {
       const candidateUrls = await getExistingServerCandidateUrls(defaultUrl);
       for (const candidateUrl of candidateUrls) {
-        if (await isCloudCliServer(candidateUrl)) {
+        if (await isCloudCliServer(candidateUrl, this.buildId)) {
           const displayUrl = getDisplayUrl(candidateUrl);
           this.localServerPort = getPortFromUrl(candidateUrl);
+          this.verifiedLocalOrigin = new URL(displayUrl).origin;
           this.appendStartupLog(`Using existing Local CloudCLI at ${displayUrl}`);
           return displayUrl;
         }
@@ -474,26 +546,46 @@ export class LocalServerController {
 
     const serverEntry = await this.resolveServerEntry();
 
-    const port = await chooseServerPort(this.getServerBindHost());
-    const serverUrl = `http://${HOST}:${port}`;
-    const displayUrl = `http://${DISPLAY_HOST}:${port}`;
-    this.localServerPort = port;
-    this.startBundledServer(port, serverEntry);
+    const attemptedPorts = new Set();
+    for (let attempt = 1; attempt <= MAX_SERVER_START_ATTEMPTS; attempt += 1) {
+      const port = await chooseServerPort(this.getServerBindHost(), attemptedPorts);
+      attemptedPorts.add(port);
+      const serverUrl = `http://${HOST}:${port}`;
+      const displayUrl = `http://${DISPLAY_HOST}:${port}`;
+      const launchNonce = crypto.randomBytes(32).toString('hex');
+      this.localServerPort = port;
+      const logStart = this.startupLogs.length;
+      const child = this.startBundledServer(port, serverEntry, launchNonce);
 
-    const ready = await waitForCloudCliServer(serverUrl, SERVER_START_TIMEOUT_MS);
-    if (!ready) {
-      const recentLogs = this.getStartupLogs().slice(-20).join('\n');
+      const ready = await waitForCloudCliServer(serverUrl, SERVER_START_TIMEOUT_MS, {
+        buildId: this.buildId,
+        launchNonce,
+        child,
+      });
+      if (ready) {
+        this.appendStartupLog(`Local CloudCLI ready at ${displayUrl}`);
+        this.localServerUrl = displayUrl;
+        this.verifiedLocalOrigin = new URL(displayUrl).origin;
+        return displayUrl;
+      }
+
+      const attemptLogs = this.startupLogs.slice(logStart);
+      const addressInUse = attemptLogs.some((line) => /EADDRINUSE|address already in use/i.test(line));
       await this.shutdownOwnedServer();
+      if (addressInUse && attempt < MAX_SERVER_START_ATTEMPTS) {
+        this.appendStartupLog(`Port ${port} was claimed during startup; retrying with another loopback port.`);
+        continue;
+      }
+
+      const recentLogs = this.getStartupLogs().slice(-20).join('\n');
       this.localServerPort = null;
+      this.verifiedLocalOrigin = null;
       throw new Error([
         `Bundled backend did not become ready at ${displayUrl}.`,
         recentLogs ? `Recent startup output:\n${recentLogs}` : 'No startup output was captured.',
       ].join('\n\n'));
     }
-
-    this.appendStartupLog(`Local CloudCLI ready at ${displayUrl}`);
-    this.localServerUrl = displayUrl;
-    return displayUrl;
+    throw new Error('Bundled backend could not reserve a local port.');
   }
 
   async ensureLocalServer() {

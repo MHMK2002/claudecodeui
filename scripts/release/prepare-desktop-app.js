@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -11,6 +12,13 @@ const stageDir = path.join(rootDir, '.desktop-build', 'desktop-app');
 const packageJson = JSON.parse(
   await fs.readFile(path.join(rootDir, 'package.json'), 'utf8'),
 );
+
+function getServerBundleName() {
+  const platform = process.env.CLOUDCLI_BUNDLE_PLATFORM
+    || (process.platform === 'darwin' ? 'mac' : process.platform === 'win32' ? 'win' : 'linux');
+  const arch = (process.env.CLOUDCLI_BUNDLE_ARCH || process.arch) === 'arm64' ? 'arm64' : 'x64';
+  return `cloudcli-local-server-${packageJson.version}-${platform}-${arch}.tar.gz`;
+}
 
 function getElectronVersion() {
   try {
@@ -64,6 +72,21 @@ async function copyNodeModule(packageName) {
   return true;
 }
 
+function run(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      stdio: 'inherit',
+      shell: process.platform === 'win32',
+      ...options,
+    });
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${command} ${args.join(' ')} exited with code ${code}`));
+    });
+  });
+}
+
 function buildDesktopPackageJson(copiedOptionalDependencies) {
   return {
     name: `${packageJson.name}-desktop`,
@@ -98,6 +121,13 @@ function buildDesktopPackageJson(copiedOptionalDependencies) {
         'node_modules/**',
         'package.json',
       ],
+      extraResources: [
+        {
+          from: 'embedded-server',
+          to: 'embedded-server',
+          filter: ['**/*'],
+        },
+      ],
       protocols: packageJson.build.protocols,
       mac: packageJson.build.mac,
       win: packageJson.build.win,
@@ -109,6 +139,20 @@ function buildDesktopPackageJson(copiedOptionalDependencies) {
 await fs.rm(stageDir, { recursive: true, force: true });
 await fs.mkdir(stageDir, { recursive: true });
 
+console.log('Preparing the customized Local CloudCLI runtime for the desktop app...');
+await run(process.execPath, [path.join(rootDir, 'scripts', 'release', 'build-server-bundle.js')], {
+  cwd: rootDir,
+  env: process.env,
+});
+const serverBundleName = getServerBundleName();
+const serverBundlePath = path.join(rootDir, 'release', 'local-server', serverBundleName);
+const embeddedServerDir = path.join(stageDir, 'embedded-server');
+await fs.mkdir(embeddedServerDir, { recursive: true });
+await fs.copyFile(serverBundlePath, path.join(embeddedServerDir, serverBundleName));
+await fs.copyFile(`${serverBundlePath}.sha256`, path.join(embeddedServerDir, `${serverBundleName}.sha256`));
+
+// Copy the shell and web assets only after the embedded server archive is
+// complete. Both artifacts therefore consume the exact same dist/build-id.txt.
 await copyRequired('electron');
 await copyRequired('dist');
 await copyRequired('public');
@@ -145,7 +189,7 @@ await fs.writeFile(
   'utf8',
 );
 
-console.log(`Prepared thin desktop app at ${path.relative(rootDir, stageDir)}`);
+console.log(`Prepared self-contained desktop app at ${path.relative(rootDir, stageDir)}`);
 console.log(`Runtime dependencies: ${copiedRuntimeDependencies.join(', ')}`);
 if (Object.keys(copiedOptionalDependencies).length) {
   console.log(`Optional dependencies: ${Object.keys(copiedOptionalDependencies).join(', ')}`);

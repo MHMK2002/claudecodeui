@@ -12,7 +12,6 @@ import {
   CodexVoiceCleanupError,
   createCodexVoiceCleanupService,
   extractResponsesOutputText,
-  resolveDefaultCodexResponsesProvider,
   selectLowestReasoningEffort,
 } from './codex-voice-cleanup.service.js';
 
@@ -30,19 +29,9 @@ const models: ProviderModelsDefinition = {
   DEFAULT: 'gpt-5.6-luna',
 };
 
-const defaultConfig = {
-  model_providers: {
-    proxy: {
-      base_url: 'https://codex.example/v1',
-      env_key: 'TEST_CODEX_KEY',
-      wire_api: 'responses',
-    },
-  },
-};
-
 const cleanupInput = {
   userId: 7,
-  providerProfileId: null,
+  providerProfileId: 12,
   model: 'gpt-5.6-luna',
   transcript: 'raw text',
   instructions: 'Fix punctuation only.',
@@ -73,14 +62,13 @@ function assertCleanupError(code: string) {
   };
 }
 
-test('default Codex cleanup sends one compact raw Responses request', async () => {
+test('Settings-backed Codex cleanup sends one compact raw Responses request', async () => {
   let capturedUrl = '';
   let capturedHeaders: RequestInit['headers'];
   let capturedBody: Record<string, unknown> | null = null;
   const service = createCodexVoiceCleanupService({
     getModels: async () => models,
-    readDefaultConfig: async () => defaultConfig,
-    env: { TEST_CODEX_KEY: 'server-secret' },
+    getProfile: () => customProfile({ baseUrl: 'https://codex.example/v1', secretValue: 'server-secret' }),
     fetchFn: (async (input, init) => {
       capturedUrl = String(input);
       capturedHeaders = init?.headers;
@@ -123,9 +111,6 @@ test('custom cleanup resolves only the selected user profile and parses nested o
     getProfile: (userId, profileId) => {
       lookups.push([userId, profileId]);
       return customProfile();
-    },
-    readDefaultConfig: async () => {
-      throw new Error('default config must not be read');
     },
     fetchFn: (async (input) => {
       capturedUrl = String(input);
@@ -171,7 +156,7 @@ test('rejects an unowned, missing, or inactive custom profile before fetching', 
 test('rejects models outside the server Codex catalog', async () => {
   const service = createCodexVoiceCleanupService({
     getModels: async () => models,
-    readDefaultConfig: async () => defaultConfig,
+    getProfile: () => customProfile(),
   });
 
   await assert.rejects(
@@ -180,25 +165,26 @@ test('rejects models outside the server Codex catalog', async () => {
   );
 });
 
-test('validates the default Local CLI Responses provider without exposing its key', () => {
-  assert.deepEqual(
-    resolveDefaultCodexResponsesProvider(defaultConfig, { TEST_CODEX_KEY: 'server-secret' }),
-    { baseUrl: 'https://codex.example/v1', apiKey: 'server-secret' },
-  );
-  assert.throws(
-    () => resolveDefaultCodexResponsesProvider({
-      model_providers: { proxy: { ...defaultConfig.model_providers.proxy, wire_api: 'chat' } },
-    }, { TEST_CODEX_KEY: 'server-secret' }),
-    assertCleanupError('RESPONSES_UNSUPPORTED'),
-  );
-  assert.throws(
-    () => resolveDefaultCodexResponsesProvider(defaultConfig, {}),
-    (error: unknown) => {
-      assertCleanupError('DEFAULT_PROVIDER_UNAVAILABLE')(error);
-      assert.equal(String(error).includes('server-secret'), false);
-      return true;
+test('rejects Local CLI cleanup before catalog or network access', async () => {
+  let modelCalls = 0;
+  let fetchCalls = 0;
+  const service = createCodexVoiceCleanupService({
+    getModels: async () => {
+      modelCalls += 1;
+      return models;
     },
+    fetchFn: (async () => {
+      fetchCalls += 1;
+      return Response.json({ output_text: 'unexpected' });
+    }) as typeof fetch,
+  });
+
+  await assert.rejects(
+    service.cleanup({ ...cleanupInput, providerProfileId: null as unknown as number }),
+    assertCleanupError('PROFILE_REQUIRED'),
   );
+  assert.equal(modelCalls, 0);
+  assert.equal(fetchCalls, 0);
 });
 
 test('selects the lightest supported reasoning effort and extracts Responses text defensively', () => {
@@ -215,8 +201,7 @@ test('selects the lightest supported reasoning effort and extracts Responses tex
 test('maps empty output, upstream rejection, and secret-bearing fetch failures to redacted errors', async () => {
   const createService = (fetchFn: typeof fetch) => createCodexVoiceCleanupService({
     getModels: async () => models,
-    readDefaultConfig: async () => defaultConfig,
-    env: { TEST_CODEX_KEY: 'server-secret' },
+    getProfile: () => customProfile({ secretValue: 'server-secret' }),
     fetchFn,
   });
 
@@ -251,8 +236,7 @@ test('distinguishes timeout from caller cancellation', async () => {
   )) as typeof fetch;
   const service = createCodexVoiceCleanupService({
     getModels: async () => models,
-    readDefaultConfig: async () => defaultConfig,
-    env: { TEST_CODEX_KEY: 'server-secret' },
+    getProfile: () => customProfile({ secretValue: 'server-secret' }),
     fetchFn: fetchUntilAborted,
     timeoutMs: 5,
   });

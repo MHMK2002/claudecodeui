@@ -69,21 +69,46 @@ async function loadUrlWithTimeout(webContents, url, timeoutMs = TARGET_LOAD_TIME
 }
 
 export class ViewHost {
-  constructor({ appName, getMainWindow, getContentViewBounds, getPreloadPath, openExternalUrl, showError }) {
+  constructor({ appName, getMainWindow, getContentViewBounds, getPreloadPath, openExternalUrl, showError, onDiagnostic }) {
     this.appName = appName;
     this.getMainWindow = getMainWindow;
     this.getContentViewBounds = getContentViewBounds;
     this.getPreloadPath = getPreloadPath;
     this.openExternalUrl = openExternalUrl;
     this.showError = showError;
+    this.onDiagnostic = onDiagnostic;
     this.activeContentView = null;
     this.tabViews = new Map();
   }
 
   configureChildWebContents(webContents) {
+    if (webContents.__cloudcliDiagnosticsConfigured) return;
+    webContents.__cloudcliDiagnosticsConfigured = true;
+    const record = (event, details = {}) => this.onDiagnostic?.(`web-contents.${event}`, {
+      id: webContents.id,
+      url: webContents.isDestroyed() ? null : webContents.getURL(),
+      ...details,
+    });
     webContents.setWindowOpenHandler(({ url }) => {
+      record('window-open-denied', { requestedUrl: url });
       void this.openExternalUrl(url).catch((error) => this.showError('Could not open external link', error));
       return { action: 'deny' };
+    });
+    webContents.on('did-start-loading', () => record('did-start-loading'));
+    webContents.on('did-finish-load', () => record('did-finish-load'));
+    webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+      record('did-fail-load', { errorCode, errorDescription, validatedUrl, isMainFrame });
+    });
+    webContents.on('render-process-gone', (_event, details) => record('render-process-gone', details));
+    webContents.on('unresponsive', () => record('unresponsive'));
+    webContents.on('responsive', () => record('responsive'));
+    webContents.on('console-message', (_event, levelOrDetails, message, line, sourceId) => {
+      const details = levelOrDetails && typeof levelOrDetails === 'object'
+        ? levelOrDetails
+        : { level: levelOrDetails, message, lineNumber: line, sourceId };
+      const level = details.level;
+      if (typeof level === 'number' ? level < 2 : !/warn|error/i.test(String(level))) return;
+      record('console', details);
     });
   }
 

@@ -49,6 +49,57 @@ export type CodexProviderProfilePublic = ProviderProfilePublic<'codex'> & {
   authType: CodexProviderProfileAuthType;
 };
 
+/**
+ * One selectable profile row inside the public provider selection catalog.
+ *
+ * Identity is (provider, id) — numeric ids may collide across providers. The
+ * backend never sends credential fields here; only id/title/isDefault.
+ */
+export type ProviderSelectionCatalogProfile = {
+  id: number;
+  title: string;
+  isDefault: boolean;
+};
+
+/**
+ * One provider entry inside the public selection catalog.
+ *
+ * `available` is false when the provider cannot be selected right now (no
+ * active profile for Claude/Codex, disconnected CLI for Cursor/OpenCode);
+ * `unavailableReason` explains why for disabled pickers. Models stay
+ * provider-level — per-profile model discovery is out of scope.
+ */
+export type ProviderSelectionCatalogEntry = {
+  provider: LLMProvider;
+  available: boolean;
+  unavailableReason: string | null;
+  /** Active profiles; empty for Cursor/OpenCode, which never use profiles. */
+  profiles: ProviderSelectionCatalogProfile[];
+  /** Provider-level model catalog (options and default model). */
+  models: ProviderModelsDefinition;
+};
+
+/**
+ * Public selection catalog returned by `GET /api/providers/selection-catalog`.
+ * The single shared source every provider picker consumes.
+ */
+export type ProviderSelectionCatalog = {
+  providers: ProviderSelectionCatalogEntry[];
+};
+
+/**
+ * A fully-resolved provider selection: which provider, which runtime profile,
+ * and which model a new session or fork will run with.
+ *
+ * For connection-backed providers (cursor, opencode) `providerProfileId` is
+ * always null — that is their natural architecture, not a legacy state.
+ */
+export type ResolvedProviderSelection = {
+  provider: LLMProvider;
+  providerProfileId: number | null;
+  model: string;
+};
+
 export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'browser' | `plugin:${string}`;
 
 export interface ProjectSession {

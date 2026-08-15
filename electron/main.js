@@ -1,11 +1,15 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell } from 'electron';
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { CloudController } from './cloud.js';
 import { DesktopWindowManager } from './desktopWindow.js';
 import { DesktopNotificationsController } from './desktopNotifications.js';
+import { DesktopDiagnostics, redactDiagnosticValue } from './diagnostics.js';
+import { LocalAuthStore } from './localAuth.js';
+import { isExactVerifiedOrigin } from './localOrigin.js';
 import { LocalServerController } from './localServer.js';
 import { TabsController } from './tabs.js';
 
@@ -30,6 +34,9 @@ let desktopWindow = null;
 let localServer = null;
 let cloud = null;
 let desktopNotifications = null;
+let localAuth = null;
+let diagnostics = null;
+let buildId = null;
 let isQuitting = false;
 let isRefreshingCloud = false;
 let pendingCloudConnectStartedAt = 0;
@@ -65,6 +72,25 @@ function getDesktopNotificationsSettingsPath() {
   return path.join(app.getPath('userData'), 'desktop-notifications-settings.json');
 }
 
+function getLocalAuthPath() {
+  return path.join(app.getPath('userData'), 'local-auth.json');
+}
+
+function getDiagnosticsDirectory() {
+  return path.join(app.getPath('userData'), 'diagnostics');
+}
+
+function readBuildId() {
+  try {
+    const value = fs.readFileSync(path.join(getAppRoot(), 'dist', 'build-id.txt'), 'utf8').trim();
+    if (value) return value;
+  } catch {
+    // Development checkouts may not have a client build yet.
+  }
+  if (app.isPackaged) throw new Error('Packaged desktop build identity is missing.');
+  return `${app.getVersion()}-unidentified`;
+}
+
 function getRunningEnvironmentUrls() {
   return cloud.getEnvironments()
     .filter((environment) => environment.status === 'running')
@@ -78,6 +104,8 @@ function getDisplayTargetName() {
 
 function getCloudState() {
   return {
+    appVersion: app.getVersion(),
+    buildId,
     account: cloud.getAccount(),
     environments: cloud.getEnvironments(),
     controlPlaneUrl: CLOUDCLI_CONTROL_PLANE_URL,
@@ -144,6 +172,7 @@ async function openExternalUrl(url) {
 async function showError(title, error) {
   const message = error instanceof Error ? error.message : String(error);
   console.error(`${title}: ${message}`);
+  void diagnostics?.record('error.dialog', { title, message, stack: error?.stack });
   await dialog.showMessageBox(desktopWindow?.getMainWindow() || undefined, {
     type: 'error',
     title,
@@ -214,12 +243,16 @@ function isCloudAuthRedirect(url) {
   }
 }
 
-function getDiagnosticsText() {
+async function getDiagnosticsText() {
   const cloudAccount = cloud.getAccount();
   const localState = getLocalState();
-  return JSON.stringify({
+  const diagnosticTail = await diagnostics?.tail(120).catch((error) => [
+    JSON.stringify({ event: 'diagnostics.tail-failed', details: { message: error?.message || String(error) } }),
+  ]);
+  return JSON.stringify(redactDiagnosticValue({
     app: APP_NAME,
     version: app.getVersion(),
+    buildId,
     electron: process.versions.electron,
     node: process.versions.node,
     platform: process.platform,
@@ -239,11 +272,13 @@ function getDiagnosticsText() {
     cloudAuthState: cloud.getAuthState(),
     cloudAccountPath: getStorePath(),
     controlPlaneUrl: CLOUDCLI_CONTROL_PLANE_URL,
-  }, null, 2);
+    diagnosticsPath: diagnostics?.getPath() || null,
+    diagnosticsTail: diagnosticTail || [],
+  }), null, 2);
 }
 
 async function copyDiagnostics() {
-  clipboard.writeText(getDiagnosticsText());
+  clipboard.writeText(await getDiagnosticsText());
   await dialog.showMessageBox(desktopWindow?.getMainWindow() || undefined, {
     type: 'info',
     title: 'Diagnostics copied',
@@ -720,6 +755,20 @@ function registerProtocolHandler() {
 }
 
 function registerIpcHandlers() {
+  ipcMain.on('cloudcli-desktop:get-local-auth-token', (event) => {
+    const authorized = isExactVerifiedOrigin(event.senderFrame?.url, localServer?.getVerifiedLocalOrigin());
+    void diagnostics?.record('local-auth.read', { authorized, senderUrl: event.senderFrame?.url });
+    event.returnValue = authorized ? localAuth?.getToken() : null;
+  });
+  ipcMain.on('cloudcli-desktop:update-local-auth-token', (event, token) => {
+    const authorized = isExactVerifiedOrigin(event.senderFrame?.url, localServer?.getVerifiedLocalOrigin());
+    void diagnostics?.record('local-auth.update', { authorized, senderUrl: event.senderFrame?.url });
+    if (!authorized) return;
+    void localAuth?.save(typeof token === 'string' ? token : null).catch((error) => {
+      console.error('[LocalAuth] Could not persist the desktop login:', error?.message || error);
+    });
+  });
+
   ipcMain.handle('cloudcli-desktop:connect-cloud', async () => ({
     ...getDesktopState(),
     connectUrl: await connectCloudAccount(),
@@ -766,18 +815,18 @@ function registerIpcHandlers() {
   });
   ipcMain.handle('cloudcli-desktop:show-active-environment-actions-menu', async () => desktopWindow.showActiveEnvironmentActionsMenu());
   ipcMain.handle('cloudcli-desktop:show-environment-actions-menu', async (_event, environmentId) => desktopWindow.showEnvironmentActionsMenu(environmentId));
-  ipcMain.handle('cloudcli-desktop:switch-tab', async (_event, tabId) => desktopWindow.switchDesktopTab(tabId));
-  ipcMain.handle('cloudcli-desktop:close-tab', async (_event, tabId) => desktopWindow.closeDesktopTab(tabId));
   ipcMain.handle('cloudcli-desktop:update-setting', async (_event, key, value) => updateDesktopSetting(key, value));
 }
 
 function registerAppEvents() {
   app.on('open-url', (event, url) => {
+    void diagnostics?.record('app.open-url', { url });
     event.preventDefault();
     void handleDeepLink(url);
   });
 
   app.on('activate', () => {
+    void diagnostics?.record('app.activate');
     if (BrowserWindow.getAllWindows().length === 0) {
       if (desktopWindow) {
         void desktopWindow.createWindow();
@@ -795,6 +844,7 @@ function registerAppEvents() {
   });
 
   app.on('before-quit', () => {
+    void diagnostics?.record('app.before-quit');
     desktopNotifications?.stop();
   });
 
@@ -811,6 +861,7 @@ function registerAppEvents() {
   });
 
   app.on('window-all-closed', () => {
+    void diagnostics?.record('app.window-all-closed');
     if (process.platform !== 'darwin') {
       app.quit();
     }
@@ -829,6 +880,7 @@ async function createDesktopWindow() {
     getRemoteEnvironmentMenuItems,
     getCloudState,
     getLocalState,
+    onDiagnostic: (event, details) => diagnostics?.record(event, details),
     tabs,
     actions: {
       copyDiagnostics,
@@ -891,6 +943,24 @@ async function bootstrap() {
   process.title = APP_NAME;
 
   await app.whenReady();
+  diagnostics = new DesktopDiagnostics({ directory: getDiagnosticsDirectory() });
+  buildId = readBuildId();
+  await diagnostics.record('app.bootstrap-start', {
+    version: app.getVersion(),
+    buildId,
+    packaged: app.isPackaged,
+    platform: process.platform,
+    arch: process.arch,
+  });
+  process.on('uncaughtExceptionMonitor', (error) => {
+    void diagnostics?.record('process.uncaught-exception', { message: error.message, stack: error.stack });
+  });
+  process.on('unhandledRejection', (reason) => {
+    void diagnostics?.record('process.unhandled-rejection', { reason });
+  });
+  app.on('child-process-gone', (_event, details) => {
+    void diagnostics?.record('app.child-process-gone', details);
+  });
   app.setName(APP_NAME);
   app.setAboutPanelOptions({
     applicationName: APP_NAME,
@@ -900,11 +970,15 @@ async function bootstrap() {
 
   localServer = new LocalServerController({
     appRoot: getAppRoot(),
+    resourcesRoot: app.isPackaged ? process.resourcesPath : getAppRoot(),
     settingsPath: getSettingsPath(),
     isPackaged: app.isPackaged,
     appVersion: app.getVersion(),
+    buildId,
     onChange: syncDesktopState,
+    onLog: (line) => diagnostics?.record('local-server.log', { line }),
   });
+  localAuth = new LocalAuthStore(getLocalAuthPath());
   cloud = new CloudController({
     storePath: getStorePath(),
     controlPlaneUrl: CLOUDCLI_CONTROL_PLANE_URL,
@@ -926,6 +1000,7 @@ async function bootstrap() {
   });
 
   await localServer.loadDesktopSettings();
+  await localAuth.load();
   await cloud.loadCloudAccount();
   await desktopNotifications.loadSettings();
 
@@ -933,11 +1008,13 @@ async function bootstrap() {
   registerIpcHandlers();
   registerAppEvents();
   await createDesktopWindow();
+  await diagnostics.record('app.bootstrap-ready');
   void refreshCloudEnvironments({ showErrors: false });
 }
 
 if (registerSingleInstance()) {
   bootstrap().catch(async (error) => {
+    await diagnostics?.record('app.bootstrap-failed', { message: error?.message || String(error), stack: error?.stack });
     await showError('CloudCLI failed to start', error);
     app.quit();
   });

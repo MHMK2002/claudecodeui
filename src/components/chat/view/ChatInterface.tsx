@@ -6,6 +6,11 @@ import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
 import PermissionContext from '../../../contexts/PermissionContext';
 import type { ChatInterfaceProps, PermissionMode, Provider  } from '../types/types';
+import { api } from '../../../utils/api';
+import {
+  resolveValidSelection,
+  useProviderSelectionCatalog,
+} from '../../../shared/hooks/useProviderSelectionCatalog';
 import { useChatProviderState } from '../hooks/useChatProviderState';
 import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
@@ -53,6 +58,9 @@ function ChatInterface({
 
   const sessionStore = useSessionStore();
   const [startingTaskId, setStartingTaskId] = useState<string | null>(null);
+  const [providerSwitching, setProviderSwitching] = useState(false);
+  const [providerSwitchError, setProviderSwitchError] = useState<string | null>(null);
+  const providerSwitchInFlightRef = useRef(false);
   const streamTimerRef = useRef<number | null>(null);
   const accumulatedStreamRef = useRef('');
   // When each session's `chat.subscribe` was last sent; idle acks older than
@@ -83,7 +91,6 @@ function ChatInterface({
     currentProviderEffort,
     currentProviderEffortOptions,
     currentProviderModel,
-    currentProviderModelOptions,
     opencodeModel,
     setOpenCodeModel,
     permissionMode,
@@ -96,22 +103,24 @@ function ChatInterface({
     providerModelCacheCatalog,
     providerModelsLoading,
     providerModelsRefreshing,
-    claudeProfiles,
-    claudeProfilesLoading,
     selectedClaudeProfileId,
     setSelectedClaudeProfileId,
-    codexProfiles,
-    codexProfilesLoading,
     selectedCodexProfileId,
     setSelectedCodexProfileId,
     hardRefreshProviderModels,
     selectProviderModel,
+    setStoredProviderModel,
     setStoredProviderEffort,
     resolvePermissionModeForProvider,
   } = useChatProviderState({
     selectedSession,
     selectedProject,
   });
+  const { catalog: providerSelectionCatalog } = useProviderSelectionCatalog();
+  const currentProviderModelOptions = useMemo(
+    () => providerSelectionCatalog?.providers.find((entry) => entry.provider === provider)?.models.OPTIONS ?? [],
+    [provider, providerSelectionCatalog],
+  );
 
   const {
     chatMessages,
@@ -161,6 +170,62 @@ function ChatInterface({
     sessionStore,
   });
 
+  // A brand-new chat never trusts a stale localStorage-only target. Once the
+  // Settings-backed catalog arrives, reconcile the pending triple to a valid
+  // profile/model (or the first available provider) before session creation.
+  useEffect(() => {
+    if (!providerSelectionCatalog || selectedSession?.id || currentSessionId) return;
+    const currentProfileId = provider === 'claude'
+      ? selectedClaudeProfileId
+      : provider === 'codex'
+        ? selectedCodexProfileId
+        : null;
+    const preferredModel = provider === 'claude'
+      ? claudeModel
+      : provider === 'cursor'
+        ? cursorModel
+        : provider === 'codex'
+          ? codexModel
+          : opencodeModel;
+    const resolved = resolveValidSelection(providerSelectionCatalog, provider, {
+      profileId: currentProfileId,
+      model: preferredModel,
+    }) ?? providerSelectionCatalog.providers
+      .filter((entry) => entry.available)
+      .map((entry) => resolveValidSelection(providerSelectionCatalog, entry.provider))
+      .find((candidate) => candidate !== null) ?? null;
+    if (!resolved) return;
+
+    if (resolved.provider !== provider) {
+      setProvider(resolved.provider);
+      localStorage.setItem('selected-provider', resolved.provider);
+    }
+    if (resolved.provider === 'claude' && resolved.providerProfileId !== selectedClaudeProfileId) {
+      setSelectedClaudeProfileId(resolved.providerProfileId);
+    }
+    if (resolved.provider === 'codex' && resolved.providerProfileId !== selectedCodexProfileId) {
+      setSelectedCodexProfileId(resolved.providerProfileId);
+    }
+    if (resolved.model !== preferredModel || resolved.provider !== provider) {
+      setStoredProviderModel(resolved.provider, resolved.model);
+    }
+  }, [
+    claudeModel,
+    codexModel,
+    currentSessionId,
+    cursorModel,
+    opencodeModel,
+    provider,
+    providerSelectionCatalog,
+    selectedClaudeProfileId,
+    selectedCodexProfileId,
+    selectedSession?.id,
+    setProvider,
+    setSelectedClaudeProfileId,
+    setSelectedCodexProfileId,
+    setStoredProviderModel,
+  ]);
+
   // Brand-new conversation: the composer allocated a stable session id via
   // the session gateway before the first send. Record it locally and put it
   // in the URL — this id never changes again, so there is no later handoff.
@@ -184,6 +249,7 @@ function ChatInterface({
             : provider === 'codex'
               ? selectedCodexProfileId
               : null,
+          model: currentProviderModel,
         },
         sendMessage,
         onSessionEstablished: handleSessionEstablished,
@@ -196,6 +262,7 @@ function ChatInterface({
       setStartingTaskId(null);
     }
   }, [
+    currentProviderModel,
     handleSessionEstablished,
     onSessionProcessing,
     provider,
@@ -388,6 +455,111 @@ function ChatInterface({
     }
   }, [currentSessionId, provider, selectProviderModel, selectedSession?.id]);
 
+  // Provider/profile selection from the composer's provider menu.
+  //
+  // New chat (no session yet): the pick changes the pending selection — the
+  // model resets to the target provider's valid default and the composer
+  // reflects the change immediately; the first message then creates the
+  // session with exactly this provider/profile/model.
+  //
+  // Existing chat: an identical pick is a no-op. Changing provider or profile
+  // forks the session with carryContext: true so the new conversation keeps a
+  // handoff summary of the current one. Until the fork succeeds, the current
+  // session's state is untouched; on error the user stays in the current
+  // session with a visible message, and navigation happens only after the
+  // backend confirms.
+  const handleSelectComposerProvider = useCallback(
+    async (nextProvider: Provider, nextProfileId: number | null) => {
+      if (providerSwitchInFlightRef.current) return;
+      const openSessionId = selectedSession?.id ?? currentSessionId ?? null;
+      const preferredModel = nextProvider === 'claude'
+        ? claudeModel
+        : nextProvider === 'cursor'
+          ? cursorModel
+          : nextProvider === 'codex'
+            ? codexModel
+            : opencodeModel;
+      const targetSelection = resolveValidSelection(providerSelectionCatalog, nextProvider, {
+        profileId: nextProfileId,
+        model: preferredModel,
+      });
+      if (!targetSelection || targetSelection.providerProfileId !== nextProfileId) {
+        setProviderSwitchError('This provider selection is no longer available. Update it in Settings and try again.');
+        return;
+      }
+
+      if (!openSessionId) {
+        // Pending selection for the not-yet-created session.
+        setProvider(nextProvider);
+        localStorage.setItem('selected-provider', nextProvider);
+        if (nextProvider === 'claude') {
+          setSelectedClaudeProfileId(nextProfileId);
+        } else if (nextProvider === 'codex') {
+          setSelectedCodexProfileId(nextProfileId);
+        }
+        // Drop the previous provider's model so the new chat uses the target
+        // provider's valid default (reconciled by useChatProviderState once
+        // the catalog resolves it).
+        setStoredProviderModel(nextProvider, targetSelection.model);
+        return;
+      }
+
+      const isSamePick = provider === nextProvider
+        && (nextProvider === 'claude'
+          ? selectedClaudeProfileId
+          : nextProvider === 'codex'
+            ? selectedCodexProfileId
+            : null) === nextProfileId;
+      if (isSamePick || !onNavigateToSession) {
+        return;
+      }
+
+      setProviderSwitchError(null);
+      providerSwitchInFlightRef.current = true;
+      setProviderSwitching(true);
+      try {
+        const response = await api.forkSession(openSessionId, {
+          provider: targetSelection.provider,
+          providerProfileId: targetSelection.providerProfileId,
+          model: targetSelection.model,
+          carryContext: true,
+        });
+        const payload = await response.json();
+        const newSessionId = payload?.data?.sessionId;
+        if (!response.ok || !newSessionId) {
+          throw new Error(payload?.message || payload?.error || 'The provider switch fork failed.');
+        }
+        onNavigateToSession(newSessionId);
+      } catch (switchError) {
+        setProviderSwitchError(
+          switchError instanceof Error
+            ? switchError.message
+            : 'Failed to switch provider. You are still in the current session.',
+        );
+      } finally {
+        providerSwitchInFlightRef.current = false;
+        setProviderSwitching(false);
+      }
+    },
+    [
+      claudeModel,
+      codexModel,
+      currentSessionId,
+      cursorModel,
+      onNavigateToSession,
+      opencodeModel,
+      provider,
+      providerSelectionCatalog,
+      selectedClaudeProfileId,
+      selectedCodexProfileId,
+      selectedSession?.id,
+      setProvider,
+      setSelectedClaudeProfileId,
+      setSelectedCodexProfileId,
+      setStoredProviderModel,
+    ],
+  );
+
   // Mirrors ChatComposer's own visibility check so the message pane can
   // reserve enough bottom space to keep the floating status tab from
   // overlapping the last message.
@@ -456,14 +628,8 @@ function ChatInterface({
           setCodexModel={setCodexModel}
           opencodeModel={opencodeModel}
           setOpenCodeModel={setOpenCodeModel}
-          providerModelCatalog={providerModelCatalog}
-          providerModelsLoading={providerModelsLoading}
-          claudeProfiles={claudeProfiles}
-          claudeProfilesLoading={claudeProfilesLoading}
           selectedClaudeProfileId={selectedClaudeProfileId}
           setSelectedClaudeProfileId={setSelectedClaudeProfileId}
-          codexProfiles={codexProfiles}
-          codexProfilesLoading={codexProfilesLoading}
           selectedCodexProfileId={selectedCodexProfileId}
           setSelectedCodexProfileId={setSelectedCodexProfileId}
           tasksEnabled={tasksEnabled}
@@ -548,6 +714,18 @@ function ChatInterface({
           availablePermissionModes={availablePermissionModes}
           onSelectPermissionMode={(mode) => selectPermissionMode(mode as PermissionMode)}
           providerLabel={selectedProviderLabel}
+          currentProvider={provider}
+          currentProviderProfileId={
+            provider === 'claude'
+              ? selectedClaudeProfileId
+              : provider === 'codex'
+                ? selectedCodexProfileId
+                : null
+          }
+          onSelectProvider={handleSelectComposerProvider}
+          providerSwitching={providerSwitching}
+          providerSwitchError={providerSwitchError}
+          onDismissProviderSwitchError={() => setProviderSwitchError(null)}
           effort={currentProviderEffort}
           availableEffortOptions={currentProviderEffortOptions}
           onSelectEffort={(nextEffort) => setStoredProviderEffort(provider, nextEffort)}

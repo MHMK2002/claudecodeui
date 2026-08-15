@@ -4,7 +4,7 @@ import type { WebSocket } from 'ws';
 
 import { providerProfilesDb, sessionsDb } from '@/modules/database/index.js';
 import { taskmasterWorkflowService } from '@/modules/taskmaster/index.js';
-import { providerModelsService } from '@/modules/providers/index.js';
+import { providerModelsService, providerSelectionService } from '@/modules/providers/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
 import {
@@ -185,9 +185,12 @@ function readRequiredSessionId(data: AnyRecord): string | null {
 /**
  * Handles `chat.send`: resolves the session row (provider, project path, and
  * provider-native id all come from the database — never from the client),
- * registers the run, and dispatches to the provider runtime.
+ * re-validates the session's provider/profile selection before anything is
+ * consumed or registered, and dispatches to the provider runtime.
+ *
+ * Exported for tests.
  */
-async function handleChatSend(
+export async function handleChatSend(
   ws: WebSocket,
   userId: string | number | null,
   data: AnyRecord,
@@ -216,33 +219,38 @@ async function handleChatSend(
     return;
   }
 
+  // Re-validate the session's selection right before anything is consumed or
+  // registered: legacy Claude/Codex rows without a usable profile, profiles
+  // deactivated since the session was created, and disconnected
+  // Cursor/OpenCode all stop here with a clear protocol error — the fork
+  // context is not consumed, no run is started, and the runtime is never
+  // spawned.
+  try {
+    await providerSelectionService.validateSessionExecution({
+      userId: readNumericUserId(userId),
+      sessionId,
+    });
+  } catch (error) {
+    const selectionError = error as Error & { code?: string };
+    sendProtocolError(
+      ws,
+      selectionError.code ?? 'SESSION_EXECUTION_REJECTED',
+      selectionError.message,
+      sessionId,
+    );
+    return;
+  }
+
   let providerProfile: AnyRecord | null = null;
   if (isProfileProvider(provider) && session.provider_profile_id) {
-    const numericUserId = readNumericUserId(userId);
-    if (!numericUserId) {
-      sendProtocolError(
-        ws,
-        'PROVIDER_PROFILE_AUTH_REQUIRED',
-        `A signed-in user is required to use this ${provider} provider profile.`,
-        sessionId
-      );
-      return;
-    }
-
+    // validateSessionExecution already proved this lookup succeeds and the
+    // user is authenticated; re-reading here only fetches the runtime payload
+    // (secret included) for the provider adapters.
     providerProfile = providerProfilesDb.getProviderProfileForRuntime(
-      numericUserId,
+      readNumericUserId(userId) as number,
       provider,
       Number(session.provider_profile_id),
     );
-    if (!providerProfile) {
-      sendProtocolError(
-        ws,
-        'PROVIDER_PROFILE_NOT_FOUND',
-        `The ${provider} provider profile for this session was not found or is inactive.`,
-        sessionId
-      );
-      return;
-    }
   }
 
   const clientOptions = (data.options ?? {}) as AnyRecord;

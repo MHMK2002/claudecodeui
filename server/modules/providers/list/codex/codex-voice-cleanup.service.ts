@@ -1,11 +1,4 @@
-import { readFile } from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
-
-import TOML from '@iarna/toml';
-
 import { providerProfilesDb } from '@/modules/database/index.js';
-import { CODEX_MODEL_PROVIDER_ID } from '@/modules/providers/list/codex/codex-runtime.js';
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
 import type {
   CodexProviderProfileRuntime,
@@ -19,7 +12,6 @@ import {
 } from '../../../../../shared/voice-cleanup-contract.js';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
-const CODEX_CONFIG_PATH = path.join(os.homedir(), '.codex', 'config.toml');
 const REASONING_EFFORT_ORDER = [
   'none',
   'minimal',
@@ -39,7 +31,7 @@ type CodexResponsesProvider = {
 
 export type CodexVoiceCleanupInput = {
   userId: number;
-  providerProfileId: number | null;
+  providerProfileId: number;
   model: string;
   transcript: string;
   instructions: string;
@@ -56,8 +48,6 @@ type CodexVoiceCleanupDependencies = {
   fetchFn?: FetchLike;
   getModels?: () => Promise<ProviderModelsDefinition>;
   getProfile?: (userId: number, profileId: number) => CodexProviderProfileRuntime | null;
-  readDefaultConfig?: () => Promise<unknown>;
-  env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
 };
 
@@ -99,42 +89,6 @@ function assertSafeBaseUrl(value: string): string {
   parsed.search = '';
   parsed.hash = '';
   return parsed.toString().replace(/\/$/, '');
-}
-
-export function resolveDefaultCodexResponsesProvider(
-  configValue: unknown,
-  env: NodeJS.ProcessEnv,
-): CodexResponsesProvider {
-  const config = asRecord(configValue);
-  const providers = asRecord(config?.model_providers);
-  const provider = asRecord(providers?.[CODEX_MODEL_PROVIDER_ID]);
-  if (!provider || provider.requires_openai_auth === true) {
-    throw new CodexVoiceCleanupError(
-      'DEFAULT_PROVIDER_UNAVAILABLE',
-      'Default Codex provider does not expose Responses credentials.',
-      503,
-    );
-  }
-
-  const wireApi = readString(provider.wire_api);
-  if (wireApi && wireApi !== 'responses') {
-    throw new CodexVoiceCleanupError(
-      'RESPONSES_UNSUPPORTED',
-      'Selected Codex provider does not support the Responses API.',
-      400,
-    );
-  }
-  const baseUrl = readString(provider.base_url);
-  const envKey = readString(provider.env_key);
-  const apiKey = envKey ? readString(env[envKey]) : null;
-  if (!baseUrl || !apiKey) {
-    throw new CodexVoiceCleanupError(
-      'DEFAULT_PROVIDER_UNAVAILABLE',
-      'Default Codex provider is not fully configured.',
-      503,
-    );
-  }
-  return { baseUrl: assertSafeBaseUrl(baseUrl), apiKey };
 }
 
 function resolveCustomCodexResponsesProvider(
@@ -220,10 +174,6 @@ export const createCodexVoiceCleanupService = (
   const getProfile = dependencies.getProfile ?? ((userId, profileId) => (
     providerProfilesDb.getCodexProfileForRuntime(userId, profileId)
   ));
-  const readDefaultConfig = dependencies.readDefaultConfig ?? (async () => (
-    TOML.parse(await readFile(CODEX_CONFIG_PATH, 'utf8'))
-  ));
-  const env = dependencies.env ?? process.env;
   const timeoutMs = dependencies.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   const cleanup = async (input: CodexVoiceCleanupInput): Promise<CodexVoiceCleanupResult> => {
@@ -234,12 +184,19 @@ export const createCodexVoiceCleanupService = (
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
+      if (!Number.isInteger(input.providerProfileId) || input.providerProfileId <= 0) {
+        throw new CodexVoiceCleanupError(
+          'PROFILE_REQUIRED',
+          'An active Codex provider profile from Settings is required.',
+          400,
+        );
+      }
       const definition = await getModels();
       const selectedModel = selectCodexCleanupModel(definition, input.model);
       const effort = selectLowestReasoningEffort(selectedModel);
-      const provider = input.providerProfileId === null
-        ? resolveDefaultCodexResponsesProvider(await readDefaultConfig(), env)
-        : resolveCustomCodexResponsesProvider(getProfile(input.userId, input.providerProfileId));
+      const provider = resolveCustomCodexResponsesProvider(
+        getProfile(input.userId, input.providerProfileId),
+      );
       const body = {
         model: selectedModel.value,
         input: buildCleanupInput(input.transcript, input.instructions),

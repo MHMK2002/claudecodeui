@@ -131,13 +131,15 @@ export default function VoiceSettingsTab() {
   }, [loadCleanupProfiles]);
 
   useEffect(() => {
-    if (
-      cleanupProfilesLoaded &&
-      !cleanupProfilesLoading &&
-      config.cleanupProviderProfileId !== null &&
-      !cleanupProfiles.some((profile) => profile.id === config.cleanupProviderProfileId)
-    ) {
-      update({ cleanupProviderProfileId: null });
+    if (!cleanupProfilesLoaded || cleanupProfilesLoading) return;
+    const selectedProfileIsValid = config.cleanupProviderProfileId !== null &&
+      cleanupProfiles.some((profile) => profile.id === config.cleanupProviderProfileId);
+    if (selectedProfileIsValid) return;
+
+    const fallbackProfile = cleanupProfiles.find((profile) => profile.isDefault) ?? cleanupProfiles[0];
+    const fallbackProfileId = fallbackProfile?.id ?? null;
+    if (fallbackProfileId !== config.cleanupProviderProfileId) {
+      update({ cleanupProviderProfileId: fallbackProfileId });
     }
   }, [
     cleanupProfiles,
@@ -378,16 +380,16 @@ export default function VoiceSettingsTab() {
                     <select
                       className={inputClass}
                       value={config.cleanupProviderProfileId === null
-                        ? 'local'
+                        ? ''
                         : String(config.cleanupProviderProfileId)}
                       disabled={cleanupProfilesLoading}
                       onChange={(e) => update({
-                        cleanupProviderProfileId: e.target.value === 'local'
+                        cleanupProviderProfileId: e.target.value === ''
                           ? null
                           : Number(e.target.value),
                       })}
                     >
-                      <option value="local">{t('voiceSettings.cleanupProviderLocal')}</option>
+                      {cleanupProfiles.length === 0 && <option value="">—</option>}
                       {cleanupProfiles.map((profile) => (
                         <option key={profile.id} value={profile.id}>{profile.title}</option>
                       ))}

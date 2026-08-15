@@ -711,67 +711,6 @@ body.win .titlebar {
   margin-right: 6px;
 }
 
-.tb-tabs {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.tb-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 112px;
-  max-width: 232px;
-  flex: 0 0 auto;
-  height: 30px;
-  padding: 0 7px 0 12px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  color: var(--tx2);
-  font-size: 12px;
-  background: transparent;
-  transition: background 0.12s, color 0.12s;
-}
-
-.tb-tab:hover {
-  background: var(--tab-hover-bg);
-}
-
-.tb-tab.active {
-  background: var(--tab-active-bg);
-  color: var(--tx);
-}
-
-.tb-tab span:first-child {
-  flex: 1;
-  min-width: 0;
-  max-width: 20ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tb-close {
-  display: grid;
-  width: 20px;
-  height: 20px;
-  margin-left: 8px;
-  place-items: center;
-  border-radius: 6px;
-  color: var(--tx3);
-  font-size: 14px;
-  line-height: 1;
-  flex: 0 0 auto;
-}
-
-.tb-close:hover {
-  background: var(--tab-hover-bg);
-  color: var(--tx);
-}
-
 .tb-action {
   flex: 0 0 auto;
 }

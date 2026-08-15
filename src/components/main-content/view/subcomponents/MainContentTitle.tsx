@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Download, GitFork } from 'lucide-react';
 
-import { api, authenticatedFetch } from '../../../../utils/api';
+import { api } from '../../../../utils/api';
 import { useChatProviderState } from '../../../chat/hooks/useChatProviderState';
 import { useSessionStore } from '../../../../stores/useSessionStore';
 import ProviderModelPickerDialog, {
@@ -75,39 +75,23 @@ function SessionActions({ session, onNavigateToSession, t }: SessionActionsProps
   // exporting them as standalone chats would misrepresent the data.
   const isAgentTranscript = Boolean(session.parentSessionId);
 
-  // Read-only access to the provider/model/profile catalog so the fork dialog
-  // can show the same picker as the empty-state chat composer. Forking does
-  // NOT mutate the source session's provider/model — only the new one.
-  const {
-    claudeModel,
-    cursorModel,
-    codexModel,
-    opencodeModel,
-    claudeProfiles,
-    claudeProfilesLoading,
-    selectedClaudeProfileId,
-    codexProfiles,
-    codexProfilesLoading,
-    selectedCodexProfileId,
-    providerModelCatalog,
-    providerModelsLoading,
-  } = useChatProviderState({ selectedSession: session, selectedProject: null });
+  // Read-only access to the provider/model catalog so the fork dialog can show
+  // the same picker as the chat composer. Forking does NOT mutate the source
+  // session's provider/model — only the new one. The dialog itself reads the
+  // shared selection catalog; this hook resolves the source session's real
+  // model below.
+  const { currentProviderModel } = useChatProviderState({ selectedSession: session, selectedProject: null });
 
+  // The source selection comes from the session's own metadata and its real
+  // recorded model — never the composer's stored per-provider default, which
+  // may have been changed for other chats.
   const sourceProvider = (session.__provider ?? 'claude') as LLMProvider;
-  const sourceProfileId =
-    sourceProvider === 'claude'
-      ? selectedClaudeProfileId ?? session.__providerProfileId ?? null
-      : sourceProvider === 'codex'
-        ? selectedCodexProfileId ?? session.__providerProfileId ?? null
-        : null;
-  const sourceModel =
-    sourceProvider === 'claude'
-      ? claudeModel
-      : sourceProvider === 'cursor'
-        ? cursorModel
-        : sourceProvider === 'codex'
-          ? codexModel
-          : opencodeModel;
+  const sourceProfileId = sourceProvider === 'claude' || sourceProvider === 'codex'
+    ? session.__providerProfileId ?? null
+    : null;
+  // `currentProviderModel` resolves from the session row (the model the source
+  // actually runs with) because the hook receives this session as selected.
+  const sourceModel = currentProviderModel || null;
 
   const handleExport = useCallback(async () => {
     if (isExporting) return;
@@ -140,15 +124,19 @@ function SessionActions({ session, onNavigateToSession, t }: SessionActionsProps
       if (isForking || !onNavigateToSession) return;
       setIsForking(true);
       try {
+        // The complete target selection travels in the single fork request:
+        // provider, profile, and model are validated and persisted by the
+        // backend atomically — no separate active-model request afterwards.
         const response = await api.forkSession(session.id, {
           provider: selection.provider,
           providerProfileId: selection.providerProfileId,
+          model: selection.model,
           carryContext: selection.carryContext,
         });
         const payload = await response.json();
         const newSessionId = payload?.data?.sessionId;
         if (!response.ok || !newSessionId) {
-          throw new Error('Fork did not return a session id');
+          throw new Error(payload?.message || payload?.error || 'The fork did not return a session id.');
         }
 
         // If the server carried over a handoff summary, flag the new session so
@@ -157,31 +145,20 @@ function SessionActions({ session, onNavigateToSession, t }: SessionActionsProps
           sessionStore.setPendingForkContext(newSessionId, true);
         }
 
-        // If the user picked a model that's different from the source's,
-        // pre-bind it on the new session so the first chat.send uses it.
-        // Best-effort: a failure here shouldn't block navigation.
-        if (selection.model && selection.model !== sourceModel) {
-          try {
-            await authenticatedFetch(
-              `/api/providers/${selection.provider}/sessions/${encodeURIComponent(newSessionId)}/active-model`,
-              {
-                method: 'POST',
-                body: JSON.stringify({ model: selection.model }),
-              },
-            );
-          } catch (error) {
-            console.warn('Failed to pre-bind fork model; continuing.', error);
-          }
-        }
-
         onNavigateToSession(newSessionId);
-      } catch {
-        window.alert(t('mainContent.exportSessionError'));
+      } catch (forkError) {
+        // A failed fork leaves the user exactly where they were; the message
+        // is fork-specific, not the export error text.
+        window.alert(
+          forkError instanceof Error
+            ? forkError.message
+            : t('mainContent.forkSessionError', { defaultValue: 'Failed to fork this session.' }),
+        );
       } finally {
         setIsForking(false);
       }
     },
-    [session.id, onNavigateToSession, isForking, t, sourceModel, sessionStore],
+    [session.id, onNavigateToSession, isForking, t, sessionStore],
   );
 
   if (isAgentTranscript) {
@@ -217,12 +194,6 @@ function SessionActions({ session, onNavigateToSession, t }: SessionActionsProps
         sourceProvider={sourceProvider}
         sourceProfileId={sourceProfileId}
         sourceModel={sourceModel}
-        claudeProfiles={claudeProfiles}
-        codexProfiles={codexProfiles}
-        providerModelCatalog={providerModelCatalog}
-        providerModelsLoading={providerModelsLoading}
-        claudeProfilesLoading={claudeProfilesLoading}
-        codexProfilesLoading={codexProfilesLoading}
         onConfirm={(selection) => {
           void handleForkConfirm(selection);
         }}

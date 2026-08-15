@@ -21,7 +21,10 @@ import type { QueuedDraft } from '../../hooks/useChatComposerState';
 import type { SessionActivity } from '../../../../hooks/useSessionProtection';
 import type { VoiceTranscriptDelivery } from '../../../../lib/finalizeVoiceTranscript';
 import type { PendingPermissionRequest, PermissionMode } from '../../types/types';
-import type { ProviderModelOption } from '../../../../types/app';
+import type {
+  LLMProvider,
+  ProviderModelOption,
+} from '../../../../types/app';
 import {
   PromptInput,
   PromptInputHeader,
@@ -43,6 +46,7 @@ import PermissionRequestsBanner from './PermissionRequestsBanner';
 import TokenUsageSummary from './TokenUsageSummary';
 import QueuedMessageCard from './QueuedMessageCard';
 import ComposerModelMenu from './ComposerModelMenu';
+import ComposerProviderMenu from './ComposerProviderMenu';
 import ComposerPermissionMenu from './ComposerPermissionMenu';
 
 interface MentionableFile {
@@ -74,6 +78,14 @@ interface ChatComposerProps {
   availablePermissionModes: (PermissionMode | string)[];
   onSelectPermissionMode: (mode: PermissionMode | string) => void;
   providerLabel: string;
+  currentProvider: LLMProvider;
+  currentProviderProfileId: number | null;
+  onSelectProvider: (provider: LLMProvider, profileId: number | null) => void;
+  /** True while an input-triggered provider switch (fork) is in flight. */
+  providerSwitching?: boolean;
+  /** Error message from a failed input-triggered provider switch, if any. */
+  providerSwitchError?: string | null;
+  onDismissProviderSwitchError?: () => void;
   effort: string;
   availableEffortOptions: NonNullable<ProviderModelOption['effort']>['values'];
   onSelectEffort: (effort: string) => void;
@@ -161,6 +173,12 @@ export default function ChatComposer({
   availablePermissionModes,
   onSelectPermissionMode,
   providerLabel,
+  currentProvider,
+  currentProviderProfileId,
+  onSelectProvider,
+  providerSwitching = false,
+  providerSwitchError = null,
+  onDismissProviderSwitchError,
   effort,
   availableEffortOptions,
   onSelectEffort,
@@ -310,6 +328,11 @@ export default function ChatComposer({
     : sendByCtrlEnter
       ? t('input.hintText.ctrlEnter')
       : t('input.hintText.enter');
+  const placeholderWithHint = input
+    ? placeholder
+    : placeholder
+      ? `${placeholder}\n${submitHint}`
+      : submitHint;
   const submitAriaLabel = canQueueDraft
     ? hasQueuedDraft
       ? t('input.queue.update', { defaultValue: 'Update queued message' })
@@ -452,7 +475,7 @@ export default function ChatComposer({
               onFocus={() => onInputFocusChange?.(true)}
               onBlur={() => onInputFocusChange?.(false)}
               onInput={onTextareaInput}
-              placeholder={placeholder}
+              placeholder={placeholderWithHint}
             />
         </PromptInputBody>
 
@@ -508,14 +531,24 @@ export default function ChatComposer({
           </PromptInputTools>
 
           <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-            <div
-              dir="ltr"
-              className={`hidden text-xs whitespace-nowrap text-muted-foreground/50 transition-opacity duration-200 min-[1400px]:block ${
-                input.trim() && !canQueueDraft ? 'opacity-0' : 'opacity-100'
-              }`}
-            >
-              {submitHint}
-            </div>
+            <ComposerProviderMenu
+              currentProvider={currentProvider}
+              currentProfileId={currentProviderProfileId}
+              onSelectProvider={onSelectProvider}
+              disabled={providerSwitching}
+            />
+
+            {providerSwitchError && (
+              <button
+                type="button"
+                onClick={onDismissProviderSwitchError}
+                className="min-w-0 truncate rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive transition-colors hover:bg-destructive/20"
+                aria-live="polite"
+                title={providerSwitchError}
+              >
+                {providerSwitchError}
+              </button>
+            )}
 
             <ComposerModelMenu
               effort={effort}

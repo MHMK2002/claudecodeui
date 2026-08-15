@@ -1,3 +1,7 @@
+import crypto from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
@@ -17,9 +21,24 @@ export default defineConfig(({ mode }) => {
   const proxyHost = getConnectableHost(configuredHost)
   // TODO: Remove support for legacy PORT variables in all locations in a future major release, leaving only SERVER_PORT.
   const serverPort = env.SERVER_PORT || env.PORT || 3001
+  const packageVersion = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version
+  const buildId = (env.CLOUDCLI_BUILD_ID || `${packageVersion}-${Date.now().toString(36)}-${crypto.randomBytes(8).toString('hex')}`)
+    .replace(/[^A-Za-z0-9._-]/g, '-')
 
   return {
-    plugins: [react()],
+    plugins: [
+      react(),
+      {
+        name: 'cloudcli-build-identity',
+        apply: 'build',
+        async closeBundle() {
+          await fs.writeFile(path.resolve('dist', 'build-id.txt'), `${buildId}\n`, 'utf8')
+        }
+      }
+    ],
+    define: {
+      'globalThis.__CLOUDCLI_BUILD_ID__': JSON.stringify(buildId)
+    },
     resolve: {
       alias: {
         '@': fileURLToPath(new URL('./src', import.meta.url))

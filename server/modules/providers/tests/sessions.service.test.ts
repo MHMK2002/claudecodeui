@@ -85,14 +85,19 @@ test('session context rejects unknown ids', { concurrency: false }, async () => 
   });
 });
 
-test('forkSession without overrides inherits the source provider + profile', { concurrency: false }, async () => {
+test('forkSession creates a session with the complete target selection in one row', { concurrency: false }, async () => {
   await withIsolatedDatabase(async () => {
     const projectPath = '/workspace/fork-inherit';
-    sessionsDb.createAppSession('src', 'claude', projectPath, 7);
+    sessionsDb.createAppSession('src', 'claude', projectPath, 7, 'claude-sonnet');
 
-    const forked = await sessionsService.forkSession('src');
+    const forked = await sessionsService.forkSession('src', {
+      provider: 'claude',
+      providerProfileId: 7,
+      model: 'claude-opus',
+    });
     assert.equal(forked.provider, 'claude');
     assert.equal(forked.providerProfileId, 7);
+    assert.equal(forked.model, 'claude-opus');
     assert.equal(forked.projectPath, projectPath);
     assert.notEqual(forked.sessionId, 'src');
     // No history on the source → nothing to carry.
@@ -102,52 +107,77 @@ test('forkSession without overrides inherits the source provider + profile', { c
     assert.ok(stored);
     assert.equal(stored.provider, 'claude');
     assert.equal(stored.provider_profile_id, 7);
+    // model lands in the same INSERT — no secondary update path.
+    assert.equal(stored.model, 'claude-opus');
     assert.equal(stored.project_path, projectPath);
     assert.equal(stored.fork_context, null);
     assert.equal(stored.fork_context_consumed, 0);
   });
 });
 
-test('forkSession with explicit provider override creates a session on the new provider', { concurrency: false }, async () => {
+test('forkSession with an explicit cross-provider target creates a session on the new provider', { concurrency: false }, async () => {
   await withIsolatedDatabase(async () => {
     const projectPath = '/workspace/fork-override';
-    sessionsDb.createAppSession('src', 'claude', projectPath, 7);
+    sessionsDb.createAppSession('src', 'claude', projectPath, 7, 'claude-sonnet');
 
-    const forked = await sessionsService.forkSession('src', { provider: 'codex', providerProfileId: 3 });
+    const forked = await sessionsService.forkSession('src', {
+      provider: 'codex',
+      providerProfileId: 3,
+      model: 'gpt-5',
+    });
     assert.equal(forked.provider, 'codex');
     assert.equal(forked.providerProfileId, 3);
+    assert.equal(forked.model, 'gpt-5');
     assert.equal(forked.projectPath, projectPath);
 
     const stored = sessionsDb.getSessionById(forked.sessionId);
     assert.ok(stored);
     assert.equal(stored.provider, 'codex');
     assert.equal(stored.provider_profile_id, 3);
+    assert.equal(stored.model, 'gpt-5');
   });
 });
 
-test('forkSession with null providerProfileId forces Local CLI on the forked session', { concurrency: false }, async () => {
+test('forkSession from a legacy profile-less source succeeds with a valid target', { concurrency: false }, async () => {
   await withIsolatedDatabase(async () => {
-    const projectPath = '/workspace/fork-local';
-    sessionsDb.createAppSession('src', 'claude', projectPath, 7);
+    const projectPath = '/workspace/fork-legacy-source';
+    sessionsDb.createAppSession('src', 'claude', projectPath, null, null);
 
-    const forked = await sessionsService.forkSession('src', { providerProfileId: null });
-    assert.equal(forked.provider, 'claude');
-    assert.equal(forked.providerProfileId, null);
+    const forked = await sessionsService.forkSession('src', {
+      provider: 'codex',
+      providerProfileId: 3,
+      model: 'gpt-5',
+    });
+    assert.equal(forked.provider, 'codex');
+    assert.equal(forked.providerProfileId, 3);
+    assert.equal(forked.model, 'gpt-5');
+  });
+});
 
-    const stored = sessionsDb.getSessionById(forked.sessionId);
-    assert.ok(stored);
-    assert.equal(stored.provider_profile_id, null);
+test('createAppSession rejects a missing model', { concurrency: false }, async () => {
+  await withIsolatedDatabase(async () => {
+    assert.throws(
+      () => sessionsService.createAppSession('claude', '/workspace/model-required', {
+        providerProfileId: 7,
+        model: '  ',
+      }),
+      (error: unknown) => error instanceof AppError && error.code === 'MODEL_REQUIRED',
+    );
   });
 });
 
 test('forkSession refuses unsupported providers', { concurrency: false }, async () => {
   await withIsolatedDatabase(async () => {
-    sessionsDb.createAppSession('src', 'claude', '/workspace/fork-unsupported', null);
+    sessionsDb.createAppSession('src', 'claude', '/workspace/fork-unsupported', null, 'claude-sonnet');
 
     await assert.rejects(
-      // @ts-expect-error — intentionally passing an unsupported provider to
-      // validate the runtime guard, not the type contract.
-      sessionsService.forkSession('src', { provider: 'unknown-provider' }),
+      sessionsService.forkSession('src', {
+        // @ts-expect-error — intentionally passing an unsupported provider to
+        // validate the runtime guard, not the type contract.
+        provider: 'unknown-provider',
+        providerProfileId: null,
+        model: 'claude-sonnet',
+      }),
       (error: unknown) => error instanceof AppError && error.code === 'UNSUPPORTED_PROVIDER',
     );
   });
@@ -156,7 +186,7 @@ test('forkSession refuses unsupported providers', { concurrency: false }, async 
 test('forkSession refuses to fork a sub-agent transcript', { concurrency: false }, async () => {
   await withIsolatedDatabase(async () => {
     const projectPath = '/workspace/fork-subagent';
-    sessionsDb.createAppSession('parent', 'claude', projectPath, null);
+    sessionsDb.createAppSession('parent', 'claude', projectPath, null, 'claude-sonnet');
     sessionsDb.createSubagentSession({
       agentSessionId: 'child',
       provider: 'claude',
@@ -168,7 +198,11 @@ test('forkSession refuses to fork a sub-agent transcript', { concurrency: false 
     });
 
     await assert.rejects(
-      sessionsService.forkSession('child'),
+      sessionsService.forkSession('child', {
+        provider: 'claude',
+        providerProfileId: 7,
+        model: 'claude-sonnet',
+      }),
       (error: unknown) => error instanceof AppError && error.code === 'SESSION_FORK_NOT_ALLOWED',
     );
   });
@@ -177,9 +211,14 @@ test('forkSession refuses to fork a sub-agent transcript', { concurrency: false 
 test('forkSession with carryContext disabled never attempts to carry context', { concurrency: false }, async () => {
   await withIsolatedDatabase(async () => {
     const projectPath = '/workspace/fork-no-carry';
-    sessionsDb.createAppSession('src', 'claude', projectPath, null);
+    sessionsDb.createAppSession('src', 'claude', projectPath, null, 'claude-sonnet');
 
-    const forked = await sessionsService.forkSession('src', { carryContext: false });
+    const forked = await sessionsService.forkSession('src', {
+      provider: 'claude',
+      providerProfileId: 7,
+      model: 'claude-sonnet',
+      carryContext: false,
+    });
     assert.equal(forked.forkContextCarried, false);
     const stored = sessionsDb.getSessionById(forked.sessionId);
     assert.ok(stored);
@@ -190,8 +229,13 @@ test('forkSession with carryContext disabled never attempts to carry context', {
 test('forkSession surfaces carried context via getSessionContext and marks it unconsumed', { concurrency: false }, async () => {
   await withIsolatedDatabase(async () => {
     const projectPath = '/workspace/fork-context-expose';
-    sessionsDb.createAppSession('src', 'claude', projectPath, null);
-    const forked = await sessionsService.forkSession('src', { carryContext: false });
+    sessionsDb.createAppSession('src', 'claude', projectPath, null, 'claude-sonnet');
+    const forked = await sessionsService.forkSession('src', {
+      provider: 'claude',
+      providerProfileId: 7,
+      model: 'claude-sonnet',
+      carryContext: false,
+    });
 
     // Simulate the summarizer having written a handoff summary onto the row.
     sessionsDb.setForkContext(forked.sessionId, '## Goal\nShip the fork feature.');
@@ -208,7 +252,7 @@ test('forkSession surfaces carried context via getSessionContext and marks it un
 
 test('provider session id returns the mapped native id', { concurrency: false }, async () => {
   await withIsolatedDatabase(() => {
-    sessionsDb.createAppSession('app-session-id', 'codex', '/tmp/session-id-copy-project');
+    sessionsDb.createAppSession('app-session-id', 'codex', '/tmp/session-id-copy-project', null, 'gpt-5');
     sessionsDb.assignProviderSessionId('app-session-id', 'codex-native-session-id');
 
     assert.equal(sessionsService.getProviderSessionId('app-session-id'), 'codex-native-session-id');
@@ -217,7 +261,7 @@ test('provider session id returns the mapped native id', { concurrency: false },
 
 test('provider session id is unavailable until the provider assigns one', { concurrency: false }, async () => {
   await withIsolatedDatabase(() => {
-    sessionsDb.createAppSession('pending-app-session', 'claude', '/tmp/session-id-copy-project');
+    sessionsDb.createAppSession('pending-app-session', 'claude', '/tmp/session-id-copy-project', null, 'claude-sonnet');
 
     assert.throws(
       () => sessionsService.getProviderSessionId('pending-app-session'),

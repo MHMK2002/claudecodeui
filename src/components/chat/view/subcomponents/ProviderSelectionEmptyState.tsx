@@ -5,13 +5,13 @@ import { Trans, useTranslation } from "react-i18next";
 import type {
   ProjectSession,
   LLMProvider,
-  ProviderModelsDefinition,
-  ClaudeProviderProfilePublic,
-  CodexProviderProfilePublic,
 } from "../../../../types/app";
 import SessionProviderLogo from "../../../llm-logo-provider/SessionProviderLogo";
 import { NextTaskBanner } from "../../../task-master";
 import type { TaskMasterTask } from "../../../task-master/types";
+import {
+  useProviderSelectionCatalog,
+} from "../../../../shared/hooks/useProviderSelectionCatalog";
 import {
   Dialog,
   DialogTrigger,
@@ -25,13 +25,6 @@ import {
   CommandItem,
   Card,
 } from "../../../../shared/view/ui";
-
-const PROVIDER_META: { id: LLMProvider; name: string }[] = [
-  { id: "claude", name: "Anthropic" },
-  { id: "codex", name: "OpenAI" },
-  { id: "cursor", name: "Cursor" },
-  { id: "opencode", name: "OpenCode" },
-];
 
 const MOD_KEY =
   typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
@@ -61,14 +54,8 @@ type ProviderSelectionEmptyStateProps = {
   setCodexModel: (model: string) => void;
   opencodeModel: string;
   setOpenCodeModel: (model: string) => void;
-  providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
-  providerModelsLoading: boolean;
-  claudeProfiles: ClaudeProviderProfilePublic[];
-  claudeProfilesLoading: boolean;
   selectedClaudeProfileId: number | null;
   setSelectedClaudeProfileId: (profileId: number | null) => void;
-  codexProfiles: CodexProviderProfilePublic[];
-  codexProfilesLoading: boolean;
   selectedCodexProfileId: number | null;
   setSelectedCodexProfileId: (profileId: number | null) => void;
   tasksEnabled: boolean;
@@ -84,14 +71,6 @@ type ProviderGroup = {
   profileId?: number | null;
   models: { value: string; label: string; description?: string }[];
 };
-
-function getModelConfig(
-  p: LLMProvider,
-  catalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>,
-): ProviderModelsDefinition {
-  const entry = catalog[p];
-  return entry ?? { OPTIONS: [], DEFAULT: "" };
-}
 
 function getCurrentModel(
   p: LLMProvider,
@@ -128,14 +107,8 @@ export default function ProviderSelectionEmptyState({
   setCodexModel,
   opencodeModel,
   setOpenCodeModel,
-  providerModelCatalog,
-  providerModelsLoading,
-  claudeProfiles,
-  claudeProfilesLoading,
   selectedClaudeProfileId,
   setSelectedClaudeProfileId,
-  codexProfiles,
-  codexProfilesLoading,
   selectedCodexProfileId,
   setSelectedCodexProfileId,
   tasksEnabled,
@@ -146,39 +119,29 @@ export default function ProviderSelectionEmptyState({
 }: ProviderSelectionEmptyStateProps) {
   const { t } = useTranslation("chat");
   const [dialogOpen, setDialogOpen] = useState(false);
+  const { catalog, loading: catalogLoading, error: catalogError } = useProviderSelectionCatalog();
 
   const visibleProviderGroups = useMemo<ProviderGroup[]>(() => {
-    return PROVIDER_META.flatMap((p) => {
-      const models = providerModelCatalog[p.id]?.OPTIONS ?? [];
-      if (p.id !== "claude" && p.id !== "codex") {
+    const entries = (catalog?.providers ?? []).filter((entry) => entry.available);
+    return entries.flatMap((entry) => {
+      const models = entry.models.OPTIONS;
+      if (entry.provider !== "claude" && entry.provider !== "codex") {
         return [{
-          id: p.id,
-          name: p.name,
+          id: entry.provider,
+          name: getProviderDisplayName(entry.provider),
           models,
         }];
       }
 
-      const providerLabel = p.id === "claude" ? "Claude" : "Codex";
-      const profiles = p.id === "claude" ? claudeProfiles : codexProfiles;
-      const localGroup: ProviderGroup = {
-        id: p.id,
-        name: `${providerLabel} - Local CLI`,
-        profileId: null,
+      const providerLabel = getProviderDisplayName(entry.provider);
+      return entry.profiles.map<ProviderGroup>((profile) => ({
+        id: entry.provider,
+        name: `${providerLabel} - ${profile.title}`,
+        profileId: profile.id,
         models,
-      };
-      const profileGroups = profiles
-        .filter((profile) => profile.isActive)
-        .map<ProviderGroup>((profile) => ({
-          id: p.id,
-          name: `${providerLabel} - ${profile.title}`,
-          profileId: profile.id,
-          models,
-        }));
-
-      return [localGroup, ...profileGroups];
+      }));
     });
-  }, [claudeProfiles, codexProfiles, providerModelCatalog]);
-
+  }, [catalog]);
 
   const currentModel = getCurrentModel(
     provider,
@@ -189,23 +152,25 @@ export default function ProviderSelectionEmptyState({
   );
 
   const currentModelLabel = useMemo(() => {
-    const config = getModelConfig(provider, providerModelCatalog);
-    const found = config.OPTIONS.find(
+    const entry = catalog?.providers.find((candidate) => candidate.provider === provider);
+    const found = entry?.models.OPTIONS.find(
       (o: { value: string; label: string }) => o.value === currentModel,
     );
     return found?.label || currentModel;
-  }, [provider, currentModel, providerModelCatalog]);
+  }, [catalog, provider, currentModel]);
 
   const currentProviderLabel = useMemo(() => {
     if (provider !== "claude" && provider !== "codex") {
       return getProviderDisplayName(provider);
     }
 
-    const profiles = provider === "claude" ? claudeProfiles : codexProfiles;
+    const entry = catalog?.providers.find((candidate) => candidate.provider === provider);
     const profileId = provider === "claude" ? selectedClaudeProfileId : selectedCodexProfileId;
-    const profile = profiles.find((entry) => entry.id === profileId);
-    return `${getProviderDisplayName(provider)} - ${profile?.title ?? "Local CLI"}`;
-  }, [claudeProfiles, codexProfiles, provider, selectedClaudeProfileId, selectedCodexProfileId]);
+    const profile = entry?.profiles.find((candidate) => candidate.id === profileId);
+    return profile
+      ? `${getProviderDisplayName(provider)} - ${profile.title}`
+      : getProviderDisplayName(provider);
+  }, [catalog, provider, selectedClaudeProfileId, selectedCodexProfileId]);
 
   const setModelForProvider = useCallback(
     (providerId: LLMProvider, modelValue: string) => {
@@ -301,13 +266,17 @@ export default function ProviderSelectionEmptyState({
                 />
                 <CommandList className="max-h-[350px]">
                   <CommandEmpty>
-                    {t("providerSelection.noModelsFound", {
-                      defaultValue: "No models found.",
-                    })}
+                    {catalogError
+                      ? t("providerSelection.catalogError", {
+                          defaultValue: "Providers could not be loaded. Check Settings and try again.",
+                        })
+                      : t("providerSelection.noModelsFound", {
+                          defaultValue: "No models found.",
+                        })}
                   </CommandEmpty>
                   {visibleProviderGroups.map((group, idx) => (
                     <CommandGroup
-                      key={`${group.id}-${group.profileId ?? "local"}`}
+                      key={`${group.id}-${group.profileId ?? "connection"}`}
                       className={
                         idx > 0
                           ? "border-t border-border/40 [&_[cmdk-group-heading]]:mt-1 [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wider"
@@ -320,11 +289,7 @@ export default function ProviderSelectionEmptyState({
                         </span>
                       }
                     >
-                      {group.models.length === 0 && (
-                        providerModelsLoading
-                        || (group.id === "claude" && claudeProfilesLoading)
-                        || (group.id === "codex" && codexProfilesLoading)
-                      ) ? (
+                      {group.models.length === 0 && catalogLoading ? (
                         <CommandItem disabled className="ml-4 border-l border-border/40 pl-4 text-muted-foreground">
                           {t("providerSelection.loadingModels", { defaultValue: "Loading models…" })}
                         </CommandItem>
@@ -345,7 +310,7 @@ export default function ProviderSelectionEmptyState({
                           );
                         return (
                           <CommandItem
-                            key={`${group.id}-${groupProfileId ?? "local"}-${model.value}`}
+                            key={`${group.id}-${groupProfileId ?? "connection"}-${model.value}`}
                             value={`${group.name} ${model.label} ${model.description || ''}`}
                             onSelect={() => handleModelSelect(group.id, model.value, groupProfileId)}
                             className="ml-4 border-l border-border/40 pl-4"

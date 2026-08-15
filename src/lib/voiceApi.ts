@@ -181,6 +181,9 @@ export async function enhanceText(
 ): Promise<EnhanceResult> {
   const config = readVoiceConfig();
   if (!config.cleanupEnabled) return { status: 'error', message: 'Cleanup is disabled.' };
+  if (config.cleanupProviderProfileId === null) {
+    return { status: 'error', message: 'Select an active Codex provider profile in Settings.' };
+  }
   if (!text.trim() || text.length > CLEANUP_TEXT_MAX_CHARS) {
     return { status: 'error', message: 'Nothing to enhance.' };
   }

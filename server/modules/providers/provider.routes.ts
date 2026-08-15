@@ -5,6 +5,7 @@ import { providerAuthService } from '@/modules/providers/services/provider-auth.
 import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
 import { providerMcpService } from '@/modules/providers/services/mcp.service.js';
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
+import { providerSelectionService } from '@/modules/providers/services/provider-selection.service.js';
 import { providerTokenUsageService } from '@/modules/providers/services/provider-token-usage.service.js';
 import { providerSkillsService } from '@/modules/providers/services/skills.service.js';
 import { sessionConversationsSearchService } from '@/modules/providers/services/session-conversations-search.service.js';
@@ -144,6 +145,16 @@ const parseOptionalProviderProfileId = (value: unknown): number | null => {
   }
 
   return parsed;
+};
+
+const parseRequiredProviderProfileId = (body: Record<string, unknown>): number | null => {
+  if (!Object.prototype.hasOwnProperty.call(body, 'providerProfileId')) {
+    throw new AppError('providerProfileId is required (use null for connection-backed providers).', {
+      code: 'PROVIDER_PROFILE_FIELD_REQUIRED',
+      statusCode: 400,
+    });
+  }
+  return parseOptionalProviderProfileId(body.providerProfileId);
 };
 
 const isProfileProvider = (provider: LLMProvider): provider is ProviderProfileProvider => (
@@ -627,10 +638,21 @@ const parseSessionModelPayload = (payload: unknown): string => {
 };
 
 router.get(
+  '/selection-catalog',
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = readAuthenticatedUserId(req);
+    const catalog = await providerSelectionService.getPublicSelectionCatalog(userId);
+    res.json(createApiSuccessResponse(catalog));
+  }),
+);
+
+router.get(
   '/:provider/auth/status',
   asyncHandler(async (req: Request, res: Response) => {
     const provider = parseProvider(req.params.provider);
-    const status = await providerAuthService.getProviderAuthStatus(provider);
+    const status = await providerAuthService.getProviderAuthStatus(provider, {
+      forceRefresh: req.query.force === '1' || req.query.force === 'true',
+    });
     if (isProfileProvider(provider) && status.installed && !status.authenticated) {
       const userId = readAuthenticatedUserId(req);
       if (providerProfilesDb.countActiveProviderProfiles(userId, provider) > 0) {
@@ -882,6 +904,11 @@ router.get(
  * a brand-new chat. The frontend must call this before the first `chat.send`
  * so the session id in the URL, the store, and the websocket all agree from
  * the very first message — there is no client-visible session-id handoff.
+ *
+ * The public contract is the complete selection and every field is required:
+ * { provider, providerProfileId, model, projectPath }. Full validation runs
+ * first; only then is one fully-configured session row created — no
+ * half-configured session is ever returned on success.
  */
 router.post(
   '/sessions',
@@ -889,36 +916,32 @@ router.post(
     const body = (req.body ?? {}) as Record<string, unknown>;
     const provider = parseProvider(body.provider);
     const projectPath = typeof body.projectPath === 'string' ? body.projectPath : '';
-    const providerProfileId = parseOptionalProviderProfileId(body.providerProfileId);
-    if (providerProfileId !== null && !isProfileProvider(provider)) {
-      throw new AppError('providerProfileId is currently supported for Claude and Codex sessions only.', {
-        code: 'PROVIDER_PROFILE_UNSUPPORTED',
-        statusCode: 400,
-      });
-    }
+    const providerProfileId = parseRequiredProviderProfileId(body);
+    const model = readOptionalBodyString(body, 'model') ?? '';
 
-    if (providerProfileId !== null) {
-      const profileProvider = parseProfileProvider(provider);
-      const userId = readAuthenticatedUserId(req);
-      const profile = providerProfilesDb.getProviderProfileForRuntime(userId, profileProvider, providerProfileId);
-      if (!profile) {
-        throw new AppError('Provider profile not found or inactive.', {
-          code: 'PROVIDER_PROFILE_NOT_FOUND',
-          statusCode: 404,
-        });
-      }
-    }
+    const userId = readAuthenticatedUserId(req);
+    await providerSelectionService.validateSelection({
+      userId,
+      provider,
+      providerProfileId,
+      model,
+    });
 
-    const result = sessionsService.createAppSession(provider, projectPath, { providerProfileId });
+    const result = sessionsService.createAppSession(provider, projectPath, {
+      providerProfileId,
+      model,
+    });
     res.status(201).json(createApiSuccessResponse(result));
   }),
 );
 
 /**
  * Forks one session: starts a fresh sibling chat in the same project. The
- * caller may override the source session's provider and profile via the body
- * (e.g. clone a Claude chat onto Codex). With an empty body, the new session
- * inherits the source's provider + profile, preserving the historical default.
+ * complete target selection { provider, providerProfileId, model } is required
+ * in the body — a fork is only created against a fully valid selection, which
+ * is also the supported continuation path for legacy sessions (e.g. Claude
+ * Local CLI rows that can no longer be sent on directly). `carryContext`
+ * defaults to true; an explicit false opts out of generating a handoff summary.
  */
 router.post(
   '/sessions/:sessionId/fork',
@@ -926,42 +949,23 @@ router.post(
     const sessionId = parseSessionId(req.params.sessionId);
     const body = (req.body ?? {}) as Record<string, unknown>;
 
-    // Both fields are optional. We default to "use source's value" by passing
-    // undefined to the service, which falls back to the inherited path.
-    const hasProviderOverride = body.provider !== undefined && body.provider !== null && body.provider !== '';
-    const hasProfileOverride = body.providerProfileId !== undefined;
-
-    const provider = hasProviderOverride ? parseProvider(body.provider) : undefined;
-    const providerProfileId = hasProfileOverride
-      ? parseOptionalProviderProfileId(body.providerProfileId)
-      : undefined;
-    // carryContext defaults to true; an explicit false opts out of generating a
-    // handoff summary for the forked session.
+    const provider = parseProvider(body.provider);
+    const providerProfileId = parseRequiredProviderProfileId(body);
+    const model = readOptionalBodyString(body, 'model') ?? '';
     const carryContext = body.carryContext !== false;
     const userId = readAuthenticatedUserId(req);
 
-    if (providerProfileId !== undefined && providerProfileId !== null && (provider === undefined || !isProfileProvider(provider))) {
-      throw new AppError('providerProfileId is currently supported for Claude and Codex sessions only.', {
-        code: 'PROVIDER_PROFILE_UNSUPPORTED',
-        statusCode: 400,
-      });
-    }
-
-    if (providerProfileId !== undefined && providerProfileId !== null) {
-      const profileProvider = parseProfileProvider(provider);
-      const userId = readAuthenticatedUserId(req);
-      const profile = providerProfilesDb.getProviderProfileForRuntime(userId, profileProvider, providerProfileId);
-      if (!profile) {
-        throw new AppError('Provider profile not found or inactive.', {
-          code: 'PROVIDER_PROFILE_NOT_FOUND',
-          statusCode: 404,
-        });
-      }
-    }
+    await providerSelectionService.validateSelection({
+      userId,
+      provider,
+      providerProfileId,
+      model,
+    });
 
     const result = await sessionsService.forkSession(sessionId, {
       provider,
       providerProfileId,
+      model,
       carryContext,
       userId,
     });

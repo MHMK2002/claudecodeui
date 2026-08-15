@@ -85,7 +85,6 @@
     "cleanupEnable": "Clean up transcript",
     "cleanupEnableDescription": "Run STT → Codex cleanup → composer input automatically.",
     "cleanupProvider": "Codex provider",
-    "cleanupProviderLocal": "Codex - Local CLI",
     "cleanupModel": "Cleanup model",
     "cleanupPrompt": "Cleanup prompt",
     "cleanupReset": "Reset to default prompt",

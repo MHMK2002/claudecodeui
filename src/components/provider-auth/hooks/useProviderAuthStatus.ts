@@ -1,48 +1,25 @@
-import { useCallback, useState } from 'react';
-import { authenticatedFetch } from '../../../utils/api';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { LLMProvider } from '../../../types/app';
 import {
   CLI_PROVIDERS,
-  PROVIDER_AUTH_STATUS_ENDPOINTS,
   createInitialProviderAuthStatusMap,
 } from '../types';
 import type {
   ProviderAuthStatus,
   ProviderAuthStatusMap,
 } from '../types';
-
-type ProviderAuthStatusPayload = {
-  authenticated?: boolean;
-  email?: string | null;
-  method?: string | null;
-  error?: string | null;
-};
-
-type ProviderAuthStatusApiResponse = {
-  success: boolean;
-  data: ProviderAuthStatusPayload;
-};
-
-const FALLBACK_STATUS_ERROR = 'Failed to check authentication status';
-const FALLBACK_UNKNOWN_ERROR = 'Unknown error';
-
-const toErrorMessage = (error: unknown): string => (
-  error instanceof Error ? error.message : FALLBACK_UNKNOWN_ERROR
-);
-
-const toProviderAuthStatus = (
-  payload: ProviderAuthStatusPayload,
-  fallbackError: string | null = null,
-): ProviderAuthStatus => ({
-  authenticated: Boolean(payload.authenticated),
-  email: payload.email ?? null,
-  method: payload.method ?? null,
-  error: payload.error ?? fallbackError,
-  loading: false,
-});
+import {
+  getProviderAuthStatusCacheRevision,
+  getProviderAuthStatusCacheScope,
+  requestProviderAuthStatus,
+} from '../providerAuthStatusCache';
 
 type UseProviderAuthStatusOptions = {
   initialLoading?: boolean;
+};
+
+type ProviderAuthStatusCheckOptions = {
+  force?: boolean;
 };
 
 export function useProviderAuthStatus(
@@ -51,6 +28,20 @@ export function useProviderAuthStatus(
   const [providerAuthStatus, setProviderAuthStatus] = useState<ProviderAuthStatusMap>(() => (
     createInitialProviderAuthStatusMap(initialLoading)
   ));
+  const isMountedRef = useRef(true);
+  const requestVersionsRef = useRef<Record<LLMProvider, number>>({
+    claude: 0,
+    cursor: 0,
+    codex: 0,
+    opencode: 0,
+  });
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const setProviderLoading = useCallback((provider: LLMProvider) => {
     setProviderAuthStatus((previous) => ({
@@ -70,44 +61,51 @@ export function useProviderAuthStatus(
     }));
   }, []);
 
-  const checkProviderAuthStatus = useCallback(async (provider: LLMProvider): Promise<ProviderAuthStatus> => {
-    setProviderLoading(provider);
-
-    try {
-      const response = await authenticatedFetch(PROVIDER_AUTH_STATUS_ENDPOINTS[provider]);
-
-      if (!response.ok) {
-        const status: ProviderAuthStatus = {
-          authenticated: false,
-          email: null,
-          method: null,
-          loading: false,
-          error: FALLBACK_STATUS_ERROR,
-        };
-        setProviderStatus(provider, status);
-        return status;
-      }
-
-      const payload = (await response.json()) as ProviderAuthStatusApiResponse;
-      const status = toProviderAuthStatus(payload.data);
-      setProviderStatus(provider, status);
-      return status;
-    } catch (caughtError) {
-      console.error(`Error checking ${provider} auth status:`, caughtError);
-      const status: ProviderAuthStatus = {
-        authenticated: false,
-        email: null,
-        method: null,
-        loading: false,
-        error: toErrorMessage(caughtError),
-      };
-      setProviderStatus(provider, status);
-      return status;
+  const checkProviderAuthStatus = useCallback(async (
+    provider: LLMProvider,
+    options: ProviderAuthStatusCheckOptions = {},
+  ): Promise<ProviderAuthStatus> => {
+    const requestVersion = requestVersionsRef.current[provider] + 1;
+    requestVersionsRef.current[provider] = requestVersion;
+    if (isMountedRef.current) {
+      setProviderLoading(provider);
     }
+
+    const requestScope = getProviderAuthStatusCacheScope();
+    const request = requestProviderAuthStatus(provider, options);
+    const requestRevision = getProviderAuthStatusCacheRevision(provider);
+    const status = await request;
+
+    if (
+      isMountedRef.current
+      && requestVersionsRef.current[provider] === requestVersion
+      && getProviderAuthStatusCacheScope() === requestScope
+      && getProviderAuthStatusCacheRevision(provider) === requestRevision
+    ) {
+      setProviderStatus(provider, status);
+    }
+    return status;
   }, [setProviderLoading, setProviderStatus]);
 
-  const refreshProviderAuthStatuses = useCallback(async (providers: LLMProvider[] = CLI_PROVIDERS) => {
-    await Promise.all(providers.map((provider) => checkProviderAuthStatus(provider)));
+  const refreshProviderAuthStatuses = useCallback(async (
+    providers: LLMProvider[] = CLI_PROVIDERS,
+    options: ProviderAuthStatusCheckOptions = {},
+  ) => {
+    await Promise.all(providers.map((provider) => checkProviderAuthStatus(provider, options)));
+  }, [checkProviderAuthStatus]);
+
+  useEffect(() => {
+    const handleProfilesUpdated = (event: Event) => {
+      const provider = (event as CustomEvent<{ provider?: unknown }>).detail?.provider;
+      if (typeof provider === 'string' && CLI_PROVIDERS.includes(provider as LLMProvider)) {
+        void checkProviderAuthStatus(provider as LLMProvider);
+      }
+    };
+
+    window.addEventListener('provider-profiles-updated', handleProfilesUpdated);
+    return () => {
+      window.removeEventListener('provider-profiles-updated', handleProfilesUpdated);
+    };
   }, [checkProviderAuthStatus]);
 
   return {

@@ -3,6 +3,7 @@ import { Check, Edit2, Eye, EyeOff, KeyRound, Plus, Star, Trash2, X } from 'luci
 import { useTranslation } from 'react-i18next';
 
 import { authenticatedFetch } from '../../../../../../../utils/api';
+import { invalidateProviderAuthStatusCache } from '../../../../../../provider-auth/providerAuthStatusCache';
 import { Badge, Button, Input } from '../../../../../../../shared/view/ui';
 import type {
   ProviderProfileAuthType,
@@ -45,6 +46,7 @@ const emptyDraft = (provider: ProviderProfileProvider): ProfileDraft => ({
 });
 
 function notifyProfilesUpdated(provider: ProviderProfileProvider) {
+  invalidateProviderAuthStatusCache(provider);
   window.dispatchEvent(new CustomEvent(`${provider}-provider-profiles-updated`));
   window.dispatchEvent(new CustomEvent('provider-profiles-updated', {
     detail: { provider },

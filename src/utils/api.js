@@ -241,12 +241,11 @@ export const api = {
   },
   /**
    * Forks one session into a fresh sibling chat in the same project. The
-   * caller may override the source session's provider / profile via the
-   * optional `overrides` arg; with an empty object the new session inherits
-   * the source's provider + profile (no transcript is copied).
+   * The complete target selection is required so the fork is persisted in one
+   * operation and its first message uses the selected model.
    *
    * @param {string} sessionId
-   * @param {{ provider?: 'claude' | 'codex' | 'cursor' | 'opencode'; providerProfileId?: number | null; carryContext?: boolean }} [overrides]
+   * @param {{ provider: 'claude' | 'codex' | 'cursor' | 'opencode'; providerProfileId: number | null; model: string; carryContext?: boolean }} overrides
    */
   forkSession: (sessionId, overrides = {}) =>
     authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}/fork`, {

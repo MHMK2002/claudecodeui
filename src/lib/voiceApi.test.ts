@@ -182,8 +182,25 @@ test('enhance is a no-request error while disabled', async () => {
   assert.equal(result.status, 'error');
 });
 
+test('enhance never falls back to Local CLI when no Settings profile is selected', async () => {
+  installConfig(config({ cleanupEnabled: true, cleanupProviderProfileId: null }));
+  mockFetch(async () => {
+    throw new Error('fetch must not be called');
+  });
+
+  const result = await enhanceText('  untouched raw transcript\n');
+  assert.equal(result.status, 'error');
+  if (result.status === 'error') {
+    assert.match(result.message, /Settings/);
+  }
+});
+
 test('enhance returns an error for an invalid schema response', async () => {
-  installConfig(config({ baseUrl: 'https://voice.example/v1', cleanupEnabled: true }));
+  installConfig(config({
+    baseUrl: 'https://voice.example/v1',
+    cleanupEnabled: true,
+    cleanupProviderProfileId: 17,
+  }));
   mockFetch(async () => Response.json('not-json'));
 
   const result = await enhanceText('  do not rename useVoiceInput\n');
@@ -191,7 +208,11 @@ test('enhance returns an error for an invalid schema response', async () => {
 });
 
 test('enhance accepts an aggressive edit without validation (user reviews)', async () => {
-  installConfig(config({ baseUrl: 'https://voice.example/v1', cleanupEnabled: true }));
+  installConfig(config({
+    baseUrl: 'https://voice.example/v1',
+    cleanupEnabled: true,
+    cleanupProviderProfileId: 17,
+  }));
   mockFetch(async () => Response.json({ action: 'edit', text: 'totally rewritten text' }));
 
   const result = await enhanceText('  do not rename useVoiceInput\n');
@@ -202,7 +223,7 @@ test('enhance accepts an aggressive edit without validation (user reviews)', asy
 });
 
 test('enhance honors a keep decision', async () => {
-  installConfig(config({ cleanupEnabled: true }));
+  installConfig(config({ cleanupEnabled: true, cleanupProviderProfileId: 17 }));
   let capturedUrl = '';
   let capturedBody: Record<string, unknown> | undefined;
   mockFetch(async (input, init) => {
@@ -219,12 +240,16 @@ test('enhance honors a keep decision', async () => {
   assert.equal(capturedUrl, '/api/voice/cleanup');
   assert.equal(capturedBody?.mode, 'clean_transcript');
   assert.equal(String(capturedBody?.text).includes('useVoiceInput'), true);
-  assert.equal(capturedBody?.providerProfileId, null);
+  assert.equal(capturedBody?.providerProfileId, 17);
   assert.equal(capturedBody?.model, 'gpt-5.6-luna');
 });
 
 test('enhance timeout and caller cancellation both surface as errors', async () => {
-  installConfig(config({ baseUrl: 'https://voice.example/v1', cleanupEnabled: true }));
+  installConfig(config({
+    baseUrl: 'https://voice.example/v1',
+    cleanupEnabled: true,
+    cleanupProviderProfileId: 17,
+  }));
   mockFetch((_input, init) => new Promise<Response>((_resolve, reject) => {
     const signal = init?.signal;
     const abort = () => reject(new DOMException('aborted', 'AbortError'));

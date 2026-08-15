@@ -1,15 +1,17 @@
 import type { MarkSessionProcessing } from '../../hooks/useSessionProtection';
-import type { LLMProvider, Project } from '../../types/app';
+import type {
+  LLMProvider,
+  Project,
+  ProviderSelectionCatalog,
+  ResolvedProviderSelection,
+} from '../../types/app';
 import { authenticatedFetch } from '../../utils/api';
 import type { SessionEstablishedContext } from '../chat/types/types';
 
 import type { TaskMasterTask } from './types';
 import { runSingleFlight } from './single-flight';
 
-type ProviderSelection = {
-  provider: LLMProvider;
-  providerProfileId: number | null;
-};
+export type ProviderSelection = ResolvedProviderSelection;
 
 export type TaskWorkflowCallbacks = {
   sendMessage: (message: unknown) => void;
@@ -60,6 +62,12 @@ type LaunchAttempt = {
 };
 
 const PROVIDERS: LLMProvider[] = ['claude', 'codex', 'cursor', 'opencode'];
+const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
+  claude: 'default',
+  cursor: 'gpt-5.3-codex',
+  codex: 'gpt-5.4',
+  opencode: 'anthropic/claude-sonnet-4-5',
+};
 
 function readPositiveInteger(value: string | null): number | null {
   if (!value || value === 'local' || !/^\d+$/.test(value)) {
@@ -79,7 +87,106 @@ export function readCurrentProviderSelection(): ProviderSelection {
     : provider === 'codex'
       ? readPositiveInteger(localStorage.getItem('codex-provider-profile-id'))
       : null;
-  return { provider, providerProfileId };
+  const model = localStorage.getItem(`${provider}-model`)?.trim() || FALLBACK_DEFAULT_MODEL[provider];
+  return { provider, providerProfileId, model };
+}
+
+function resolveCatalogTaskSelection(
+  catalog: ProviderSelectionCatalog,
+  preferred: ProviderSelection,
+): ProviderSelection | null {
+  const ordered = [
+    ...catalog.providers.filter((entry) => entry.provider === preferred.provider),
+    ...catalog.providers.filter((entry) => entry.provider !== preferred.provider),
+  ];
+  for (const entry of ordered) {
+    if (!entry.available) continue;
+    const usesProfile = entry.provider === 'claude' || entry.provider === 'codex';
+    const preferredProfile = usesProfile
+      ? entry.profiles.find((profile) => profile.id === preferred.providerProfileId)
+      : null;
+    const profileId = usesProfile
+      ? (preferredProfile ?? entry.profiles.find((profile) => profile.isDefault) ?? entry.profiles[0])?.id ?? null
+      : null;
+    if (usesProfile && profileId === null) continue;
+    const model = entry.models.OPTIONS.some((option) => option.value === preferred.model)
+      ? preferred.model
+      : entry.models.DEFAULT || entry.models.OPTIONS[0]?.value;
+    if (!model) continue;
+    return { provider: entry.provider, providerProfileId: profileId, model };
+  }
+  return null;
+}
+
+async function readSettingsProviderSelection(): Promise<ProviderSelection> {
+  const response = await authenticatedFetch('/api/providers/selection-catalog');
+  const catalog = await readResponse<ProviderSelectionCatalog>(response);
+  const selection = resolveCatalogTaskSelection(catalog, readCurrentProviderSelection());
+  if (!selection) {
+    throw new Error('Configure an available provider, profile, and model in Settings first.');
+  }
+  return selection;
+}
+
+/**
+ * Storage key for the task Q&A runtime selection. Deliberately independent of
+ * the chat/implementation preferences: picking a Q&A provider never changes
+ * what new chats or task implementations run with.
+ */
+const TASK_QA_SELECTION_STORAGE_KEY = 'task-qa-provider-selection';
+
+type StoredTaskQaSelection = {
+  provider: LLMProvider;
+  providerProfileId: number | null;
+  model: string;
+};
+
+/**
+ * Persists the Q&A runtime selection under its own key.
+ *
+ * Callers should only invoke this after the selection has been validated
+ * against the catalog, so restores are trustworthy; `readStoredTaskQaSelection`
+ * still re-validates on restore.
+ */
+export function writeStoredTaskQaSelection(selection: StoredTaskQaSelection): void {
+  localStorage.setItem(
+    TASK_QA_SELECTION_STORAGE_KEY,
+    JSON.stringify({
+      provider: selection.provider,
+      providerProfileId: selection.providerProfileId,
+      model: selection.model,
+    }),
+  );
+}
+
+/**
+ * Reads the stored Q&A selection. Returns null when nothing is stored or the
+ * payload is malformed — callers then fall back to the catalog-based default.
+ * The value is NOT re-validated here (that needs the catalog); callers pass it
+ * through `resolveValidSelection` and fall back when it returns null.
+ */
+export function readStoredTaskQaSelection(): StoredTaskQaSelection | null {
+  const raw = localStorage.getItem(TASK_QA_SELECTION_STORAGE_KEY);
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<StoredTaskQaSelection>;
+    if (
+      !PROVIDERS.includes(parsed.provider as LLMProvider)
+      || typeof parsed.model !== 'string'
+      || !parsed.model.trim()
+    ) {
+      return null;
+    }
+    return {
+      provider: parsed.provider as LLMProvider,
+      providerProfileId: typeof parsed.providerProfileId === 'number' ? parsed.providerProfileId : null,
+      model: parsed.model,
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function readResponse<T>(response: Response): Promise<T> {
@@ -117,6 +224,7 @@ async function allocateSession(project: Project, selection: ProviderSelection): 
       provider: selection.provider,
       projectPath: projectPath(project),
       providerProfileId: selection.providerProfileId,
+      model: selection.model,
     }),
   });
   const data = await readResponse<{ sessionId: string }>(response);
@@ -124,6 +232,17 @@ async function allocateSession(project: Project, selection: ProviderSelection): 
     throw new Error('The session gateway did not return a session ID.');
   }
   return data.sessionId;
+}
+
+async function discardUnboundSession(sessionId: string): Promise<void> {
+  try {
+    await authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}?force=true`, {
+      method: 'DELETE',
+    });
+  } catch {
+    // Cleanup is best-effort. Preserve the original workflow error so callers
+    // receive the actionable failure instead of a secondary deletion failure.
+  }
 }
 
 export async function listTaskIntakes(project: Project): Promise<TaskIntakeRecord[]> {
@@ -137,24 +256,28 @@ export async function startTaskIntake(args: {
   brief: string;
   selection?: ProviderSelection;
 } & TaskWorkflowCallbacks): Promise<{ intakeId: string; sessionId: string }> {
-  const selection = args.selection ?? readCurrentProviderSelection();
+  const selection = args.selection ?? await readSettingsProviderSelection();
   const targetProjectId = projectId(args.project);
-  const createResponse = await authenticatedFetch(
-    `/api/taskmaster/workflow/${encodeURIComponent(targetProjectId)}/intakes`,
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        brief: args.brief,
-        provider: selection.provider,
-        providerProfileId: selection.providerProfileId,
-      }),
-    },
-  );
-  const created = await readResponse<{
-    intake: { id: string };
-  }>(createResponse);
-
   const sessionId = await allocateSession(args.project, selection);
+  let created: { intake: { id: string } };
+  try {
+    const createResponse = await authenticatedFetch(
+      `/api/taskmaster/workflow/${encodeURIComponent(targetProjectId)}/intakes`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          brief: args.brief,
+          provider: selection.provider,
+          providerProfileId: selection.providerProfileId,
+        }),
+      },
+    );
+    created = await readResponse<{ intake: { id: string } }>(createResponse);
+  } catch (error) {
+    await discardUnboundSession(sessionId);
+    throw error;
+  }
+
   const bindResponse = await authenticatedFetch(
     `/api/taskmaster/workflow/${encodeURIComponent(targetProjectId)}/intakes/${encodeURIComponent(created.intake.id)}/bind`,
     {
@@ -176,7 +299,7 @@ export async function startTaskIntake(args: {
       id: created.intake.id,
       contentHash: bound.intake.contentHash,
     },
-    options: {},
+    options: { model: selection.model },
   });
   const context: SessionEstablishedContext = {
     provider: selection.provider,
@@ -250,7 +373,7 @@ type StartTaskImplementationArgs = {
 } & TaskWorkflowCallbacks;
 
 async function runTaskImplementation(args: StartTaskImplementationArgs): Promise<{ attemptId: string; sessionId: string }> {
-  const selection = args.selection ?? readCurrentProviderSelection();
+  const selection = args.selection ?? await readSettingsProviderSelection();
   const storageKey = launchStorageKey(args.project, args.task);
   const idempotencyKey = localStorage.getItem(storageKey) || createLaunchKey();
   localStorage.setItem(storageKey, idempotencyKey);
@@ -297,7 +420,7 @@ async function runTaskImplementation(args: StartTaskImplementationArgs): Promise
           id: attempt.id,
           contentHash: attempt.contentHash,
         },
-        options: {},
+        options: { model: selection.model },
       });
     }
 

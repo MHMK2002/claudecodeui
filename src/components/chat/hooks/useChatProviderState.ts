@@ -265,6 +265,11 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
   useEffect(() => {
     if (selectedClaudeProfileId === null) {
+      // While a non-claude session is open, its provider's metadata owns the
+      // selection — do not force a claude default over it.
+      if (selectedSession?.__provider && selectedSession.__provider !== 'claude') {
+        return;
+      }
       const hasStoredSelection = localStorage.getItem(CLAUDE_PROFILE_STORAGE_KEY) !== null;
       const defaultProfile = claudeProfiles.find((profile) => profile.isDefault && profile.isActive);
       if (!hasStoredSelection && defaultProfile) {
@@ -276,12 +281,23 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
     const selectedProfile = claudeProfiles.find((profile) => profile.id === selectedClaudeProfileId);
     if (!selectedProfile || !selectedProfile.isActive) {
+      // Same guard: never null out a claude pick that belongs to an open
+      // claude session whose metadata put it there.
+      if (
+        selectedSession?.__provider === 'claude'
+        && selectedSession.__providerProfileId === selectedClaudeProfileId
+      ) {
+        return;
+      }
       setSelectedClaudeProfileId(null);
     }
-  }, [claudeProfiles, selectedClaudeProfileId, setSelectedClaudeProfileId]);
+  }, [claudeProfiles, selectedClaudeProfileId, selectedSession?.__provider, selectedSession?.__providerProfileId, setSelectedClaudeProfileId]);
 
   useEffect(() => {
     if (selectedCodexProfileId === null) {
+      if (selectedSession?.__provider && selectedSession.__provider !== 'codex') {
+        return;
+      }
       const hasStoredSelection = localStorage.getItem(CODEX_PROFILE_STORAGE_KEY) !== null;
       const defaultProfile = codexProfiles.find((profile) => profile.isDefault && profile.isActive);
       if (!hasStoredSelection && defaultProfile) {
@@ -293,9 +309,15 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
     const selectedProfile = codexProfiles.find((profile) => profile.id === selectedCodexProfileId);
     if (!selectedProfile || !selectedProfile.isActive) {
+      if (
+        selectedSession?.__provider === 'codex'
+        && selectedSession.__providerProfileId === selectedCodexProfileId
+      ) {
+        return;
+      }
       setSelectedCodexProfileId(null);
     }
-  }, [codexProfiles, selectedCodexProfileId, setSelectedCodexProfileId]);
+  }, [codexProfiles, selectedCodexProfileId, selectedSession?.__provider, selectedSession?.__providerProfileId, setSelectedCodexProfileId]);
 
   const setStoredProviderModel = useCallback((targetProvider: LLMProvider, model: string) => {
     if (targetProvider === 'claude') {
@@ -387,6 +409,11 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       }
     }
   }, []);
+
+  const hardRefreshProviderModels = useCallback(
+    () => loadProviderModels({ bypassCache: true }),
+    [loadProviderModels],
+  );
 
   useEffect(() => {
     void loadProviderModels();
@@ -611,14 +638,57 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     setPermissionMode(savedMode ?? getDefaultPermissionModeForProvider(provider));
   }, [selectedSession?.id, provider, getDefaultPermissionModeForProvider, getPermissionModesForProvider]);
 
+  // Session-scope invariant: while a session is open, its provider and profile
+  // come from the session's own metadata — localStorage must never override an
+  // open session's selection. (Without a session, the pending selection may
+  // legitimately come from the last stored preference.)
+  //
+  // The stored preference is still updated so the *next* new chat starts from
+  // the session's provider — mirroring how the composer's own pick persists —
+  // but the open session's state itself only tracks its metadata.
+  const openSessionProvider = selectedSession?.__provider ?? null;
+  const openSessionProfileId = selectedSession?.__providerProfileId ?? null;
+
   useEffect(() => {
-    if (!selectedSession?.__provider || selectedSession.__provider === provider) {
+    if (!openSessionProvider || openSessionProvider === provider) {
       return;
     }
 
-    setProvider(selectedSession.__provider);
-    localStorage.setItem('selected-provider', selectedSession.__provider);
-  }, [provider, selectedSession]);
+    setProvider(openSessionProvider);
+    localStorage.setItem('selected-provider', openSessionProvider);
+  }, [provider, openSessionProvider]);
+
+  // The open session's profile is authoritative while it is open. For
+  // profile-backed providers the metadata value is applied directly; for
+  // connection-backed providers (cursor/opencode) it stays null. A session
+  // with no profile metadata (legacy rows) leaves the selection untouched —
+  // read/export still work and the backend blocks sends with a clear error.
+  useEffect(() => {
+    if (!openSessionProvider || !selectedSession?.id) {
+      return;
+    }
+
+    if (openSessionProvider === 'claude') {
+      if (openSessionProfileId != null && openSessionProfileId !== selectedClaudeProfileId) {
+        setSelectedClaudeProfileId(openSessionProfileId);
+      }
+      return;
+    }
+
+    if (openSessionProvider === 'codex') {
+      if (openSessionProfileId != null && openSessionProfileId !== selectedCodexProfileId) {
+        setSelectedCodexProfileId(openSessionProfileId);
+      }
+    }
+  }, [
+    openSessionProvider,
+    openSessionProfileId,
+    selectedClaudeProfileId,
+    selectedCodexProfileId,
+    selectedSession?.id,
+    setSelectedClaudeProfileId,
+    setSelectedCodexProfileId,
+  ]);
 
   // Permission prompts belong to a session, not to the transient provider
   // selection that is synchronized after navigation.
@@ -799,8 +869,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     setSelectedCodexProfileId,
     reloadClaudeProfiles: loadClaudeProfiles,
     reloadCodexProfiles: loadCodexProfiles,
-    hardRefreshProviderModels: () => loadProviderModels({ bypassCache: true }),
+    hardRefreshProviderModels,
     selectProviderModel,
+    setStoredProviderModel,
     setStoredProviderEffort,
     resolvePermissionModeForProvider,
   };

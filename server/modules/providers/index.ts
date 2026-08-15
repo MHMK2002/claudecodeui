@@ -6,6 +6,14 @@ export { providerRuntimeService } from './services/provider-runtime.service.js';
 // providerModelsService: used by Commands to list models and resolve the active session model.
 export { providerModelsService } from './services/provider-models.service.js';
 
+// providerSelectionService: used by provider routes (catalog endpoint, session
+// create/fork validation) and the websocket chat gateway (pre-run execution
+// validation) as the single source of truth for provider/profile/model validity.
+export {
+  createProviderSelectionService,
+  providerSelectionService,
+} from './services/provider-selection.service.js';
+
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
 

@@ -288,12 +288,17 @@ export const sessionsDb = {
    * `session_id` is the stable app-facing id, while `provider_session_id`
    * stays NULL until the provider runtime announces its own id and
    * `assignProviderSessionId` records the mapping.
+   *
+   * `model` is part of the same INSERT (not a follow-up UPDATE) so a session
+   * row is never half-configured: provider, profile, and model all land
+   * atomically at creation time.
    */
   createAppSession(
     sessionId: string,
     provider: string,
     projectPath: string,
-    providerProfileId: number | null = null
+    providerProfileId: number | null = null,
+    model: string | null = null
   ): string {
     const db = getConnection();
     const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);
@@ -301,9 +306,9 @@ export const sessionsDb = {
     projectsDb.createProjectPath(normalizedProjectPath);
 
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, provider_profile_id, custom_name, project_path, jsonl_path, isArchived, created_at, updated_at)
-       VALUES (?, ?, NULL, ?, NULL, ?, NULL, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
-    ).run(sessionId, provider, providerProfileId, normalizedProjectPath);
+      `INSERT INTO sessions (session_id, provider, provider_session_id, provider_profile_id, custom_name, project_path, jsonl_path, model, isArchived, created_at, updated_at)
+       VALUES (?, ?, NULL, ?, NULL, ?, NULL, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+    ).run(sessionId, provider, providerProfileId, normalizedProjectPath, model);
 
     return sessionId;
   },

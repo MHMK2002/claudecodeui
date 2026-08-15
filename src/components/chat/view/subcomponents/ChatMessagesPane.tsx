@@ -7,9 +7,6 @@ import type {
   Project,
   ProjectSession,
   LLMProvider,
-  ProviderModelsDefinition,
-  ClaudeProviderProfilePublic,
-  CodexProviderProfilePublic,
 } from '../../../../types/app';
 import { getIntrinsicMessageKey } from '../../utils/messageKeys';
 import { groupConsecutiveTools, isToolGroupItem } from '../../utils/toolGrouping';
@@ -45,14 +42,8 @@ interface ChatMessagesPaneProps {
   setCodexModel: (model: string) => void;
   opencodeModel: string;
   setOpenCodeModel: (model: string) => void;
-  providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
-  providerModelsLoading: boolean;
-  claudeProfiles: ClaudeProviderProfilePublic[];
-  claudeProfilesLoading: boolean;
   selectedClaudeProfileId: number | null;
   setSelectedClaudeProfileId: (profileId: number | null) => void;
-  codexProfiles: CodexProviderProfilePublic[];
-  codexProfilesLoading: boolean;
   selectedCodexProfileId: number | null;
   setSelectedCodexProfileId: (profileId: number | null) => void;
   tasksEnabled: boolean;
@@ -127,14 +118,8 @@ function ChatMessagesPane({
   setCodexModel,
   opencodeModel,
   setOpenCodeModel,
-  providerModelCatalog,
-  providerModelsLoading,
-  claudeProfiles,
-  claudeProfilesLoading,
   selectedClaudeProfileId,
   setSelectedClaudeProfileId,
-  codexProfiles,
-  codexProfilesLoading,
   selectedCodexProfileId,
   setSelectedCodexProfileId,
   tasksEnabled,
@@ -250,14 +235,8 @@ function ChatMessagesPane({
           setCodexModel={setCodexModel}
           opencodeModel={opencodeModel}
           setOpenCodeModel={setOpenCodeModel}
-          providerModelCatalog={providerModelCatalog}
-          providerModelsLoading={providerModelsLoading}
-          claudeProfiles={claudeProfiles}
-          claudeProfilesLoading={claudeProfilesLoading}
           selectedClaudeProfileId={selectedClaudeProfileId}
           setSelectedClaudeProfileId={setSelectedClaudeProfileId}
-          codexProfiles={codexProfiles}
-          codexProfilesLoading={codexProfilesLoading}
           selectedCodexProfileId={selectedCodexProfileId}
           setSelectedCodexProfileId={setSelectedCodexProfileId}
           tasksEnabled={tasksEnabled}

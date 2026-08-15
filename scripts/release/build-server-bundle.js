@@ -109,6 +109,10 @@ function sha256(filePath) {
 const platform = mapPlatform(process.env.CLOUDCLI_BUNDLE_PLATFORM || process.platform);
 const arch = mapArch(process.env.CLOUDCLI_BUNDLE_ARCH || process.arch);
 const version = packageJson.version;
+const buildId = (await fs.readFile(path.join(rootDir, 'dist', 'build-id.txt'), 'utf8')).trim();
+if (!buildId) {
+  throw new Error('dist/build-id.txt is empty; run the client build before creating a server bundle.');
+}
 const bundleName = `cloudcli-local-server-${version}-${platform}-${arch}.tar.gz`;
 const bundleRoot = path.join(rootDir, 'release', 'local-server');
 const stageDir = path.join(bundleRoot, `.stage-${version}-${platform}-${arch}`);
@@ -140,11 +144,15 @@ const electronVersion = getElectronVersion();
 const electronRebuild = process.platform === 'win32'
   ? path.join(rootDir, 'node_modules', '.bin', 'electron-rebuild.cmd')
   : path.join(rootDir, 'node_modules', '.bin', 'electron-rebuild');
+const buildPython = process.env.npm_config_python
+  || process.env.PYTHON
+  || (process.platform === 'darwin' && await pathExists('/usr/bin/python3') ? '/usr/bin/python3' : undefined);
 console.log(`Rebuilding native server dependencies for Electron ${electronVersion} (${arch})...`);
 await run(electronRebuild, ['--version', electronVersion, '--module-dir', stageDir, '--arch', arch, '--force'], {
   cwd: rootDir,
   env: {
     ...process.env,
+    ...(buildPython ? { PYTHON: buildPython, npm_config_python: buildPython } : {}),
     npm_config_audit: 'false',
     npm_config_fund: 'false',
   },
@@ -156,14 +164,12 @@ if (await pathExists(path.join(stageDir, 'scripts', 'fix-node-pty.js'))) {
 
 await fs.writeFile(
   path.join(stageDir, '.installed.json'),
-  JSON.stringify({ version, platform, arch, builtAt: new Date().toISOString() }, null, 2),
+  JSON.stringify({ version, buildId, platform, arch, builtAt: new Date().toISOString() }, null, 2),
   'utf8',
 );
 
 await fs.rm(archivePath, { force: true });
-const tarArgs = process.platform === 'win32'
-  ? ['-czf', archivePath, '-C', stageDir, '.']
-  : ['-czf', archivePath, '-C', stageDir, '.'];
+const tarArgs = ['-czf', archivePath, '-C', stageDir, '.'];
 await run('tar', tarArgs);
 
 const digest = await sha256(archivePath);

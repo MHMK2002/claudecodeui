@@ -140,6 +140,8 @@ const normalizeNotificationPreferences = (
 export function useSettingsController({ isOpen, initialTab }: UseSettingsControllerArgs) {
   const { isDarkMode, toggleDarkMode } = useTheme() as ThemeContextValue;
   const closeTimerRef = useRef<number | null>(null);
+  const hydrationTimerRef = useRef<number | null>(null);
+  const autoSaveReadyRef = useRef(false);
 
   const [activeTab, setActiveTab] = useState<SettingsMainTab>(() => normalizeMainTab(initialTab));
   const [saveStatus, setSaveStatus] = useState<'success' | 'error' | null>(null);
@@ -168,6 +170,10 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
   } = useProviderAuthStatus();
 
   const loadSettings = useCallback(async () => {
+    autoSaveReadyRef.current = false;
+    if (hydrationTimerRef.current !== null) {
+      window.clearTimeout(hydrationTimerRef.current);
+    }
     try {
       const savedClaudeSettings = parseJson<ClaudeSettingsStorage>(
         localStorage.getItem('claude-settings'),
@@ -219,6 +225,14 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       setNotificationPreferences(createDefaultNotificationPreferences());
       setCodexPermissionMode('default');
       setProjectSortOrder('name');
+    } finally {
+      // Let every state update produced by hydration commit before enabling
+      // autosave. Opening Settings must never immediately PUT the values that
+      // were just fetched from the server.
+      hydrationTimerRef.current = window.setTimeout(() => {
+        autoSaveReadyRef.current = true;
+        hydrationTimerRef.current = null;
+      }, 0);
     }
   }, []);
 
@@ -233,7 +247,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     }
 
     void (async () => {
-      const authStatus = await checkProviderAuthStatus(loginProvider);
+      const authStatus = await checkProviderAuthStatus(loginProvider, { force: true });
 
       if (exitCode !== 0) {
         console.warn(`Login process exited with code ${exitCode}; refreshing auth status before setting save status.`);
@@ -324,12 +338,9 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
 
   // Auto-save permissions and sort order with debounce
   const autoSaveTimerRef = useRef<number | null>(null);
-  const isInitialLoadRef = useRef(true);
 
   useEffect(() => {
-    // Skip auto-save on initial load (settings are being loaded from localStorage)
-    if (isInitialLoadRef.current) {
-      isInitialLoadRef.current = false;
+    if (!autoSaveReadyRef.current) {
       return;
     }
 
@@ -358,13 +369,6 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     return () => window.clearTimeout(timer);
   }, [saveStatus]);
 
-  // Reset initial load flag when settings dialog opens
-  useEffect(() => {
-    if (isOpen) {
-      isInitialLoadRef.current = true;
-    }
-  }, [isOpen]);
-
   useEffect(() => () => {
     if (closeTimerRef.current !== null) {
       window.clearTimeout(closeTimerRef.current);
@@ -373,6 +377,10 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     if (autoSaveTimerRef.current !== null) {
       window.clearTimeout(autoSaveTimerRef.current);
       autoSaveTimerRef.current = null;
+    }
+    if (hydrationTimerRef.current !== null) {
+      window.clearTimeout(hydrationTimerRef.current);
+      hydrationTimerRef.current = null;
     }
   }, []);
 

@@ -74,16 +74,62 @@ export class ServerInstaller {
     this.onLog(String(line));
   }
 
-  async isInstalled() {
+  async isInstalled(sourceChecksum = null) {
     try {
       const marker = JSON.parse(
         await fs.readFile(path.join(this.getVersionDir(), '.installed.json'), 'utf8'),
       );
       if (marker.version !== this.version) return false;
+      if (sourceChecksum && marker.sourceChecksum !== sourceChecksum) return false;
       await fs.access(this.getServerEntry());
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Installs the server archive shipped inside a self-contained desktop build.
+   * The archive checksum is also the build identity, so a customized rebuild
+   * replaces any downloaded runtime that happened to use the same app version.
+   */
+  async ensureInstalledFromArchive(archivePath) {
+    const checksumPath = `${archivePath}.sha256`;
+    const expected = (await fs.readFile(checksumPath, 'utf8')).trim().split(/\s+/)[0];
+    const actual = await this.#sha256(archivePath);
+    if (!expected || expected.toLowerCase() !== actual.toLowerCase()) {
+      throw new Error('Embedded server checksum mismatch — refusing to install');
+    }
+
+    if (await this.isInstalled(actual)) {
+      this.log(`Customized Local CloudCLI ${this.version} already installed.`);
+      return this.getServerEntry();
+    }
+
+    const versionDir = this.getVersionDir();
+    this.log('Installing customized Local CloudCLI bundled with this desktop app…');
+    try {
+      await fs.rm(versionDir, { recursive: true, force: true });
+      await fs.mkdir(versionDir, { recursive: true });
+      await this.#validateArchive(archivePath);
+      await this.#extract(archivePath, versionDir);
+      const entry = this.getServerEntry();
+      await fs.access(entry);
+      await fs.writeFile(
+        path.join(versionDir, '.installed.json'),
+        JSON.stringify({
+          version: this.version,
+          source: 'embedded',
+          sourceChecksum: actual,
+          installedAt: new Date().toISOString(),
+        }, null, 2),
+        'utf8',
+      );
+      this.log(`Customized Local CloudCLI ${this.version} installed.`);
+      return entry;
+    } catch (error) {
+      await fs.rm(versionDir, { recursive: true, force: true }).catch(() => {});
+      throw new Error(`Failed to install embedded local server: ${error.message}`);
     }
   }
 

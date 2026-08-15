@@ -597,7 +597,6 @@
 }
 
 /* Mobile optimizations and components */
-@layer components {
   .chat-messages-pane {
     contain: layout style paint;
   }
@@ -670,26 +669,36 @@
     
     /* Better mobile touch targets */
     .mobile-touch-target {
-      @apply min-h-[44px] min-w-[44px];
+      min-height: 44px;
+      min-width: 44px;
     }
     
     /* Chat message improvements */
     .chat-message.user {
-      @apply justify-end;
+      justify-content: flex-end;
     }
     
     .chat-message.user > div {
-      @apply max-w-[85%];
+      max-width: 85%;
     }
     
     .chat-message.assistant > div,
     .chat-message.error > div {
-      @apply w-full sm:max-w-[95%];
+      width: 100%;
+    }
+
+    @media (min-width: 640px) {
+      .chat-message.assistant > div,
+      .chat-message.error > div {
+        max-width: 95%;
+      }
     }
     
     /* Session name truncation on mobile */
     .session-name-mobile {
-      @apply truncate;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
       max-width: calc(100vw - 120px); /* Account for sidebar padding and buttons */
     }
     
@@ -836,8 +845,6 @@
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
   }
-}
-
 /* Hide markdown backticks in prose content */
 .prose code::before,
 .prose code::after {

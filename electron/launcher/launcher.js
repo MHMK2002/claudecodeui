@@ -1,4 +1,3 @@
-window.__APP_VERSION__ = '1.34.0';
 window.__MOCK_STATE__ = {
   account: { connected: true, email: 'you@cloudcli.ai' },
   activeTarget: { kind: 'launcher', name: 'Launcher', url: null },
@@ -18,7 +17,7 @@ window.__MOCK_STATE__ = {
 
 (function cloudCliLauncher() {
   var MOCK = window.__MOCK_STATE__ || {};
-  var VERSION = window.__APP_VERSION__ || '';
+  var VERSION = '';
   var LOGO_URL = new URL('../../public/logo-32.png', window.location.href).toString();
   var SEARCH = new URLSearchParams(window.location.search || '');
 
@@ -46,8 +45,6 @@ window.__MOCK_STATE__ = {
     disconnectCloud: function () {
       mockState.account = { connected: false, email: null };
       mockState.environments = [];
-      mockState.tabs = (mockState.tabs || []).filter(function (tab) { return tab.kind !== 'remote'; });
-      mockState.activeTabId = 'home';
       mockState.activeTarget = { kind: 'launcher', name: 'Launcher', url: null };
       return Promise.resolve(clone(mockState));
     },
@@ -62,12 +59,6 @@ window.__MOCK_STATE__ = {
     showActiveEnvironmentActionsMenu: function () { return Promise.resolve(clone(mockState)); },
     openCloudDashboard: function () { return Promise.resolve(clone(mockState)); },
     runActiveEnvironmentAction: function () { return Promise.resolve(clone(mockState)); },
-    switchTab: function (id) { mockState.activeTabId = id; return Promise.resolve(clone(mockState)); },
-    closeTab: function (id) {
-      mockState.tabs = (mockState.tabs || []).filter(function (tab) { return tab.id === 'home' || tab.id !== id; });
-      if (mockState.activeTabId === id) mockState.activeTabId = 'home';
-      return Promise.resolve(clone(mockState));
-    },
     updateSetting: function (key, value) {
       mockState.desktopSettings = mockState.desktopSettings || {};
       mockState.desktopSettings[key] = key === 'themeMode' ? value : !!value;
@@ -261,23 +252,6 @@ window.__MOCK_STATE__ = {
     var meta = statusMeta(env ? env.status : '');
     CC._busyEnv = id;
     CC._status = { msg: (meta.verb || 'Opening') + ' ' + ((env && (env.name || env.subdomain)) || 'environment') + '...', tone: 'progress' };
-    if (env) {
-      var tabId = 'remote:' + env.id;
-      var tabs = CC.state.tabs && CC.state.tabs.length ? CC.state.tabs : [{ id: 'home', title: 'Launcher', kind: 'launcher', closable: false }];
-      tabs = tabs.map(function (tab) {
-        tab.active = false;
-        return tab;
-      });
-      var existing = tabs.filter(function (tab) { return tab.id === tabId; })[0];
-      if (existing) {
-        existing.active = true;
-        existing.title = env.name || env.subdomain;
-      } else {
-        tabs.push({ id: tabId, title: env.name || env.subdomain, kind: 'remote', closable: true, active: true });
-      }
-      CC.state.tabs = tabs;
-      CC.state.activeTabId = tabId;
-    }
     if (env && env.status !== 'running') env.status = 'starting';
     CC.render(CC.state);
     return Promise.resolve(bridge.openEnvironment(id)).then(function (state) {
@@ -322,7 +296,7 @@ window.__MOCK_STATE__ = {
       case 'refresh-environments':
         return CC.run('Refreshing cloud environments...', function () { return bridge.refreshEnvironments(); });
       case 'refresh-tab':
-        return CC.run('Refreshing tab...', function () { return bridge.refreshActiveTab(); });
+        return CC.run('Refreshing...', function () { return bridge.refreshActiveTab(); });
       case 'env-action':
         return CC.run('Opening environment...', function () { return bridge.runActiveEnvironmentAction(node.getAttribute('data-cc-env-action')); });
       case 'env-menu':
@@ -334,34 +308,15 @@ window.__MOCK_STATE__ = {
     }
   };
 
-  function renderTabs(state) {
-    var tabs = state.tabs && state.tabs.length ? state.tabs : [{ id: 'home', title: 'Home', closable: false, active: true }];
-    return tabs.map(function (tab) {
-      var title = tab.title || '';
-      var visibleChars = Math.min(title.length, 20);
-      var tabWidth = Math.max(112, Math.min(232, (visibleChars * 8) + (tab.closable ? 56 : 38)));
-      return '<button class="tb-tab no-drag' + (tab.active ? ' active' : '') + '" data-cc-tab="' + esc(tab.id) + '" title="' + esc(title) + '" style="width:' + tabWidth + 'px;flex-basis:' + tabWidth + 'px">' +
-        '<span>' + esc(title) + '</span>' +
-        (tab.closable ? '<span class="tb-close" data-cc-close-tab="' + esc(tab.id) + '" title="Close tab">&times;</span>' : '') +
-        '</button>';
-    }).join('');
-  }
-
   CC.titlebar = function (state) {
     var conn = connected(state);
-    var activeTab = (state.tabs || []).filter(function (tab) { return tab.active; })[0] || null;
     var activeEnvironmentId = state.activeTarget && state.activeTarget.kind === 'remote' ? state.activeTarget.id : null;
-    if (!activeEnvironmentId && activeTab && /^remote:/.test(activeTab.id || '')) {
-      activeEnvironmentId = activeTab.id.replace(/^remote:/, '');
-    }
-    var activeRefreshable = (state.activeTarget && (state.activeTarget.kind === 'remote' || state.activeTarget.kind === 'local')) ||
-      (activeTab && activeTab.id !== 'home');
+    var activeRefreshable = state.activeTarget && (state.activeTarget.kind === 'remote' || state.activeTarget.kind === 'local');
     var envActions = activeEnvironmentId ? '<button class="btn sm tb-action no-drag" data-cc-action="env-row-menu" data-cc-environment-id="' + esc(activeEnvironmentId) + '" title="Open environment actions">Open environment in...</button>' : '';
-    var refreshAction = activeRefreshable ? '<button class="icon-btn tb-action no-drag" data-cc-action="refresh-tab" title="Refresh tab">' + icon('refresh', 16) + '</button>' : '';
+    var refreshAction = activeRefreshable ? '<button class="icon-btn tb-action no-drag" data-cc-action="refresh-tab" title="Refresh">' + icon('refresh', 16) + '</button>' : '';
     var logoutAction = (conn || authState(state) === 'expired') ? '<button class="icon-btn tb-action no-drag" data-cc-action="logout" title="Logout">' + icon('logOut', 16) + '</button>' : '';
     return '<div class="titlebar">' +
       '<div class="brand"><img class="mk" src="' + esc(LOGO_URL) + '" alt=""><span>CloudCLI</span></div>' +
-      '<div class="tb-tabs no-drag">' + renderTabs(state) + '</div>' +
       '<span style="flex:1"></span>' +
       refreshAction +
       envActions +
@@ -380,7 +335,7 @@ window.__MOCK_STATE__ = {
       '<span class="sep">·</span><span>' + (authState(state) === 'expired' ? 'session expired' : (connected(state) ? esc(accountLabel(state)) : 'not connected')) + '</span>' +
       '<span style="flex:1"></span>' +
       (status.msg ? '<span class="status-msg ' + esc(status.tone) + '">' + esc(status.msg) + '</span><span class="sep">·</span>' : '') +
-      '<span>v' + esc(VERSION) + '</span>' +
+      ((state.appVersion || VERSION) ? '<span>v' + esc(state.appVersion || VERSION) + '</span>' : '') +
       '</div>';
   };
 
@@ -508,17 +463,6 @@ window.__MOCK_STATE__ = {
 
     document.addEventListener('click', function (event) {
       if (CC._reg.onClick && CC._reg.onClick(event)) return;
-      var closeTab = event.target.closest('[data-cc-close-tab]');
-      if (closeTab) {
-        event.stopPropagation();
-        CC.run('Closing tab...', function () { return bridge.closeTab(closeTab.getAttribute('data-cc-close-tab')); });
-        return;
-      }
-      var tab = event.target.closest('[data-cc-tab]');
-      if (tab) {
-        CC.run('Switching tab...', function () { return bridge.switchTab(tab.getAttribute('data-cc-tab')); });
-        return;
-      }
       var action = event.target.closest('[data-cc-action]');
       if (action) {
         CC.act(action.getAttribute('data-cc-action'), action);

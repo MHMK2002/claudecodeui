@@ -75,6 +75,14 @@ const RUNNING_VERSION = (() => {
         return null;
     }
 })();
+const RUNNING_BUILD_ID = (() => {
+    try {
+        const value = fs.readFileSync(path.join(APP_ROOT, 'dist', 'build-id.txt'), 'utf8').trim();
+        return value || `${RUNNING_VERSION || 'unknown'}-unidentified`;
+    } catch {
+        return `${RUNNING_VERSION || 'unknown'}-unidentified`;
+    }
+})();
 const systemRoutes = createSystemModule({
     appRoot: APP_ROOT,
     installMode,
@@ -144,7 +152,9 @@ app.get('/health', (req, res) => {
         status: 'ok',
         timestamp: new Date().toISOString(),
         installMode,
-        version: RUNNING_VERSION
+        version: RUNNING_VERSION,
+        buildId: RUNNING_BUILD_ID,
+        desktopLaunchNonce: process.env.CLOUDCLI_DESKTOP_LAUNCH_NONCE || null,
     });
 });
 
@@ -298,6 +308,7 @@ function getErrorMessage(error: unknown): string {
 }
 
 async function writeLocalServerMarker() {
+    if (process.env.CLOUDCLI_DISABLE_LOCAL_SERVER_MARKER === '1') return;
     const marker = {
         pid: process.pid,
         host: HOST,
@@ -313,6 +324,7 @@ async function writeLocalServerMarker() {
 }
 
 async function removeLocalServerMarker() {
+    if (process.env.CLOUDCLI_DISABLE_LOCAL_SERVER_MARKER === '1') return;
     try {
         const raw = await fsPromises.readFile(LOCAL_SERVER_MARKER_PATH, 'utf8');
         const marker = JSON.parse(raw);

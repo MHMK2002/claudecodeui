@@ -174,6 +174,66 @@ export type CodexProviderProfileRuntime = ProviderProfileRuntime<'codex'> & {
 };
 
 // ---------------------------
+//----------------- PROVIDER SELECTION CATALOG TYPES ------------
+/**
+ * One selectable profile row inside the public selection catalog.
+ *
+ * This is the catalog-facing projection of a provider profile: it carries only
+ * the fields a picker needs (identity, ordering, and default flag) and never a
+ * token, secret, base URL, or any other credential material. Profile identity
+ * is (provider, id) — numeric ids may collide across providers.
+ */
+export type ProviderSelectionCatalogProfile = {
+  id: number;
+  title: string;
+  isDefault: boolean;
+};
+
+/**
+ * One provider entry inside the public selection catalog.
+ *
+ * `available` is true when the provider can be selected right now: for
+ * Claude/Codex it requires at least one active profile; for Cursor/OpenCode it
+ * requires the local connection (CLI installed and authenticated). Models stay
+ * provider-level (the whole catalog of the provider), not per-profile.
+ */
+export type ProviderSelectionCatalogEntry = {
+  provider: LLMProvider;
+  available: boolean;
+  /** Human-readable unavailability reason, present only when available is false. */
+  unavailableReason: string | null;
+  /** Active profiles; empty for Cursor/OpenCode, which never use profiles. */
+  profiles: ProviderSelectionCatalogProfile[];
+  /** Provider-level model catalog (options and default model). */
+  models: ProviderModelsDefinition;
+};
+
+/**
+ * Public selection catalog returned by `GET /api/providers/selection-catalog`.
+ *
+ * Backed by Settings data but strictly public: every field here is safe to
+ * render in any picker. Pickers must consume this catalog instead of
+ * hard-coded provider metadata so availability and profile state always come
+ * from the backend.
+ */
+export type ProviderSelectionCatalog = {
+  providers: ProviderSelectionCatalogEntry[];
+};
+
+/**
+ * A fully-resolved provider selection: which provider, which runtime profile,
+ * and which model a new session or fork will run with.
+ *
+ * For connection-backed providers (cursor, opencode) `providerProfileId` is
+ * always null — that is their natural architecture, not a legacy state.
+ */
+export type ResolvedProviderSelection = {
+  provider: LLMProvider;
+  providerProfileId: number | null;
+  model: string;
+};
+
+// ---------------------------
 //----------------- PROVIDER ACTIVE MODEL TYPES ------------
 /**
  * Provider-neutral result for the model that is actively driving a session or

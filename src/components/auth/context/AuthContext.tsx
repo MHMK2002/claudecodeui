@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+
 import { IS_PLATFORM } from '../../../constants/config';
 import {
   api,
@@ -8,6 +9,7 @@ import {
   isValidRefreshedToken,
   storeAuthToken,
 } from '../../../utils/api';
+import { invalidateProviderAuthStatusCache } from '../../provider-auth/providerAuthStatusCache';
 import { AUTH_ERROR_MESSAGES, AUTH_TOKEN_STORAGE_KEY } from '../constants';
 import type {
   AuthContextValue,
@@ -50,12 +52,14 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [error, setError] = useState<string | null>(null);
 
   const setSession = useCallback((nextUser: AuthUser, nextToken: string) => {
+    invalidateProviderAuthStatusCache();
     setUser(nextUser);
     setToken(nextToken);
     persistToken(nextToken);
   }, []);
 
   const clearSession = useCallback(() => {
+    invalidateProviderAuthStatusCache();
     setUser(null);
     setToken(null);
     clearStoredToken();

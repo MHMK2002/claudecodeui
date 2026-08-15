@@ -1,5 +1,6 @@
 import { BrowserWindow, Menu, Tray, clipboard, nativeImage, nativeTheme, session, webContents as electronWebContents } from 'electron';
 
+import { redactDiagnosticValue } from './diagnostics.js';
 import { ViewHost } from './viewHost.js';
 
 const TITLEBAR_HEIGHT = 44;
@@ -39,6 +40,7 @@ export class DesktopWindowManager {
     getRemoteEnvironmentMenuItems,
     getCloudState,
     getLocalState,
+    onDiagnostic,
     actions,
     tabs,
   }) {
@@ -52,6 +54,7 @@ export class DesktopWindowManager {
     this.getRemoteEnvironmentMenuItems = getRemoteEnvironmentMenuItems;
     this.getCloudState = getCloudState;
     this.getLocalState = getLocalState;
+    this.onDiagnostic = onDiagnostic;
     this.actions = actions;
     this.tabs = tabs;
 
@@ -66,6 +69,7 @@ export class DesktopWindowManager {
       getPreloadPath: this.getPreloadPath,
       openExternalUrl: this.openExternalUrl,
       showError: this.actions.showError,
+      onDiagnostic: this.onDiagnostic,
     });
   }
 
@@ -170,6 +174,8 @@ export class DesktopWindowManager {
     this.syncSettingsWindowBounds();
     this.viewHost.configureChildWebContents(this.settingsWindow.webContents);
     this.settingsWindow.once('ready-to-show', () => this.settingsWindow?.show());
+    this.settingsWindow.on('unresponsive', () => this.onDiagnostic?.('window.settings-unresponsive'));
+    this.settingsWindow.on('responsive', () => this.onDiagnostic?.('window.settings-responsive'));
     this.settingsWindow.on('closed', () => {
       this.settingsWindow = null;
     });
@@ -322,7 +328,7 @@ export class DesktopWindowManager {
       webContents: rows,
     };
 
-    clipboard.writeText(JSON.stringify(diagnostics, null, 2));
+    clipboard.writeText(JSON.stringify(redactDiagnosticValue(diagnostics), null, 2));
   }
 
   async closeDesktopTab(tabId) {
@@ -544,7 +550,7 @@ export class DesktopWindowManager {
           { role: 'forceReload' },
           { role: 'toggleDevTools' },
           {
-            label: 'Open Active Tab DevTools',
+            label: 'Open Active View DevTools',
             click: () => this.openActiveTabDevTools(),
           },
           {
@@ -736,13 +742,13 @@ export class DesktopWindowManager {
     });
 
     this.mainWindow.once('ready-to-show', () => {
+      this.onDiagnostic?.('window.main-ready-to-show');
       this.mainWindow?.show();
     });
 
-    this.mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-      void this.openExternalUrl(url).catch((error) => this.actions.showError('Could not open external link', error));
-      return { action: 'deny' };
-    });
+    this.viewHost.configureChildWebContents(this.mainWindow.webContents);
+    this.mainWindow.on('unresponsive', () => this.onDiagnostic?.('window.main-unresponsive'));
+    this.mainWindow.on('responsive', () => this.onDiagnostic?.('window.main-responsive'));
 
     this.mainWindow.on('resize', () => {
       this.viewHost.resizeActiveView();
@@ -754,6 +760,7 @@ export class DesktopWindowManager {
     });
 
     this.mainWindow.on('closed', () => {
+      this.onDiagnostic?.('window.main-closed');
       this.viewHost.clear();
       this.settingsWindow = null;
       this.mainWindow = null;

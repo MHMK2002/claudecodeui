@@ -65,7 +65,7 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
 
     // Refresh statuses after the login modal is closed.
     if (didCloseModal) {
-      void refreshProviderAuthStatuses();
+      void refreshProviderAuthStatuses(undefined, { force: true });
     }
   }, [activeLoginProvider, refreshProviderAuthStatuses]);
 
@@ -75,7 +75,7 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
 
   const handleLoginComplete = (exitCode: number) => {
     if (exitCode === 0 && activeLoginProvider) {
-      void checkProviderAuthStatus(activeLoginProvider);
+      void checkProviderAuthStatus(activeLoginProvider, { force: true });
     }
   };
 

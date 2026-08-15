@@ -717,15 +717,18 @@ export function useChatComposerState({
   ]);
 
   // Allocate a stable backend session id for a brand-new conversation via the
-  // session gateway (POST /api/providers/sessions). Returns null on failure and
-  // logs; the caller decides what to do with the id — establish + navigate in
-  // handleSubmit, or an out-of-band dispatch for a voice transcript that resolved
-  // after the user left the origin chat.
+  // session gateway (POST /api/providers/sessions). The complete selection —
+  // provider, profile, and model — is sent in the same request so the session
+  // row is created fully configured in one atomic operation. Returns null on
+  // failure and logs; the caller decides what to do with the id — establish +
+  // navigate in handleSubmit, or an out-of-band dispatch for a voice transcript
+  // that resolved after the user left the origin chat.
   const createProviderSessionId = useCallback(
     async (args: {
       provider: LLMProvider;
       projectPath: string;
       providerProfileId: number | null;
+      model: string;
     }): Promise<string | null> => {
       try {
         const response = await authenticatedFetch('/api/providers/sessions', {
@@ -736,6 +739,7 @@ export function useChatComposerState({
             providerProfileId: args.provider === 'claude' || args.provider === 'codex'
               ? args.providerProfileId
               : null,
+            model: args.model,
           }),
         });
         if (!response.ok) {
@@ -926,6 +930,9 @@ export function useChatComposerState({
             : provider === 'codex'
               ? selectedCodexProfileId
               : null,
+          // The composer displays `currentProviderModel`; the first send
+          // creates the session with exactly that model.
+          model: currentProviderModel,
         });
 
         if (!targetSessionId) {
@@ -997,6 +1004,7 @@ export function useChatComposerState({
       attachedFiles,
       buildSendOptions,
       createProviderSessionId,
+      currentProviderModel,
       currentSessionId,
       executeCommand,
       isLoading,
@@ -1163,11 +1171,15 @@ export function useChatComposerState({
       let target = originKey;
       if (!target) {
         // Brand-new origin chat: allocate its session now so the transcript can be
-        // addressed there as either a sent message or a retained draft.
+        // addressed there as either a sent message or a retained draft. The
+        // origin's snapshotted selection (including its model) is used.
         target = await createProviderSessionId({
           provider: voiceOrigin.provider,
           projectPath: voiceOrigin.projectPath,
           providerProfileId: voiceOrigin.providerProfileId,
+          model: typeof voiceOrigin.options?.model === 'string' && voiceOrigin.options.model
+            ? voiceOrigin.options.model
+            : currentProviderModel,
         });
       }
       if (target) {
@@ -1207,7 +1219,7 @@ export function useChatComposerState({
     setInput(next);
     inputValueRef.current = next;
     if (send) await handleSubmitRef.current?.(createFakeSubmitEvent());
-  }, [sendMessage, onSessionProcessing, setInput, createProviderSessionId]);
+  }, [sendMessage, onSessionProcessing, setInput, createProviderSessionId, currentProviderModel]);
 
   useEffect(() => {
     inputValueRef.current = input;
