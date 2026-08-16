@@ -35,17 +35,17 @@ export default function GitRepositoryErrorState({
           <button
             onClick={onInitRepository}
             disabled={isInitializingRepository}
-            className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+            className="flex min-h-11 items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isInitializingRepository ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Initializing repository...
+                Initializing repository…
               </>
             ) : (
               <>
                 <GitBranch className="h-4 w-4" />
-                Run git init
+                Initialize repository
               </>
             )}
           </button>

@@ -13,12 +13,11 @@ import { useFileTreeUpload } from '../hooks/useFileTreeUpload';
 import type { FileTreeImageSelection, FileTreeNode } from '../types/types';
 import { formatFileSize, formatRelativeTime, isImageFile } from '../utils/fileTreeUtils';
 import { Project } from '../../../types/app';
-import { ScrollArea, Input } from '../../../shared/view/ui';
+import { Button, Dialog, DialogContent, DialogTitle, ScrollArea, Input } from '../../../shared/view/ui';
 
 import FileTreeBody from './FileTreeBody';
 import FileTreeDetailedColumns from './FileTreeDetailedColumns';
 import FileTreeHeader from './FileTreeHeader';
-import FileTreeLoadingState from './FileTreeLoadingState';
 import FileTreeUploadProgress from './FileTreeUploadProgress';
 import ImageViewer from './ImageViewer';
 
@@ -34,6 +33,10 @@ export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps)
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const newItemInputRef = useRef<HTMLInputElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const deleteReturnFocusRef = useRef<HTMLElement | null>(null);
+  const deleteReturnPathRef = useRef<string | null>(null);
+  const deleteCloseIntentRef = useRef<'cancel' | 'confirm' | null>(null);
+  const deleteDialogWasOpenRef = useRef(false);
 
   // Show toast notification
   const showToast = useCallback((message: string, type: 'success' | 'error') => {
@@ -48,7 +51,7 @@ export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps)
     }
   }, [toast]);
 
-  const { files, loading, refreshFiles } = useFileTreeData(selectedProject);
+  const { files, status: dataStatus, error: loadError, loading, refreshFiles } = useFileTreeData(selectedProject);
   const { viewMode, changeViewMode } = useFileTreeViewMode();
   const { expandedDirs, toggleDirectory, expandDirectories, collapseAll } = useExpandedDirectories();
   const { searchQuery, setSearchQuery, filteredFiles } = useFileTreeSearch({
@@ -62,6 +65,69 @@ export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps)
     onRefresh: refreshFiles,
     showToast,
   });
+  const {
+    handleCancelDelete: cancelDelete,
+    handleConfirmDelete: confirmDelete,
+    handleStartDelete: startDelete,
+  } = operations;
+
+  const findFileRow = useCallback((path: string) => (
+    Array.from(document.querySelectorAll<HTMLElement>('[data-file-path]'))
+      .find((row) => row.dataset.filePath === path) ?? null
+  ), []);
+
+  const handleStartDelete = useCallback((item: FileTreeNode) => {
+    const activeElement = document.activeElement;
+    const activeRow = activeElement instanceof HTMLElement
+      ? activeElement.closest<HTMLElement>('[data-file-path]')
+      : null;
+
+    deleteReturnFocusRef.current = activeRow ?? findFileRow(item.path);
+    deleteReturnPathRef.current = item.path;
+    deleteCloseIntentRef.current = null;
+    startDelete(item);
+  }, [findFileRow, startDelete]);
+
+  const handleCancelDelete = useCallback(() => {
+    deleteCloseIntentRef.current = 'cancel';
+    cancelDelete();
+  }, [cancelDelete]);
+
+  const handleConfirmDelete = useCallback(async () => {
+    deleteCloseIntentRef.current = 'confirm';
+    await confirmDelete();
+  }, [confirmDelete]);
+
+  useEffect(() => {
+    const isOpen = operations.deleteConfirmation.isOpen;
+    if (deleteDialogWasOpenRef.current && !isOpen) {
+      const returnTarget = deleteReturnFocusRef.current;
+      requestAnimationFrame(() => {
+        const fallbackTarget = document.querySelector<HTMLElement>('[role="treeitem"], [role="tree"]');
+        const focusTarget = returnTarget?.isConnected ? returnTarget : fallbackTarget;
+        focusTarget?.focus({ preventScroll: true });
+      });
+
+      if (deleteCloseIntentRef.current !== 'confirm') {
+        deleteReturnFocusRef.current = null;
+        deleteReturnPathRef.current = null;
+      }
+    }
+    deleteDialogWasOpenRef.current = isOpen;
+  }, [operations.deleteConfirmation.isOpen]);
+
+  useEffect(() => {
+    const deletedPath = deleteReturnPathRef.current;
+    if (deleteCloseIntentRef.current !== 'confirm' || !deletedPath || findFileRow(deletedPath)) {
+      return;
+    }
+
+    const fallbackTarget = document.querySelector<HTMLElement>('[role="treeitem"], [role="tree"]');
+    requestAnimationFrame(() => fallbackTarget?.focus({ preventScroll: true }));
+    deleteReturnFocusRef.current = null;
+    deleteReturnPathRef.current = null;
+    deleteCloseIntentRef.current = null;
+  }, [files, findFileRow]);
 
   // File upload (drag and drop)
   const upload = useFileTreeUpload({
@@ -122,10 +188,6 @@ export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps)
     [t],
   );
 
-  if (loading) {
-    return <FileTreeLoadingState />;
-  }
-
   return (
     <div
       ref={upload.treeRef}
@@ -161,7 +223,11 @@ export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps)
         uploadProgress={upload.uploadProgress?.progress ?? null}
       />
 
-      <FileTreeUploadProgress upload={upload.uploadProgress} />
+      <FileTreeUploadProgress
+        upload={upload.uploadProgress}
+        onDismiss={upload.clearUploadProgress}
+        onRetry={upload.canRetryUpload ? upload.retryUpload : undefined}
+      />
 
       {viewMode === 'detailed' && filteredFiles.length > 0 && <FileTreeDetailedColumns />}
 
@@ -169,7 +235,7 @@ export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps)
         {/* New item input */}
         {operations.isCreating && (
           <div
-            className="mb-1 flex items-center gap-1.5 py-[3px] pr-2"
+            className="mb-1 flex min-h-11 items-center gap-1.5 py-1 pr-2"
             style={{ paddingLeft: `${(operations.newItemParent.split('/').length - 1) * 16 + 4}px` }}
           >
             {operations.newItemType === 'directory' ? (
@@ -180,6 +246,7 @@ export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps)
             <Input
               ref={newItemInputRef}
               type="text"
+              aria-label={operations.newItemType === 'directory' ? 'New folder name' : 'New file name'}
               value={operations.newItemName}
               onChange={(e) => operations.setNewItemName(e.target.value)}
               onKeyDown={(e) => {
@@ -192,7 +259,7 @@ export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps)
                   if (operations.isCreating) operations.handleConfirmCreate();
                 }, 100);
               }}
-              className="h-6 flex-1 text-sm"
+              className="min-h-11 flex-1 text-sm"
               disabled={operationLoading}
             />
           </div>
@@ -209,7 +276,7 @@ export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps)
           formatFileSize={formatFileSize}
           formatRelativeTime={formatRelativeTimeLabel}
           onRename={operations.handleStartRename}
-          onDelete={operations.handleStartDelete}
+          onDelete={handleStartDelete}
           onNewFile={(path) => operations.handleStartCreate(path, 'file')}
           onNewFolder={(path) => operations.handleStartCreate(path, 'directory')}
           onCopyPath={operations.handleCopyPath}
@@ -223,6 +290,9 @@ export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps)
           handleCancelRename={operations.handleCancelRename}
           renameInputRef={renameInputRef}
           operationLoading={operationLoading}
+          dataStatus={dataStatus}
+          loadError={loadError}
+          onRetry={refreshFiles}
         />
       </ScrollArea>
 
@@ -235,18 +305,18 @@ export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps)
 
       {/* Delete Confirmation Dialog */}
       {operations.deleteConfirmation.isOpen && operations.deleteConfirmation.item && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50">
-          <div className="mx-4 max-w-sm rounded-lg border border-border bg-background p-4 shadow-lg">
+        <Dialog open onOpenChange={(open) => !open && handleCancelDelete()}>
+          <DialogContent className="w-[calc(100vw-2rem)] max-w-sm p-4" aria-labelledby="file-delete-title">
             <div className="mb-4 flex items-center gap-3">
-              <div className="rounded-full bg-red-100 p-2 dark:bg-red-900/30">
-                <AlertTriangle className="h-5 w-5 text-red-600 dark:text-red-400" />
+              <div className="rounded-full bg-destructive/10 p-2 text-destructive">
+                <AlertTriangle className="h-5 w-5" aria-hidden="true" />
               </div>
               <div>
-                <h3 className="font-medium text-foreground">
+                <DialogTitle id="file-delete-title" className="not-sr-only font-medium text-foreground">
                   {t('fileTree.delete.title', 'Delete {{type}}', {
                     type: operations.deleteConfirmation.item.type === 'directory' ? 'Folder' : 'File'
                   })}
-                </h3>
+                </DialogTitle>
                 <p className="text-sm text-muted-foreground">
                   {operations.deleteConfirmation.item.name}
                 </p>
@@ -258,29 +328,35 @@ export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps)
                 : t('fileTree.delete.fileWarning', 'This file will be permanently deleted.')}
             </p>
             <div className="flex justify-end gap-2">
-              <button
-                onClick={operations.handleCancelDelete}
+              <Button
+                type="button"
+                variant="outline"
+                className="min-h-11"
+                onClick={handleCancelDelete}
                 disabled={operationLoading}
-                className="rounded-md px-3 py-1.5 text-sm transition-colors hover:bg-accent"
               >
                 {t('common.cancel', 'Cancel')}
-              </button>
-              <button
-                onClick={operations.handleConfirmDelete}
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                className="min-h-11"
+                onClick={() => void handleConfirmDelete()}
                 disabled={operationLoading}
-                className="flex items-center gap-2 rounded-md bg-red-600 px-3 py-1.5 text-sm text-white transition-colors hover:bg-red-700 disabled:opacity-50"
               >
-                {operationLoading && <Loader2 className="h-4 w-4 animate-spin" />}
+                {operationLoading && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
                 {t('fileTree.delete.confirm', 'Delete')}
-              </button>
+              </Button>
             </div>
-          </div>
-        </div>
+          </DialogContent>
+        </Dialog>
       )}
 
       {/* Toast Notification */}
       {toast && (
         <div
+          role={toast.type === 'error' ? 'alert' : 'status'}
+          aria-live={toast.type === 'error' ? 'assertive' : 'polite'}
           className={cn(
             'fixed bottom-4 right-4 z-[9999] px-4 py-2 rounded-lg shadow-lg flex items-center gap-2 animate-in slide-in-from-bottom-2',
             toast.type === 'success'

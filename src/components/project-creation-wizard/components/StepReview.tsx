@@ -1,94 +1,95 @@
-import { useMemo } from 'react';
-import { useTranslation } from 'react-i18next';
-import { isSshGitUrl } from '../utils/pathUtils';
-import type { WizardFormState } from '../types';
+import { Loader2 } from 'lucide-react';
+
+import type { CloneProgress, ProjectCreationMode, TokenMode } from '../types';
 
 type StepReviewProps = {
-  formState: WizardFormState;
+  mode: ProjectCreationMode;
+  folderPath: string;
+  repositoryUrl: string;
+  destinationPath: string;
+  credentialRequired: boolean;
+  tokenMode: TokenMode;
   selectedTokenName: string | null;
   isCreating: boolean;
-  cloneProgress: string;
+  attemptId: string | null;
+  cloneProgress: CloneProgress | null;
 };
 
 export default function StepReview({
-  formState,
+  mode,
+  folderPath,
+  repositoryUrl,
+  destinationPath,
+  credentialRequired,
+  tokenMode,
   selectedTokenName,
   isCreating,
+  attemptId,
   cloneProgress,
 }: StepReviewProps) {
-  const { t } = useTranslation();
-
-  const authenticationLabel = useMemo(() => {
-    if (formState.tokenMode === 'stored' && formState.selectedGithubToken) {
-      return `${t('projectWizard.step3.usingStoredToken')} ${selectedTokenName || 'Unknown'}`;
-    }
-
-    if (formState.tokenMode === 'new' && formState.newGithubToken.trim()) {
-      return t('projectWizard.step3.usingProvidedToken');
-    }
-
-    if (isSshGitUrl(formState.githubUrl)) {
-      return t('projectWizard.step3.sshKey', { defaultValue: 'SSH Key' });
-    }
-
-    return t('projectWizard.step3.noAuthentication');
-  }, [formState, selectedTokenName, t]);
+  const operationLabel = mode === 'local' ? 'Open existing folder' : 'Clone repository';
+  const destination = mode === 'local' ? folderPath : destinationPath;
+  const credentialLabel = tokenMode === 'stored'
+    ? selectedTokenName || 'Stored credential'
+    : tokenMode === 'new'
+      ? 'Credential entered for this attempt'
+      : 'No credential';
 
   return (
     <div className="space-y-4">
-      <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900/50">
-        <h4 className="mb-3 text-sm font-semibold text-gray-900 dark:text-white">
-          {t('projectWizard.step3.reviewConfig')}
-        </h4>
-
-        <div className="space-y-2">
-          <div className="flex justify-between text-sm">
-            <span className="text-gray-600 dark:text-gray-400">{t('projectWizard.step3.path')}</span>
-            <span className="break-all font-mono text-xs text-gray-900 dark:text-white">
-              {formState.workspacePath}
-            </span>
+      <section className="rounded-lg border border-border bg-muted/40 p-4" aria-labelledby="project-review-title">
+        <h4 id="project-review-title" className="mb-3 font-medium text-foreground">Review operation</h4>
+        <dl className="space-y-3 text-sm">
+          <div>
+            <dt className="text-muted-foreground">Operation</dt>
+            <dd className="mt-1 font-medium text-foreground">{operationLabel}</dd>
           </div>
-
-          {formState.githubUrl && (
-            <>
-              <div className="flex justify-between text-sm">
-                <span className="text-gray-600 dark:text-gray-400">
-                  {t('projectWizard.step3.cloneFrom')}
-                </span>
-                <span className="break-all font-mono text-xs text-gray-900 dark:text-white">
-                  {formState.githubUrl}
-                </span>
-              </div>
-
-              <div className="flex justify-between text-sm">
-                <span className="text-gray-600 dark:text-gray-400">
-                  {t('projectWizard.step3.authentication')}
-                </span>
-                <span className="text-xs text-gray-900 dark:text-white">{authenticationLabel}</span>
-              </div>
-            </>
+          {mode === 'clone' && (
+            <div>
+              <dt className="text-muted-foreground">Repository URL</dt>
+              <dd className="mt-1 break-all font-mono text-xs text-foreground">{repositoryUrl}</dd>
+            </div>
           )}
-        </div>
-      </div>
-
-      <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-800 dark:bg-blue-900/20">
-        {isCreating && cloneProgress ? (
-          <div className="space-y-2">
-            <p className="text-sm font-medium text-blue-800 dark:text-blue-200">
-              {t('projectWizard.step3.cloningRepository', { defaultValue: 'Cloning repository...' })}
-            </p>
-            <code className="block whitespace-pre-wrap break-all font-mono text-xs text-blue-700 dark:text-blue-300">
-              {cloneProgress}
-            </code>
+          <div>
+            <dt className="text-muted-foreground">Exact destination</dt>
+            <dd className="mt-1 break-all font-mono text-xs text-foreground">{destination}</dd>
           </div>
-        ) : (
-          <p className="text-sm text-blue-800 dark:text-blue-200">
-            {formState.githubUrl
-              ? t('projectWizard.step3.newWithClone')
-              : t('projectWizard.step3.newEmpty')}
-          </p>
-        )}
-      </div>
+          {mode === 'clone' && credentialRequired && (
+            <div>
+              <dt className="text-muted-foreground">Authentication</dt>
+              <dd className="mt-1 text-foreground">{credentialLabel}</dd>
+            </div>
+          )}
+        </dl>
+      </section>
+
+      {mode === 'local' ? (
+        <p className="rounded-lg border border-border bg-background p-4 text-sm text-muted-foreground">
+          The existing folder will be registered without creating or changing its files.
+        </p>
+      ) : isCreating ? (
+        <section className="rounded-lg border border-primary/30 bg-primary/10 p-4" role="status" aria-live="polite">
+          <div className="flex items-start gap-3">
+            <Loader2 className="mt-0.5 h-5 w-5 shrink-0 animate-spin text-primary" aria-hidden="true" />
+            <div className="min-w-0 flex-1">
+              <p className="font-medium text-foreground">{cloneProgress?.message || 'Starting clone…'}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {cloneProgress?.phase || 'preparing'}{attemptId ? ` · attempt ${attemptId}` : ''}
+              </p>
+              <progress
+                className="mt-3 h-2 w-full"
+                max={100}
+                value={cloneProgress?.percent ?? undefined}
+                aria-label="Clone progress"
+              />
+            </div>
+          </div>
+        </section>
+      ) : (
+        <p className="rounded-lg border border-border bg-background p-4 text-sm text-muted-foreground">
+          Git will clone into an attempt-owned staging folder and move it into the exact destination only after success.
+        </p>
+      )}
     </div>
   );
 }

@@ -3,7 +3,10 @@ import { Folder, Search } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { FileTreeNode, FileTreeViewMode } from '../types/types';
 import FileTreeEmptyState from './FileTreeEmptyState';
+import FileTreeErrorState from './FileTreeErrorState';
 import FileTreeList from './FileTreeList';
+import FileTreeLoadingState from './FileTreeLoadingState';
+import type { FileTreeDataStatus, FileTreeLoadError } from '../hooks/useFileTreeData';
 
 type FileTreeBodyProps = {
   files: FileTreeNode[];
@@ -30,6 +33,9 @@ type FileTreeBodyProps = {
   handleCancelRename?: () => void;
   renameInputRef?: RefObject<HTMLInputElement>;
   operationLoading?: boolean;
+  dataStatus: FileTreeDataStatus;
+  loadError: FileTreeLoadError | null;
+  onRetry: () => void;
 };
 
 export default function FileTreeBody({
@@ -56,12 +62,19 @@ export default function FileTreeBody({
   handleCancelRename,
   renameInputRef,
   operationLoading,
+  dataStatus,
+  loadError,
+  onRetry,
 }: FileTreeBodyProps) {
   const { t } = useTranslation();
 
   return (
     <>
-      {files.length === 0 ? (
+      {dataStatus === 'loading' ? (
+        <FileTreeLoadingState />
+      ) : (dataStatus === 'permission-error' || dataStatus === 'server-error') && loadError ? (
+        <FileTreeErrorState status={dataStatus} message={loadError.message} onRetry={onRetry} />
+      ) : files.length === 0 ? (
         <FileTreeEmptyState
           icon={Folder}
           title={t('fileTree.noFilesFound')}

@@ -59,6 +59,55 @@ const sessionActivityMapsMatch = (
   return true;
 };
 
+/** Applies running/status/stream evidence while retaining the original start time. */
+export function applySessionProcessing(
+  previous: ReadonlyMap<string, SessionActivity>,
+  sessionId: string,
+  activity: { statusText?: string | null; canInterrupt?: boolean } = {},
+  now = Date.now(),
+): Map<string, SessionActivity> {
+  const existing = previous.get(sessionId);
+  const next: SessionActivity = {
+    statusText: activity.statusText !== undefined ? activity.statusText : existing?.statusText ?? null,
+    canInterrupt: activity.canInterrupt ?? existing?.canInterrupt ?? true,
+    startedAt: existing?.startedAt ?? now,
+  };
+  if (
+    existing
+    && existing.statusText === next.statusText
+    && existing.canInterrupt === next.canInterrupt
+  ) {
+    return previous as Map<string, SessionActivity>;
+  }
+  const updated = new Map(previous);
+  updated.set(sessionId, next);
+  return updated;
+}
+
+/** Applies complete/abort/authoritative-idle evidence with stale-ack protection. */
+export function applySessionIdle(
+  previous: ReadonlyMap<string, SessionActivity>,
+  sessionId: string,
+  options: { ifStartedBefore?: number } = {},
+): Map<string, SessionActivity> {
+  const existing = previous.get(sessionId);
+  if (!existing) return previous as Map<string, SessionActivity>;
+  if (options.ifStartedBefore !== undefined && existing.startedAt >= options.ifStartedBefore) {
+    return previous as Map<string, SessionActivity>;
+  }
+  const updated = new Map(previous);
+  updated.delete(sessionId);
+  return updated;
+}
+
+/** Resolves only the viewed session so switching never leaks another run's Stop state. */
+export function getViewedSessionActivity(
+  activities: ReadonlyMap<string, SessionActivity> | undefined,
+  sessionId: string | null,
+): SessionActivity | null {
+  return sessionId ? activities?.get(sessionId) ?? null : null;
+}
+
 /**
  * Single source of truth for which sessions are actively processing a
  * request. Everything the chat UI shows (activity indicator, abort
@@ -78,25 +127,7 @@ export function useSessionProtection() {
     }
 
     setProcessingSessions((prev) => {
-      const existing = prev.get(sessionId);
-      const next: SessionActivity = {
-        statusText:
-          activity?.statusText !== undefined ? activity.statusText : existing?.statusText ?? null,
-        canInterrupt: activity?.canInterrupt ?? existing?.canInterrupt ?? true,
-        startedAt: existing?.startedAt ?? Date.now(),
-      };
-
-      if (
-        existing
-        && existing.statusText === next.statusText
-        && existing.canInterrupt === next.canInterrupt
-      ) {
-        return prev;
-      }
-
-      const updated = new Map(prev);
-      updated.set(sessionId, next);
-      return updated;
+      return applySessionProcessing(prev, sessionId, activity);
     });
   }, []);
 
@@ -106,21 +137,7 @@ export function useSessionProtection() {
     }
 
     setProcessingSessions((prev) => {
-      const existing = prev.get(sessionId);
-      if (!existing) {
-        return prev;
-      }
-
-      // Guard against stale `chat_subscribed` idle acks: if a new request
-      // started after the subscribe was sent, the idle ack describes the
-      // older request and must not clear the newer one.
-      if (opts?.ifStartedBefore !== undefined && existing.startedAt >= opts.ifStartedBefore) {
-        return prev;
-      }
-
-      const updated = new Map(prev);
-      updated.delete(sessionId);
-      return updated;
+      return applySessionIdle(prev, sessionId, opts);
     });
   }, []);
 

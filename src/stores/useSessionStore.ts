@@ -7,12 +7,19 @@
  * No localStorage for messages. Backend JSONL is the source of truth.
  */
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useSyncExternalStore } from 'react';
 
 import { authenticatedFetch } from '../utils/api';
 import type { LLMProvider } from '../types/app';
 
 import { removeOptimisticUserEchoes } from './sessionMessageReconciliation';
+import { createSessionRevisionRegistry } from './sessionRevisionRegistry';
+import { isSupersededSessionHistoryFetch } from './sessionHistoryConcurrency';
+import {
+  decodeSessionHistoryResponse,
+  type DecodedSessionHistory,
+  type SessionHistoryDecodeErrorCode,
+} from './sessionHistoryTransport';
 
 // ─── NormalizedMessage (mirrors server/adapters/types.js) ────────────────────
 
@@ -102,15 +109,15 @@ export interface SessionSlot {
   _lastRealtimeRef: NormalizedMessage[];
   /**
    * @internal Monotonic ticket per server fetch (fetch/refresh/fetchMore) and
-   * the ticket of the last response applied. Concurrent fetches for the same
-   * session can resolve out of order — e.g. the `complete` refresh racing the
-   * watcher-triggered refresh right as a queued message is flushed — and a
-   * stale response applied last would wind `serverMessages` back to a
-   * transcript that no longer matches what the user already saw.
+   * the ticket of the last response applied. The latest-started request owns
+   * the slot even before it resolves, so an older response can never wind
+   * `serverMessages` back or certify a partial export.
    */
   _fetchSeq: number;
   _appliedFetchSeq: number;
   status: SessionStatus;
+  /** Last history transport failure; cached messages remain available. */
+  error: string | null;
   fetchedAt: number;
   total: number;
   hasMore: boolean;
@@ -124,6 +131,39 @@ export interface SessionSlot {
   pendingForkContext?: boolean;
 }
 
+export type SessionHistoryFailureCause = SessionHistoryDecodeErrorCode | 'network';
+
+export type SessionHistorySnapshot = Readonly<{
+  serverMessages: readonly Readonly<NormalizedMessage>[];
+  realtimeMessages: readonly Readonly<NormalizedMessage>[];
+  merged: readonly Readonly<NormalizedMessage>[];
+  total: number;
+  hasMore: boolean;
+  offset: number;
+  tokenUsage: unknown;
+}>;
+
+export type SessionHistoryResult =
+  | {
+    ok: true;
+    /** True only when this request, rather than a later-started request, updated the slot. */
+    applied: boolean;
+    superseded: boolean;
+    slot: SessionSlot;
+    /** Immutable data captured for this request before any later slot mutation. */
+    snapshot: SessionHistorySnapshot;
+    receivedCount: number;
+  }
+  | {
+    ok: false;
+    /** A latest-request failure applies error state; a superseded failure applies nothing. */
+    applied: boolean;
+    superseded: boolean;
+    slot: SessionSlot;
+    error: string;
+    cause: SessionHistoryFailureCause;
+  };
+
 const EMPTY: NormalizedMessage[] = [];
 
 function createEmptySlot(): SessionSlot {
@@ -134,6 +174,7 @@ function createEmptySlot(): SessionSlot {
     _lastServerRef: EMPTY,
     _lastRealtimeRef: EMPTY,
     status: 'idle',
+    error: null,
     fetchedAt: 0,
     total: 0,
     hasMore: false,
@@ -385,6 +426,92 @@ function recomputeMergedIfNeeded(slot: SessionSlot): boolean {
   return true;
 }
 
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) {
+    return value;
+  }
+  for (const nestedValue of Object.values(value as Record<string, unknown>)) {
+    deepFreeze(nestedValue);
+  }
+  return Object.freeze(value);
+}
+
+function immutableCopy<T>(value: T): T {
+  return deepFreeze(structuredClone(value));
+}
+
+function createSessionHistorySnapshot(slot: SessionSlot): SessionHistorySnapshot {
+  return Object.freeze({
+    serverMessages: immutableCopy(slot.serverMessages),
+    realtimeMessages: immutableCopy(slot.realtimeMessages),
+    merged: immutableCopy(slot.merged),
+    total: slot.total,
+    hasMore: slot.hasMore,
+    offset: slot.offset,
+    tokenUsage: immutableCopy(slot.tokenUsage),
+  });
+}
+
+type SessionHistoryTransportResult =
+  | { ok: true; data: DecodedSessionHistory }
+  | { ok: false; code: SessionHistoryFailureCause; error: string };
+
+async function requestSessionHistory(
+  url: string,
+  sessionId: string,
+): Promise<SessionHistoryTransportResult> {
+  let response: Response;
+  try {
+    response = await authenticatedFetch(url);
+  } catch {
+    return {
+      ok: false,
+      code: 'network',
+      error: 'Conversation history request could not reach the local server.',
+    };
+  }
+  return decodeSessionHistoryResponse(response, sessionId);
+}
+
+function createSessionHistorySuccess(
+  slot: SessionSlot,
+  applied: boolean,
+  receivedCount: number,
+): SessionHistoryResult {
+  return {
+    ok: true,
+    applied,
+    superseded: !applied,
+    slot,
+    snapshot: createSessionHistorySnapshot(slot),
+    receivedCount,
+  };
+}
+
+function applySessionHistoryFailure(
+  slot: SessionSlot,
+  requestTicket: number,
+  cause: SessionHistoryFailureCause,
+  error: string,
+  sessionId: string,
+  notify: (sessionId: string) => void,
+): SessionHistoryResult {
+  const superseded = isSupersededSessionHistoryFetch(requestTicket, slot._fetchSeq);
+  if (!superseded) {
+    slot.status = 'error';
+    slot.error = error;
+    notify(sessionId);
+  }
+  return {
+    ok: false,
+    applied: !superseded,
+    superseded,
+    slot,
+    error,
+    cause,
+  };
+}
+
 // ─── Stale threshold ─────────────────────────────────────────────────────────
 
 const STALE_THRESHOLD_MS = 30_000;
@@ -395,21 +522,18 @@ const MAX_REALTIME_MESSAGES = 500;
 
 export function useSessionStore() {
   const storeRef = useRef(new Map<string, SessionSlot>());
-  const activeSessionIdRef = useRef<string | null>(null);
-  // Bump to force re-render — only when the active session's data changes.
-  // Session ids are stable for the whole conversation lifetime (the backend
-  // allocates them before the first send), so slots are keyed directly with
-  // no alias/redirect indirection.
-  const [, setTick] = useState(0);
+  const revisionRegistryRef = useRef(createSessionRevisionRegistry());
   const notify = useCallback((sessionId: string) => {
-    if (sessionId === activeSessionIdRef.current) {
-      setTick(n => n + 1);
-    }
+    revisionRegistryRef.current.notify(sessionId);
   }, []);
 
-  const setActiveSession = useCallback((sessionId: string | null) => {
-    activeSessionIdRef.current = sessionId;
-  }, []);
+  const subscribe = useCallback((sessionId: string | null, listener: () => void) => (
+    revisionRegistryRef.current.subscribe(sessionId, listener)
+  ), []);
+
+  const getRevision = useCallback((sessionId: string | null) => (
+    revisionRegistryRef.current.getSnapshot(sessionId)
+  ), []);
 
   const getSlot = useCallback((sessionId: string): SessionSlot => {
     const store = storeRef.current;
@@ -435,59 +559,72 @@ export function useSessionStore() {
       limit?: number | null;
       offset?: number;
     } = {},
-  ) => {
+  ): Promise<SessionHistoryResult> => {
     const slot = getSlot(sessionId);
     const fetchTicket = ++slot._fetchSeq;
     slot.status = 'loading';
+    slot.error = null;
     notify(sessionId);
 
-    try {
-      const params = new URLSearchParams();
-      if (opts.limit !== null && opts.limit !== undefined) {
-        params.append('limit', String(opts.limit));
-        params.append('offset', String(opts.offset ?? 0));
-      }
-
-      const qs = params.toString();
-      const url = `/api/providers/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`;
-      const response = await authenticatedFetch(url);
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-
-      const body = await response.json();
-      const data = body?.data ?? body;
-      const messages: NormalizedMessage[] = data.messages || [];
-
-      // A later-started fetch already applied: this response is stale.
-      if (fetchTicket <= slot._appliedFetchSeq) {
-        return slot;
-      }
-      slot._appliedFetchSeq = fetchTicket;
-
-      slot.serverMessages = messages;
-      slot.total = data.total ?? messages.length;
-      slot.hasMore = Boolean(data.hasMore);
-      slot.offset = (opts.offset ?? 0) + messages.length;
-      slot.fetchedAt = Date.now();
-      slot.status = 'idle';
-      recomputeMergedIfNeeded(slot);
-      if (data.tokenUsage) {
-        slot.tokenUsage = data.tokenUsage;
-      }
-
-      notify(sessionId);
-      return slot;
-    } catch (error) {
-      console.error(`[SessionStore] fetch failed for ${sessionId}:`, error);
-      // Don't clobber a newer fetch's result with a stale failure.
-      if (fetchTicket > slot._appliedFetchSeq) {
-        slot.status = 'error';
-        notify(sessionId);
-      }
-      return slot;
+    const params = new URLSearchParams();
+    if (opts.limit !== null && opts.limit !== undefined) {
+      params.append('limit', String(opts.limit));
+      params.append('offset', String(opts.offset ?? 0));
     }
+
+    const qs = params.toString();
+    const url = `/api/providers/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`;
+    const transport = await requestSessionHistory(url, sessionId);
+    if (!transport.ok) {
+      const message = opts.limit === null
+        ? 'Could not load the complete conversation. Check your connection and try again.'
+        : 'Could not load this conversation. Check your connection and try again.';
+      console.error(`[SessionStore] fetch failed for ${sessionId}: ${transport.error}`);
+      return applySessionHistoryFailure(
+        slot,
+        fetchTicket,
+        transport.code,
+        message,
+        sessionId,
+        notify,
+      );
+    }
+    if (
+      opts.limit === null
+      && (transport.data.hasMore || transport.data.messages.length !== transport.data.total)
+    ) {
+      return applySessionHistoryFailure(
+        slot,
+        fetchTicket,
+        'invalid-data',
+        'Could not load the complete conversation. Check your connection and try again.',
+        sessionId,
+        notify,
+      );
+    }
+
+    // Latest-started wins. An older full response must not erase or certify a
+    // page that a later fetchMore/refresh has started loading.
+    if (isSupersededSessionHistoryFetch(fetchTicket, slot._fetchSeq)) {
+      return createSessionHistorySuccess(slot, false, transport.data.messages.length);
+    }
+    slot._appliedFetchSeq = fetchTicket;
+
+    slot.serverMessages = transport.data.messages;
+    slot.total = transport.data.total;
+    slot.hasMore = transport.data.hasMore;
+    slot.offset = (opts.offset ?? 0) + transport.data.messages.length;
+    slot.fetchedAt = Date.now();
+    slot.status = 'idle';
+    slot.error = null;
+    recomputeMergedIfNeeded(slot);
+    if (transport.data.tokenUsage !== undefined) {
+      slot.tokenUsage = transport.data.tokenUsage;
+    }
+
+    const result = createSessionHistorySuccess(slot, true, transport.data.messages.length);
+    notify(sessionId);
+    return result;
   }, [getSlot, notify]);
 
   /**
@@ -498,44 +635,69 @@ export function useSessionStore() {
     opts: {
       limit?: number;
     } = {},
-  ) => {
+  ): Promise<SessionHistoryResult> => {
     const slot = getSlot(sessionId);
-    if (!slot.hasMore) return slot;
+    if (!slot.hasMore) return createSessionHistorySuccess(slot, true, 0);
 
     const fetchTicket = ++slot._fetchSeq;
+    const requestOffset = slot.offset;
     const params = new URLSearchParams();
     const limit = opts.limit ?? 20;
     params.append('limit', String(limit));
-    params.append('offset', String(slot.offset));
+    params.append('offset', String(requestOffset));
 
     const qs = params.toString();
     const url = `/api/providers/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`;
 
-    try {
-      const response = await authenticatedFetch(url);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const body = await response.json();
-      const data = body?.data ?? body;
-      const olderMessages: NormalizedMessage[] = data.messages || [];
-
-      // A full fetch/refresh replaced serverMessages while this page was in
-      // flight — prepending onto the new array would duplicate or misorder.
-      if (fetchTicket <= slot._appliedFetchSeq) {
-        return slot;
-      }
-      slot._appliedFetchSeq = fetchTicket;
-
-      // Prepend older messages (they're earlier in the conversation)
-      slot.serverMessages = [...olderMessages, ...slot.serverMessages];
-      slot.hasMore = Boolean(data.hasMore);
-      slot.offset = slot.offset + olderMessages.length;
-      recomputeMergedIfNeeded(slot);
-      notify(sessionId);
-      return slot;
-    } catch (error) {
-      console.error(`[SessionStore] fetchMore failed for ${sessionId}:`, error);
-      return slot;
+    const transport = await requestSessionHistory(url, sessionId);
+    if (!transport.ok) {
+      console.error(`[SessionStore] fetchMore failed for ${sessionId}: ${transport.error}`);
+      return applySessionHistoryFailure(
+        slot,
+        fetchTicket,
+        transport.code,
+        'Could not load earlier messages. Check your connection and try again.',
+        sessionId,
+        notify,
+      );
     }
+
+    // A later full fetch/refresh/page owns the slot. Prepending this response
+    // would duplicate or misorder its request-specific page.
+    if (isSupersededSessionHistoryFetch(fetchTicket, slot._fetchSeq)) {
+      return createSessionHistorySuccess(slot, false, transport.data.messages.length);
+    }
+
+    const nextServerMessages = [...transport.data.messages, ...slot.serverMessages];
+    if (
+      nextServerMessages.length > transport.data.total
+      || (!transport.data.hasMore && nextServerMessages.length !== transport.data.total)
+    ) {
+      return applySessionHistoryFailure(
+        slot,
+        fetchTicket,
+        'invalid-data',
+        'Could not load earlier messages because the server returned an inconsistent page. Try again.',
+        sessionId,
+        notify,
+      );
+    }
+    slot._appliedFetchSeq = fetchTicket;
+
+    slot.serverMessages = nextServerMessages;
+    slot.total = transport.data.total;
+    slot.hasMore = transport.data.hasMore;
+    slot.offset = requestOffset + transport.data.messages.length;
+    slot.fetchedAt = Date.now();
+    slot.status = 'idle';
+    slot.error = null;
+    if (transport.data.tokenUsage !== undefined) {
+      slot.tokenUsage = transport.data.tokenUsage;
+    }
+    recomputeMergedIfNeeded(slot);
+    const result = createSessionHistorySuccess(slot, true, transport.data.messages.length);
+    notify(sessionId);
+    return result;
   }, [getSlot, notify]);
 
   /**
@@ -588,41 +750,63 @@ export function useSessionStore() {
    */
   const refreshFromServer = useCallback(async (
     sessionId: string,
-  ) => {
+  ): Promise<SessionHistoryResult> => {
     const slot = getSlot(sessionId);
     const fetchTicket = ++slot._fetchSeq;
-    try {
-      const url = `/api/providers/sessions/${encodeURIComponent(sessionId)}/messages`;
-      const response = await authenticatedFetch(url);
-
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const body = await response.json();
-      const data = body?.data ?? body;
-
-      // A later-started fetch already applied: applying this stale transcript
-      // would erase rows the user has already seen (and re-prune realtime
-      // rows against an outdated snapshot).
-      if (fetchTicket <= slot._appliedFetchSeq) {
-        return;
-      }
-      slot._appliedFetchSeq = fetchTicket;
-
-      slot.serverMessages = data.messages || [];
-      slot.total = data.total ?? slot.serverMessages.length;
-      slot.hasMore = Boolean(data.hasMore);
-      slot.fetchedAt = Date.now();
-      // Only drop realtime rows the server transcript now owns. A blind clear
-      // here caused the chat pane to flash "Continue your conversation" after
-      // `complete` while JSONL / provider_session_id indexing was still behind.
-      slot.realtimeMessages = pruneRealtimeSupersededByServer(
-        slot.serverMessages,
-        slot.realtimeMessages,
+    slot.status = 'loading';
+    slot.error = null;
+    notify(sessionId);
+    const url = `/api/providers/sessions/${encodeURIComponent(sessionId)}/messages`;
+    const transport = await requestSessionHistory(url, sessionId);
+    if (!transport.ok) {
+      console.error(`[SessionStore] refresh failed for ${sessionId}: ${transport.error}`);
+      return applySessionHistoryFailure(
+        slot,
+        fetchTicket,
+        transport.code,
+        'Could not refresh this conversation. Cached messages are still available. Try again.',
+        sessionId,
+        notify,
       );
-      recomputeMergedIfNeeded(slot);
-      notify(sessionId);
-    } catch (error) {
-      console.error(`[SessionStore] refresh failed for ${sessionId}:`, error);
     }
+    if (transport.data.hasMore || transport.data.messages.length !== transport.data.total) {
+      return applySessionHistoryFailure(
+        slot,
+        fetchTicket,
+        'invalid-data',
+        'Could not refresh the complete conversation. Cached messages are still available. Try again.',
+        sessionId,
+        notify,
+      );
+    }
+
+    // A later-started request owns the transcript and realtime reconciliation.
+    if (isSupersededSessionHistoryFetch(fetchTicket, slot._fetchSeq)) {
+      return createSessionHistorySuccess(slot, false, transport.data.messages.length);
+    }
+    slot._appliedFetchSeq = fetchTicket;
+
+    slot.serverMessages = transport.data.messages;
+    slot.total = transport.data.total;
+    slot.hasMore = transport.data.hasMore;
+    slot.offset = transport.data.messages.length;
+    slot.fetchedAt = Date.now();
+    slot.status = 'idle';
+    slot.error = null;
+    if (transport.data.tokenUsage !== undefined) {
+      slot.tokenUsage = transport.data.tokenUsage;
+    }
+    // Only drop realtime rows the server transcript now owns. A blind clear
+    // here caused the chat pane to flash "Continue your conversation" after
+    // `complete` while JSONL / provider_session_id indexing was still behind.
+    slot.realtimeMessages = pruneRealtimeSupersededByServer(
+      slot.serverMessages,
+      slot.realtimeMessages,
+    );
+    recomputeMergedIfNeeded(slot);
+    const result = createSessionHistorySuccess(slot, true, transport.data.messages.length);
+    notify(sessionId);
+    return result;
   }, [getSlot, notify]);
 
   /**
@@ -753,6 +937,8 @@ export function useSessionStore() {
   }, [getSlot, notify]);
 
   return useMemo(() => ({
+    subscribe,
+    getRevision,
     getSlot,
     has,
     fetchFromServer,
@@ -761,7 +947,6 @@ export function useSessionStore() {
     appendRealtimeBatch,
     refreshFromServer,
     applyRewindFromEvent,
-    setActiveSession,
     setStatus,
     isStale,
     updateStreaming,
@@ -771,11 +956,31 @@ export function useSessionStore() {
     getSessionSlot,
     setPendingForkContext,
   }), [
+    subscribe, getRevision,
     getSlot, has, fetchFromServer, fetchMore,
     appendRealtime, appendRealtimeBatch, refreshFromServer, applyRewindFromEvent,
-    setActiveSession, setStatus, isStale, updateStreaming, finalizeStreaming,
+    setStatus, isStale, updateStreaming, finalizeStreaming,
     clearRealtime, getMessages, getSessionSlot, setPendingForkContext,
   ]);
 }
 
 export type SessionStore = ReturnType<typeof useSessionStore>;
+
+/**
+ * Reactively observes one session in the lifted store without changing the
+ * stable store object's identity. Chat body and header subscribe separately.
+ */
+export function useSessionStoreRevision(
+  sessionStore: SessionStore,
+  sessionId: string | null,
+): number {
+  const subscribe = useCallback(
+    (listener: () => void) => sessionStore.subscribe(sessionId, listener),
+    [sessionId, sessionStore],
+  );
+  const getSnapshot = useCallback(
+    () => sessionStore.getRevision(sessionId),
+    [sessionId, sessionStore],
+  );
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}

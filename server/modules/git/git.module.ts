@@ -3,20 +3,27 @@ import * as fs from 'node:fs/promises';
 import spawn from 'cross-spawn';
 
 import { projectsDb } from '@/modules/database/index.js';
+import type { ProviderTextCompletionService } from '@/shared/types.js';
 
+import { createGitCommitMessageService } from './git-commit-message.service.js';
 import { createGitRouter } from './git.routes.js';
 
-type GitExternalDependencies = Pick<
-  Parameters<typeof createGitRouter>[0],
-  'queryClaude' | 'queryCursor'
->;
+type GitExternalDependencies = {
+  textCompletion: ProviderTextCompletionService;
+};
 
-/** Assembles the Git router with runners from the centralized provider runtime service. */
+/** Assembles Git routes with the Providers public text-completion boundary. */
 export function createGitModule(externalDependencies: GitExternalDependencies) {
+  const resolveProjectPathById = (projectId: string) => projectsDb.getProjectPathById(projectId);
+  const commitMessageService = createGitCommitMessageService({
+    spawnProcess: spawn,
+    resolveProjectPathById,
+    textCompletion: externalDependencies.textCompletion,
+  });
   return createGitRouter({
     fileSystem: fs,
     spawnProcess: spawn,
-    resolveProjectPathById: (projectId) => projectsDb.getProjectPathById(projectId),
-    ...externalDependencies,
+    resolveProjectPathById,
+    commitMessageService,
   });
 }

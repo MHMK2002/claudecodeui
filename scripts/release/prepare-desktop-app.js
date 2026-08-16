@@ -5,6 +5,10 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { readBuildIdentityFile } from '../../shared/buildIdentity.js';
+import { ServerInstaller } from '../../electron/serverInstaller.js';
+import { copyRuntimeDependencyClosure } from './runtime-dependency-closure.js';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..', '..');
 const stageDir = path.join(rootDir, '.desktop-build', 'desktop-app');
@@ -12,10 +16,30 @@ const stageDir = path.join(rootDir, '.desktop-build', 'desktop-app');
 const packageJson = JSON.parse(
   await fs.readFile(path.join(rootDir, 'package.json'), 'utf8'),
 );
+const productConfig = JSON.parse(
+  await fs.readFile(path.join(rootDir, 'shared', 'product-config.json'), 'utf8'),
+);
+const canonicalIdentityPath = path.join(rootDir, '.build-identity', 'build-identity.json');
+const distributionIdentityPath = path.join(rootDir, 'dist', 'build-identity.json');
+const buildIdentity = await readBuildIdentityFile(canonicalIdentityPath, {
+  expectedVersion: packageJson.version,
+  source: 'Canonical Desktop staging build identity',
+});
+const [canonicalIdentityBytes, distributionIdentityBytes] = await Promise.all([
+  fs.readFile(canonicalIdentityPath),
+  fs.readFile(distributionIdentityPath),
+]);
+if (!canonicalIdentityBytes.equals(distributionIdentityBytes)) {
+  throw new Error('Desktop staging refused: client identity is not the canonical artifact bytes.');
+}
 
 function getServerBundleName() {
-  const platform = process.env.CLOUDCLI_BUNDLE_PLATFORM
-    || (process.platform === 'darwin' ? 'mac' : process.platform === 'win32' ? 'win' : 'linux');
+  const configuredPlatform = process.env.CLOUDCLI_BUNDLE_PLATFORM || process.platform;
+  const platform = configuredPlatform === 'darwin' || configuredPlatform === 'mac'
+    ? 'mac'
+    : configuredPlatform === 'win32' || configuredPlatform === 'win'
+      ? 'win'
+      : 'linux';
   const arch = (process.env.CLOUDCLI_BUNDLE_ARCH || process.arch) === 'arm64' ? 'arm64' : 'x64';
   return `cloudcli-local-server-${packageJson.version}-${platform}-${arch}.tar.gz`;
 }
@@ -36,6 +60,20 @@ function getElectronVersion() {
   }
 }
 
+function getGithubPublishConfiguration() {
+  const repositoryUrl = new URL(productConfig.repositoryUrl);
+  const pathParts = repositoryUrl.pathname.replace(/\.git$/, '').split('/').filter(Boolean);
+  if (repositoryUrl.hostname !== 'github.com' || pathParts.length !== 2) {
+    throw new Error('Desktop automatic updates require a canonical GitHub owner/repository URL.');
+  }
+  return [{
+    provider: 'github',
+    owner: pathParts[0],
+    repo: pathParts[1],
+    releaseType: 'release',
+  }];
+}
+
 async function pathExists(filePath) {
   try {
     await fs.access(filePath);
@@ -52,24 +90,6 @@ async function copyRequired(relativePath) {
     throw new Error(`Required desktop build input is missing: ${relativePath}`);
   }
   await fs.cp(from, to, { recursive: true });
-}
-
-async function copyIfExists(relativePath) {
-  const from = path.join(rootDir, relativePath);
-  if (!(await pathExists(from))) return false;
-  await fs.cp(from, path.join(stageDir, relativePath), { recursive: true });
-  return true;
-}
-
-async function copyNodeModule(packageName) {
-  const parts = packageName.split('/');
-  const source = path.join(rootDir, 'node_modules', ...parts);
-  if (!(await pathExists(source))) return false;
-
-  const target = path.join(stageDir, 'node_modules', ...parts);
-  await fs.mkdir(path.dirname(target), { recursive: true });
-  await fs.cp(source, target, { recursive: true });
-  return true;
 }
 
 function run(command, args, options = {}) {
@@ -91,13 +111,14 @@ function buildDesktopPackageJson(copiedOptionalDependencies) {
   return {
     name: `${packageJson.name}-desktop`,
     version: packageJson.version,
-    productName: packageJson.productName,
-    description: `${packageJson.productName} desktop shell`,
+    productName: productConfig.productName,
+    description: `${productConfig.productName} desktop shell`,
     author: packageJson.author,
     license: packageJson.license,
     type: 'module',
     main: 'electron/main.js',
     dependencies: {
+      'electron-updater': packageJson.dependencies['electron-updater'],
       ws: packageJson.dependencies.ws,
     },
     optionalDependencies: copiedOptionalDependencies,
@@ -118,6 +139,7 @@ function buildDesktopPackageJson(copiedOptionalDependencies) {
         'public/**',
         'dist/**',
         'dist-server/**',
+        'shared/**',
         'node_modules/**',
         'package.json',
       ],
@@ -129,8 +151,10 @@ function buildDesktopPackageJson(copiedOptionalDependencies) {
         },
       ],
       protocols: packageJson.build.protocols,
+      publish: getGithubPublishConfiguration(),
       mac: packageJson.build.mac,
       win: packageJson.build.win,
+      linux: packageJson.build.linux,
       nsis: packageJson.build.nsis,
     },
   };
@@ -146,6 +170,15 @@ await run(process.execPath, [path.join(rootDir, 'scripts', 'release', 'build-ser
 });
 const serverBundleName = getServerBundleName();
 const serverBundlePath = path.join(rootDir, 'release', 'local-server', serverBundleName);
+const targetPlatform = process.env.CLOUDCLI_BUNDLE_PLATFORM || process.platform;
+const targetArch = process.env.CLOUDCLI_BUNDLE_ARCH || process.arch;
+const archiveInspector = new ServerInstaller({
+  buildIdentity,
+  platform: targetPlatform,
+  arch: targetArch,
+  installRoot: path.join(rootDir, '.desktop-build', '.archive-inspection'),
+});
+await archiveInspector.inspectArchive(serverBundlePath);
 const embeddedServerDir = path.join(stageDir, 'embedded-server');
 await fs.mkdir(embeddedServerDir, { recursive: true });
 await fs.copyFile(serverBundlePath, path.join(embeddedServerDir, serverBundleName));
@@ -156,32 +189,28 @@ await fs.copyFile(`${serverBundlePath}.sha256`, path.join(embeddedServerDir, `${
 await copyRequired('electron');
 await copyRequired('dist');
 await copyRequired('public');
-
-const copiedRuntimeDependencies = [];
-if (await copyNodeModule('ws')) {
-  copiedRuntimeDependencies.push('ws');
-} else {
-  throw new Error('Required desktop dependency is missing from node_modules: ws');
+await copyRequired('shared');
+const stagedIdentityBytes = await fs.readFile(
+  path.join(stageDir, 'dist', 'build-identity.json'),
+);
+if (!canonicalIdentityBytes.equals(stagedIdentityBytes)) {
+  throw new Error('Desktop staging changed the canonical build identity artifact.');
 }
 
 const copiedOptionalDependencies = {};
 for (const [name, version] of Object.entries(packageJson.optionalDependencies || {})) {
-  if (await copyNodeModule(name)) {
+  const source = path.join(rootDir, 'node_modules', ...name.split('/'));
+  if (await pathExists(source)) {
     copiedOptionalDependencies[name] = version;
   }
 }
 
-for (const name of [
-  '@nut-tree-fork/default-clipboard-provider',
-  '@nut-tree-fork/libnut',
-  '@nut-tree-fork/provider-interfaces',
-  '@nut-tree-fork/shared',
-  'jimp',
-  'node-abort-controller',
-  'temp',
-]) {
-  await copyNodeModule(name);
-}
+const copiedRuntimeDependencies = ['electron-updater', 'ws'];
+const copiedRuntimeDependencyClosure = await copyRuntimeDependencyClosure({
+  rootDir,
+  stageDir,
+  packageNames: [...copiedRuntimeDependencies, ...Object.keys(copiedOptionalDependencies)],
+});
 
 await fs.writeFile(
   path.join(stageDir, 'package.json'),
@@ -191,6 +220,7 @@ await fs.writeFile(
 
 console.log(`Prepared self-contained desktop app at ${path.relative(rootDir, stageDir)}`);
 console.log(`Runtime dependencies: ${copiedRuntimeDependencies.join(', ')}`);
+console.log(`Runtime dependency closure: ${copiedRuntimeDependencyClosure.length} packages`);
 if (Object.keys(copiedOptionalDependencies).length) {
   console.log(`Optional dependencies: ${Object.keys(copiedOptionalDependencies).join(', ')}`);
 }

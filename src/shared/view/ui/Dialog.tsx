@@ -97,29 +97,35 @@ interface DialogContentProps extends React.HTMLAttributes<HTMLDivElement> {
 }
 
 const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const openDialogStack: symbol[] = [];
 
 const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
   ({ className, children, onEscapeKeyDown, onPointerDownOutside, wrapperClassName, animationClassName, ...props }, ref) => {
     const { open, onOpenChange, triggerRef } = useDialog();
     const contentRef = React.useRef<HTMLDivElement | null>(null);
     const previousFocusRef = React.useRef<HTMLElement | null>(null);
+    const dialogIdRef = React.useRef(Symbol('dialog'));
 
-    // Save the element that had focus before opening, restore on close
+    // Restore focus even when a controlled parent unmounts the dialog immediately.
     React.useEffect(() => {
-      if (open) {
-        previousFocusRef.current = document.activeElement as HTMLElement;
-      } else if (previousFocusRef.current) {
-        // Prefer the trigger, fall back to whatever was focused before
-        const restoreTarget = triggerRef.current || previousFocusRef.current;
-        restoreTarget?.focus();
+      if (!open) return undefined;
+      previousFocusRef.current = document.activeElement as HTMLElement;
+      const dialogId = dialogIdRef.current;
+      openDialogStack.push(dialogId);
+      return () => {
+        const stackIndex = openDialogStack.lastIndexOf(dialogId);
+        if (stackIndex >= 0) openDialogStack.splice(stackIndex, 1);
+        const restoreTarget = triggerRef.current ?? previousFocusRef.current;
         previousFocusRef.current = null;
-      }
+        queueMicrotask(() => restoreTarget?.focus());
+      };
     }, [open, triggerRef]);
 
     React.useEffect(() => {
       if (!open) return;
 
       const handleKeyDown = (e: KeyboardEvent) => {
+        if (openDialogStack.at(-1) !== dialogIdRef.current) return;
         if (e.key === 'Escape') {
           e.stopPropagation();
           onEscapeKeyDown?.();
@@ -170,18 +176,46 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
       }
     }, [open]);
 
+    // Keep assistive technology and pointer/focus navigation inside the top-level
+    // modal. Nested dialogs temporarily inert the parent dialog and restore it.
+    React.useEffect(() => {
+      if (!open || !contentRef.current) return undefined;
+      const wrapper = contentRef.current.parentElement;
+      if (!wrapper) return undefined;
+      const siblings = Array.from(document.body.children)
+        .filter((element): element is HTMLElement => element instanceof HTMLElement && element !== wrapper)
+        .map((element) => ({
+          element,
+          inert: element.inert,
+          ariaHidden: element.getAttribute('aria-hidden'),
+        }));
+      for (const { element } of siblings) {
+        element.inert = true;
+        element.setAttribute('aria-hidden', 'true');
+      }
+      return () => {
+        for (const { element, inert, ariaHidden } of siblings) {
+          element.inert = inert;
+          if (ariaHidden === null) element.removeAttribute('aria-hidden');
+          else element.setAttribute('aria-hidden', ariaHidden);
+        }
+      };
+    }, [open]);
+
     if (!open) return null;
 
     return createPortal(
       <div className={cn('fixed inset-0 z-50', wrapperClassName)}>
         {/* Overlay */}
-        <div
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-label="Close dialog"
           className="fixed inset-0 animate-dialog-overlay-show bg-black/50 backdrop-blur-sm"
           onClick={() => {
             onPointerDownOutside?.();
             onOpenChange(false);
           }}
-          aria-hidden
         />
         {/* Content */}
         <div

@@ -6,11 +6,41 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import {
+  buildIdentitiesMatch,
+  readBuildIdentityFile,
+} from '../../shared/buildIdentity.js';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..', '..');
 const packageJson = JSON.parse(
   await fs.readFile(path.join(rootDir, 'package.json'), 'utf8'),
 );
+const productConfig = JSON.parse(
+  await fs.readFile(path.join(rootDir, 'shared', 'product-config.json'), 'utf8'),
+);
+const canonicalIdentity = await readBuildIdentityFile(
+  path.join(rootDir, '.build-identity', 'build-identity.json'),
+  { expectedVersion: packageJson.version, source: 'Canonical build identity' },
+);
+const distributionIdentity = await readBuildIdentityFile(
+  path.join(rootDir, 'dist', 'build-identity.json'),
+  { expectedVersion: packageJson.version, source: 'Client distribution build identity' },
+);
+if (!buildIdentitiesMatch(canonicalIdentity, distributionIdentity)) {
+  throw new Error('Server bundle refused: client and canonical build identities differ.');
+}
+const [canonicalIdentityBytes, distributionIdentityBytes] = await Promise.all([
+  fs.readFile(path.join(rootDir, '.build-identity', 'build-identity.json')),
+  fs.readFile(path.join(rootDir, 'dist', 'build-identity.json')),
+]);
+if (!canonicalIdentityBytes.equals(distributionIdentityBytes)) {
+  throw new Error('Server bundle refused: client identity is not the canonical artifact bytes.');
+}
+const serviceWorkerSource = await fs.readFile(path.join(rootDir, 'dist', 'sw.js'), 'utf8');
+if (!serviceWorkerSource.includes(`const EMBEDDED_BUILD_ID = ${JSON.stringify(canonicalIdentity.buildId)};`)) {
+  throw new Error('Server bundle refused: service worker identity differs from the canonical build.');
+}
 
 function getElectronVersion() {
   try {
@@ -33,8 +63,8 @@ function mapArch(arch = process.arch) {
 }
 
 function mapPlatform(platform = process.platform) {
-  if (platform === 'darwin') return 'mac';
-  if (platform === 'win32') return 'win';
+  if (platform === 'darwin' || platform === 'mac') return 'mac';
+  if (platform === 'win32' || platform === 'win') return 'win';
   return 'linux';
 }
 
@@ -79,10 +109,16 @@ async function copyIfExists(stageDir, relativePath) {
 async function writeServerPackageJson(stageDir) {
   const stagedPackageJson = {
     ...packageJson,
+    dependencies: {
+      ...(packageJson.dependencies || {}),
+    },
     scripts: {
       ...(packageJson.scripts || {}),
     },
   };
+  // electron-updater belongs exclusively to the Electron main process. The
+  // separately installed local-server runtime must not ship or load it.
+  delete stagedPackageJson.dependencies['electron-updater'];
   // The bundle stage is not a git checkout with dev dependencies, so lifecycle
   // scripts such as Husky prepare must not run there. Dependency install scripts
   // still run; native modules need them before the Electron ABI rebuild below.
@@ -108,11 +144,7 @@ function sha256(filePath) {
 
 const platform = mapPlatform(process.env.CLOUDCLI_BUNDLE_PLATFORM || process.platform);
 const arch = mapArch(process.env.CLOUDCLI_BUNDLE_ARCH || process.arch);
-const version = packageJson.version;
-const buildId = (await fs.readFile(path.join(rootDir, 'dist', 'build-id.txt'), 'utf8')).trim();
-if (!buildId) {
-  throw new Error('dist/build-id.txt is empty; run the client build before creating a server bundle.');
-}
+const { version, buildId } = canonicalIdentity;
 const bundleName = `cloudcli-local-server-${version}-${platform}-${arch}.tar.gz`;
 const bundleRoot = path.join(rootDir, 'release', 'local-server');
 const stageDir = path.join(bundleRoot, `.stage-${version}-${platform}-${arch}`);
@@ -131,7 +163,12 @@ await copyIfExists(stageDir, 'scripts/fix-node-pty.js');
 await writeServerPackageJson(stageDir);
 
 console.log('Installing production server dependencies into bundle stage...');
-await run('npm', ['ci', '--omit=dev'], {
+// The workspace install already acquired the target ripgrep binary. Running the
+// dependency postinstall again would make every package build depend on a
+// second GitHub API download and can fail under anonymous rate limits. Native
+// dependencies are rebuilt for Electron immediately below, so lifecycle
+// scripts can remain disabled for this disposable install.
+await run('npm', ['ci', '--omit=dev', '--ignore-scripts'], {
   cwd: stageDir,
   env: {
     ...process.env,
@@ -139,6 +176,18 @@ await run('npm', ['ci', '--omit=dev'], {
     npm_config_fund: 'false',
   },
 });
+
+await copyRequired(stageDir, 'node_modules/@vscode/ripgrep/bin');
+const ripgrepExecutable = path.join(
+  stageDir,
+  'node_modules',
+  '@vscode',
+  'ripgrep',
+  'bin',
+  process.platform === 'win32' ? 'rg.exe' : 'rg',
+);
+console.log('Verifying bundled ripgrep runtime...');
+await run(ripgrepExecutable, ['--version'], { cwd: stageDir });
 
 const electronVersion = getElectronVersion();
 const electronRebuild = process.platform === 'win32'
@@ -149,7 +198,10 @@ const buildPython = process.env.npm_config_python
   || (process.platform === 'darwin' && await pathExists('/usr/bin/python3') ? '/usr/bin/python3' : undefined);
 console.log(`Rebuilding native server dependencies for Electron ${electronVersion} (${arch})...`);
 await run(electronRebuild, ['--version', electronVersion, '--module-dir', stageDir, '--arch', arch, '--force'], {
-  cwd: rootDir,
+  // Keep all rebuild subprocesses rooted in the disposable bundle stage.
+  // Running from the workspace root can rewrite its native modules to the
+  // Electron ABI, breaking ordinary Node server/tests after packaging.
+  cwd: stageDir,
   env: {
     ...process.env,
     ...(buildPython ? { PYTHON: buildPython, npm_config_python: buildPython } : {}),
@@ -164,12 +216,22 @@ if (await pathExists(path.join(stageDir, 'scripts', 'fix-node-pty.js'))) {
 
 await fs.writeFile(
   path.join(stageDir, '.installed.json'),
-  JSON.stringify({ version, buildId, platform, arch, builtAt: new Date().toISOString() }, null, 2),
+  JSON.stringify({
+    productName: productConfig.productName,
+    features: productConfig.features,
+    version,
+    buildId,
+    platform,
+    arch,
+    builtAt: new Date().toISOString(),
+  }, null, 2),
   'utf8',
 );
 
 await fs.rm(archivePath, { force: true });
-const tarArgs = ['-czf', archivePath, '-C', stageDir, '.'];
+// Dereference npm's internal links so the distributable contains only regular
+// files/directories; the installer rejects every link and special entry.
+const tarArgs = ['-chzf', archivePath, '-C', stageDir, '.'];
 await run('tar', tarArgs);
 
 const digest = await sha256(archivePath);

@@ -139,6 +139,7 @@ tasks/
 .worktrees/
 
 # Local desktop packaging artifacts
+/.build-identity/
 /.desktop-build/
 /release/
 /electron/server-bundle-config.json
@@ -148,6 +149,9 @@ electron/*.tar.gz
 
 # Local debug/test artifacts
 /.playwright-mcp/
+/test-results/
+/playwright-report/
+/storybook-static/
 /*.png
 /RTK.md
 

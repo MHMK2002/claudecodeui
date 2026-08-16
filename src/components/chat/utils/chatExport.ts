@@ -5,6 +5,11 @@ export interface ExportOptions {
   format: 'markdown' | 'pdf' | 'docx';
 }
 
+export type PdfExportResult =
+  | { status: 'saved' }
+  | { status: 'cancelled' }
+  | { status: 'print-dialog-opened' };
+
 /**
  * Format a timestamp for display in exports.
  */
@@ -100,7 +105,8 @@ export function exportToHTML(
 
   const htmlContent = messages
     .map((msg) => {
-      const type = msg.type === 'user' ? '👤 You' : msg.type === 'assistant' ? '🤖 Claude' : `${msg.type}`;
+      const rawType = msg.type === 'user' ? '👤 You' : msg.type === 'assistant' ? '🤖 Claude' : `${msg.type}`;
+      const type = escapeHTML(rawType);
       const time = includeMeta && msg.timestamp ? `<p style="font-size: 12px; color: #999; margin-top: 8px;">${formatTimestamp(msg.timestamp)}</p>` : '';
 
       const contentStr = typeof msg.content === 'string' ? msg.content : String(msg.content ?? '');
@@ -122,6 +128,7 @@ export function exportToHTML(
       <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
         <title>${escapeHTML(sessionTitle || 'Chat Export')}</title>
         <style>
           body {
@@ -175,28 +182,54 @@ export function downloadWord(
 }
 
 /**
- * Download PDF using the browser's print dialog.
+ * Export PDF through Electron's constrained bridge when available. Standalone
+ * web keeps a print-dialog fallback because it has no filesystem authority.
  */
-export function downloadPDF(
+export async function downloadPDF(
   messages: ChatMessage[],
-  _filename: string = 'chat-export',
+  filename: string = 'chat-export',
   sessionTitle?: string,
-): void {
+): Promise<PdfExportResult> {
   const htmlContent = exportToHTML(messages, sessionTitle);
-  const win = window.open('', '', 'width=800,height=600');
-  if (!win) {
-    window.alert('PDF export could not start because the browser blocked the popup. Allow popups and try again.');
-    return;
+  const suggestedFilename = filename.toLowerCase().endsWith('.pdf')
+    ? filename
+    : `${filename}.pdf`;
+
+  if (window.cloudcliDesktopPdf) {
+    const outcome = await window.cloudcliDesktopPdf.exportPdf({
+      html: htmlContent,
+      suggestedFilename,
+    });
+    if (outcome?.status !== 'saved' && outcome?.status !== 'cancelled') {
+      throw new Error('Desktop returned an invalid PDF export result.');
+    }
+    return outcome;
   }
 
-  win.document.write(htmlContent);
-  win.document.close();
-  // Delay print dialog to ensure content is loaded
-  setTimeout(() => {
-    win.print();
-    // Optionally close after printing
-    // win.close();
-  }, 250);
+  const win = window.open('', '', 'width=800,height=600');
+  if (!win) {
+    throw new Error('The browser blocked the PDF window. Allow popups and try again.');
+  }
+
+  try {
+    win.document.write(htmlContent);
+    win.document.close();
+  } catch (error) {
+    win.close();
+    throw error;
+  }
+
+  return new Promise((resolve, reject) => {
+    // Delay the print dialog until the standalone document has rendered.
+    setTimeout(() => {
+      try {
+        win.print();
+        resolve({ status: 'print-dialog-opened' });
+      } catch (error) {
+        reject(error);
+      }
+    }, 250);
+  });
 }
 
 /**
@@ -220,4 +253,5 @@ export const EXPORT_FORMATS = [
   { id: 'markdown', label: 'Markdown (.md)', ext: '.md' },
   { id: 'html', label: 'Web Page (.html)', ext: '.html' },
   { id: 'pdf', label: 'PDF (Print to File)', ext: '.pdf' },
+  { id: 'zip', label: 'ZIP archive (.zip)', ext: '.zip' },
 ] as const;

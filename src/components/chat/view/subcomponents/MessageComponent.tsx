@@ -41,13 +41,8 @@ type MessageComponentProps = {
    * sent-but-not-yet-persisted messages) show a rewind affordance.
    */
   onRequestRewind?: (messageId: string, content: string, images: ChatImage[]) => void;
-  /**
-   * Optional edit-and-resubmit callback. When supplied, the LAST user turn
-   * whose id is a real server-side uuid shows a pencil affordance that
-   * adopts a provider-native branch before this prompt and resubmits the new
-   * content via `chat.send`.
-   */
-  onRequestEdit?: (messageId: string, content: string, images: ChatImage[]) => void;
+  /** Copies the latest persisted user turn into the composer without changing history. */
+  onCopyToComposer?: (messageId: string, content: string, images: ChatImage[]) => void;
   showRawParameters?: boolean;
   showThinking?: boolean;
   selectedProject?: Project | null;
@@ -89,7 +84,7 @@ const extractRewindIdentifier = (id: string): string | null => {
   return null;
 };
 
-const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, onRequestRewind, onRequestEdit, showRawParameters, showThinking, selectedProject, provider }: MessageComponentProps) => {
+const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, onRequestRewind, onCopyToComposer, showRawParameters, showThinking, selectedProject, provider }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
   const isGrouped = prevMessage && prevMessage.type === message.type &&
     ((prevMessage.type === 'assistant') ||
@@ -126,8 +121,8 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
     && message.type === 'user'
     && rewindIdentifier !== null,
   );
-  const shouldShowEditButton = Boolean(
-    onRequestEdit
+  const shouldShowCopyToComposerButton = Boolean(
+    onCopyToComposer
     && message.type === 'user'
     && rewindIdentifier !== null
     && message.isLastUserMessage === true,
@@ -161,31 +156,36 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
               <ChatMessageFiles files={message.files} />
             )}
             {userCopyContent.trim().length > 0 || (!message.images?.length && !message.files?.length) ? (
-              <div className="group max-w-full rounded-2xl rounded-br-md bg-blue-600 px-3 py-2 text-white shadow-sm sm:px-4">
+              <div className="group max-w-full rounded-2xl rounded-br-md bg-message-user px-3 py-2 text-message-user-foreground shadow-sm sm:px-4">
                 {/* `breaks` preserves typed newlines, so the bubble no longer
                     needs whitespace-pre-wrap. */}
                 <div dir={getTextDirection(plainContent)} className="bidi-isolate break-words font-serif text-sm">
                   <Markdown
                     breaks
-                    className="prose prose-sm prose-invert max-w-none font-serif [&_a]:text-blue-100 [&_a]:underline"
+                    className="prose prose-sm max-w-none font-serif text-message-user-foreground [&_*]:text-message-user-foreground [&_a]:underline"
                   >
                     {plainContent}
                   </Markdown>
                 </div>
-                <div className="mt-1 flex items-center justify-end gap-1 text-xs text-blue-100">
+                <div className="mt-1 flex items-center justify-end gap-1 text-xs text-message-user-foreground">
                   {shouldShowUserCopyControl && (
                     <MessageCopyControl content={userCopyContent} messageType="user" />
                   )}
-                  {shouldShowEditButton && (
+                  {shouldShowCopyToComposerButton && (
                     <button
                       type="button"
-                      data-edit-trigger="true"
-                      onClick={() => onRequestEdit?.(rewindIdentifier as string, userCopyContent, message.images ?? [])}
-                      className="rounded p-1 text-blue-100 transition hover:bg-blue-500 hover:text-white focus:outline-none focus:ring-1 focus:ring-white/40"
-                      title={t('rewind.edit', { defaultValue: 'Edit & resubmit' })}
-                      aria-label={t('rewind.edit', { defaultValue: 'Edit & resubmit' })}
+                      data-copy-to-composer-trigger="true"
+                      onClick={() => onCopyToComposer?.(rewindIdentifier as string, userCopyContent, message.images ?? [])}
+                      className="group/message-action inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-message-user-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-message-user-foreground"
+                      title={t('rewind.copyToComposer', { defaultValue: 'Copy to composer' })}
+                      aria-label={t('rewind.copyToComposer', { defaultValue: 'Copy to composer' })}
                     >
-                      <Pencil className="h-3.5 w-3.5" />
+                      <span
+                        data-message-action-visual
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors group-hover/message-action:bg-message-user-foreground/10"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </span>
                     </button>
                   )}
                   {shouldShowRewindButton && (
@@ -197,14 +197,19 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
                         userCopyContent,
                         message.images ?? [],
                       )}
-                      className="rounded p-1 text-blue-100 transition hover:bg-blue-500 hover:text-white focus:outline-none focus:ring-1 focus:ring-white/40"
+                      className="group/message-action inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-message-user-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-message-user-foreground"
                       title={t('rewind.toHere', { defaultValue: 'Rewind to here' })}
                       aria-label={t('rewind.toHere', { defaultValue: 'Rewind to here' })}
                     >
-                      <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <polyline points="1 4 1 10 7 10" />
-                        <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
-                      </svg>
+                      <span
+                        data-message-action-visual
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors group-hover/message-action:bg-message-user-foreground/10"
+                      >
+                        <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="1 4 1 10 7 10" />
+                          <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+                        </svg>
+                      </span>
                     </button>
                   )}
                   <span>{formattedTime}</span>
@@ -477,7 +482,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
             )}
 
             {(shouldShowAssistantCopyControl || !isGrouped) && (
-              <div className="mt-1 flex w-full items-center gap-2 text-[11px] text-gray-400 dark:text-gray-500">
+              <div className="mt-1 flex w-full items-center gap-2 text-[11px] text-muted-foreground">
                 {shouldShowAssistantCopyControl && (
                   <MessageCopyControl content={assistantCopyContent} messageType="assistant" />
                 )}

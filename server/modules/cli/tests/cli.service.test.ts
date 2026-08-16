@@ -20,6 +20,7 @@ function createHarness() {
     defaultDatabasePath: '/home/user/.cloudcli/auth.db',
     homeDirectory: '/home/user',
     packageMetadata: {
+      productName: 'CloudCLI',
       version: '1.2.3',
       homepage: 'https://cloudcli.example',
       bugsUrl: 'https://cloudcli.example/issues',

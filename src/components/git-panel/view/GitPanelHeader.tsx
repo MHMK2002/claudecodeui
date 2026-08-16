@@ -1,6 +1,9 @@
-import { AlertCircle, Check, ChevronDown, Download, GitBranch, Plus, RefreshCw, RotateCcw, Search, Upload, X } from 'lucide-react';
+import { Check, ChevronDown, Download, GitBranch, Plus, RefreshCw, RotateCcw, Search, Upload, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
+
 import type { ConfirmationRequest, GitRemoteStatus } from '../types/types';
+
 import NewBranchModal from './modals/NewBranchModal';
 
 type GitPanelHeaderProps = {
@@ -15,7 +18,6 @@ type GitPanelHeaderProps = {
   isPushing: boolean;
   isPublishing: boolean;
   isRevertingLocalCommit: boolean;
-  operationError: string | null;
   onRefresh: () => void;
   onRevertLocalCommit: () => Promise<void>;
   onSwitchBranch: (branchName: string) => Promise<boolean>;
@@ -24,7 +26,7 @@ type GitPanelHeaderProps = {
   onPull: () => Promise<void>;
   onPush: () => Promise<void>;
   onPublish: () => Promise<void>;
-  onClearError: () => void;
+  onOpenGitSettings?: () => void;
   onRequestConfirmation: (request: ConfirmationRequest) => void;
 };
 
@@ -40,7 +42,6 @@ export default function GitPanelHeader({
   isPushing,
   isPublishing,
   isRevertingLocalCommit,
-  operationError,
   onRefresh,
   onRevertLocalCommit,
   onSwitchBranch,
@@ -49,13 +50,15 @@ export default function GitPanelHeader({
   onPull,
   onPush,
   onPublish,
-  onClearError,
+  onOpenGitSettings,
   onRequestConfirmation,
 }: GitPanelHeaderProps) {
   const [showBranchDropdown, setShowBranchDropdown] = useState(false);
   const [showNewBranchModal, setShowNewBranchModal] = useState(false);
   const [branchSearchQuery, setBranchSearchQuery] = useState('');
+  const [activeBranchIndex, setActiveBranchIndex] = useState(0);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
+  const branchTriggerRef = useRef<HTMLButtonElement | null>(null);
   const branchSearchInputRef = useRef<HTMLInputElement | null>(null);
 
   // Focus the search box on open; drop any stale query on close.
@@ -74,6 +77,12 @@ export default function GitPanelHeader({
     }
     return branches.filter((branch) => branch.toLowerCase().includes(query));
   }, [branches, branchSearchQuery]);
+
+  useEffect(() => {
+    if (!showBranchDropdown) return;
+    const currentIndex = filteredBranches.indexOf(currentBranch);
+    setActiveBranchIndex(currentIndex >= 0 ? currentIndex : 0);
+  }, [currentBranch, filteredBranches, showBranchDropdown]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -126,9 +135,47 @@ export default function GitPanelHeader({
   const handleSwitchBranch = async (branchName: string) => {
     try {
       const success = await onSwitchBranch(branchName);
-      if (success) setShowBranchDropdown(false);
+      if (success) {
+        setShowBranchDropdown(false);
+        branchTriggerRef.current?.focus();
+      }
     } catch (error) {
       console.error('[GitPanelHeader] Failed to switch branch:', error);
+    }
+  };
+
+  const handleBranchMenuKeyDown = (event: ReactKeyboardEvent) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setShowBranchDropdown(false);
+      branchTriggerRef.current?.focus();
+      return;
+    }
+    if (filteredBranches.length === 0) return;
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setActiveBranchIndex((index) => (index + 1) % filteredBranches.length);
+      return;
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setActiveBranchIndex((index) => (index - 1 + filteredBranches.length) % filteredBranches.length);
+      return;
+    }
+    if (event.key === 'Home') {
+      event.preventDefault();
+      setActiveBranchIndex(0);
+      return;
+    }
+    if (event.key === 'End') {
+      event.preventDefault();
+      setActiveBranchIndex(filteredBranches.length - 1);
+      return;
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const selectedBranch = filteredBranches[activeBranchIndex];
+      if (selectedBranch) void handleSwitchBranch(selectedBranch);
     }
   };
 
@@ -139,8 +186,20 @@ export default function GitPanelHeader({
         {/* Branch selector */}
         <div className="relative" ref={dropdownRef}>
           <button
+            ref={branchTriggerRef}
+            type="button"
             onClick={() => setShowBranchDropdown((prev) => !prev)}
-            className={`flex items-center rounded-lg transition-colors hover:bg-accent ${isMobile ? 'space-x-1 px-2 py-1' : 'space-x-2 px-3 py-1.5'}`}
+            onKeyDown={(event) => {
+              if (event.key === 'ArrowDown') {
+                event.preventDefault();
+                setShowBranchDropdown(true);
+              }
+            }}
+            className={`flex min-h-11 items-center rounded-lg transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${isMobile ? 'space-x-1 px-2 py-1' : 'space-x-2 px-3 py-1.5'}`}
+            aria-haspopup="listbox"
+            aria-expanded={showBranchDropdown}
+            aria-controls="git-branch-options"
+            aria-label={`Current branch ${currentBranch || 'unknown'}. Choose branch`}
           >
             <GitBranch className={`text-muted-foreground ${isMobile ? 'h-3 w-3' : 'h-4 w-4'}`} />
             <span className="flex items-center gap-1">
@@ -149,16 +208,16 @@ export default function GitPanelHeader({
                 <span className="flex items-center gap-0.5 text-xs">
                   {aheadCount > 0 && (
                     <span className="text-green-600 dark:text-green-400" title={`${aheadCount} ahead`}>
-                      ↑{aheadCount}
+                      ↑{aheadCount} ahead
                     </span>
                   )}
                   {behindCount > 0 && (
                     <span className="text-primary" title={`${behindCount} behind`}>
-                      ↓{behindCount}
+                      ↓{behindCount} behind
                     </span>
                   )}
                   {remoteStatus.isUpToDate && (
-                    <span className="text-muted-foreground" title="Up to date">✓</span>
+                    <span className="text-muted-foreground" title="Up to date">✓ Up to date</span>
                   )}
                 </span>
               )}
@@ -167,7 +226,10 @@ export default function GitPanelHeader({
           </button>
 
           {showBranchDropdown && (
-            <div className="absolute left-0 top-full z-50 mt-1 w-64 overflow-hidden rounded-xl border border-border bg-card shadow-lg">
+            <div
+              className="absolute left-0 top-full z-50 mt-1 w-64 overflow-hidden rounded-xl border border-border bg-card shadow-lg"
+              onKeyDown={handleBranchMenuKeyDown}
+            >
               <div className="flex items-center gap-2 border-b border-border px-3 py-2">
                 <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <input
@@ -177,27 +239,43 @@ export default function GitPanelHeader({
                   onChange={(event) => setBranchSearchQuery(event.target.value)}
                   placeholder="Search branches..."
                   className="w-full bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
+                  role="combobox"
+                  aria-label="Search branches"
+                  aria-expanded="true"
+                  aria-controls="git-branch-options"
+                  aria-activedescendant={filteredBranches[activeBranchIndex]
+                    ? `git-branch-option-${activeBranchIndex}`
+                    : undefined}
                 />
                 {branchSearchQuery && (
                   <button
+                    type="button"
                     onClick={() => setBranchSearchQuery('')}
-                    className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     title="Clear search"
+                    aria-label="Clear branch search"
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
                 )}
               </div>
-              <div className="max-h-64 overflow-y-auto py-1">
+              <div id="git-branch-options" className="max-h-64 overflow-y-auto py-1" role="listbox" aria-label="Branches">
                 {filteredBranches.length === 0 ? (
                   <div className="px-4 py-3 text-center text-sm text-muted-foreground">No matching branches</div>
                 ) : (
-                  filteredBranches.map((branch) => (
+                  filteredBranches.map((branch, index) => (
                     <button
                       key={branch}
+                      id={`git-branch-option-${index}`}
+                      type="button"
                       onClick={() => void handleSwitchBranch(branch)}
+                      onMouseEnter={() => setActiveBranchIndex(index)}
+                      role="option"
+                      aria-selected={branch === currentBranch}
                       className={`w-full px-4 py-2 text-left text-sm transition-colors hover:bg-accent ${
-                        branch === currentBranch ? 'bg-accent/50 text-foreground' : 'text-muted-foreground'
+                        branch === currentBranch || index === activeBranchIndex
+                          ? 'bg-accent/50 text-foreground'
+                          : 'text-muted-foreground'
                       }`}
                     >
                       <span className="flex items-center space-x-2">
@@ -210,11 +288,12 @@ export default function GitPanelHeader({
               </div>
               <div className="border-t border-border py-1">
                 <button
+                  type="button"
                   onClick={() => {
                     setShowNewBranchModal(true);
                     setShowBranchDropdown(false);
                   }}
-                  className="flex w-full items-center space-x-2 px-4 py-2 text-left text-sm transition-colors hover:bg-accent"
+                  className="flex min-h-11 w-full items-center space-x-2 px-4 py-2 text-left text-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                 >
                   <Plus className="h-3 w-3" />
                   <span>Create new branch</span>
@@ -226,13 +305,26 @@ export default function GitPanelHeader({
 
         {/* Action buttons */}
         <div className={`flex items-center ${isMobile ? 'gap-1' : 'gap-2'}`}>
+          {remoteStatus && !remoteStatus.hasRemote && onOpenGitSettings && (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span>No remote</span>
+              <button
+                type="button"
+                onClick={onOpenGitSettings}
+                className="min-h-11 rounded-lg border border-border bg-background px-3 py-2 font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                Open Git Settings
+              </button>
+            </div>
+          )}
           {remoteStatus?.hasRemote && (
             <>
               {!remoteStatus.hasUpstream ? (
                 <button
+                  type="button"
                   onClick={requestPublishConfirmation}
                   disabled={anyPending}
-                  className="flex items-center gap-1 rounded-lg bg-primary px-2.5 py-1 text-sm text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+                  className="flex min-h-11 items-center gap-1 rounded-lg border border-border bg-background px-2.5 py-1 text-sm text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                   title={`Publish "${currentBranch}" to ${remoteName}`}
                 >
                   <Upload className={`h-3 w-3 ${isPublishing ? 'animate-pulse' : ''}`} />
@@ -242,9 +334,10 @@ export default function GitPanelHeader({
                 <>
                   {/* Fetch — always visible when remote exists */}
                   <button
+                    type="button"
                     onClick={() => void onFetch()}
                     disabled={anyPending}
-                    className="flex items-center gap-1 rounded-lg bg-primary px-2.5 py-1 text-sm text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+                    className="flex min-h-11 items-center gap-1 rounded-lg border border-border bg-background px-2.5 py-1 text-sm text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                     title={`Fetch from ${remoteName}`}
                   >
                     <RefreshCw className={`h-3 w-3 ${isFetching ? 'animate-spin' : ''}`} />
@@ -253,9 +346,10 @@ export default function GitPanelHeader({
 
                   {behindCount > 0 && (
                     <button
+                      type="button"
                       onClick={requestPullConfirmation}
                       disabled={anyPending}
-                      className="flex items-center gap-1 rounded-lg bg-green-600 px-2.5 py-1 text-sm text-white transition-colors hover:bg-green-700 disabled:opacity-50"
+                      className="flex min-h-11 items-center gap-1 rounded-lg border border-border bg-background px-2.5 py-1 text-sm text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                       title={`Pull ${behindCount} from ${remoteName}`}
                     >
                       <Download className={`h-3 w-3 ${isPulling ? 'animate-pulse' : ''}`} />
@@ -265,9 +359,10 @@ export default function GitPanelHeader({
 
                   {aheadCount > 0 && (
                     <button
+                      type="button"
                       onClick={requestPushConfirmation}
                       disabled={anyPending}
-                      className="flex items-center gap-1 rounded-lg bg-orange-600 px-2.5 py-1 text-sm text-white transition-colors hover:bg-orange-700 disabled:opacity-50"
+                      className="flex min-h-11 items-center gap-1 rounded-lg border border-border bg-background px-2.5 py-1 text-sm text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                       title={`Push ${aheadCount} to ${remoteName}`}
                     >
                       <Upload className={`h-3 w-3 ${isPushing ? 'animate-pulse' : ''}`} />
@@ -280,10 +375,12 @@ export default function GitPanelHeader({
           )}
 
           <button
+            type="button"
             onClick={requestRevertLocalCommitConfirmation}
             disabled={isRevertingLocalCommit}
-            className={`rounded-lg transition-colors hover:bg-accent disabled:opacity-50 ${isMobile ? 'p-1' : 'p-1.5'}`}
+            className="flex h-11 w-11 items-center justify-center rounded-lg transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
             title="Revert latest local commit"
+            aria-label="Revert latest local commit"
           >
             <RotateCcw
               className={`text-muted-foreground ${isRevertingLocalCommit ? 'animate-pulse' : ''} ${isMobile ? 'h-3 w-3' : 'h-4 w-4'}`}
@@ -291,30 +388,17 @@ export default function GitPanelHeader({
           </button>
 
           <button
+            type="button"
             onClick={onRefresh}
             disabled={isLoading}
-            className={`rounded-lg transition-colors hover:bg-accent ${isMobile ? 'p-1' : 'p-1.5'}`}
+            className="flex h-11 w-11 items-center justify-center rounded-lg transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
             title="Refresh git status"
+            aria-label="Refresh git status"
           >
             <RefreshCw className={`text-muted-foreground ${isLoading ? 'animate-spin' : ''} ${isMobile ? 'h-3 w-3' : 'h-4 w-4'}`} />
           </button>
         </div>
       </div>
-
-      {/* Inline error banner */}
-      {operationError && (
-        <div className="flex items-start gap-2 border-b border-destructive/20 bg-destructive/10 px-4 py-2.5 text-sm text-destructive">
-          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-          <span className="flex-1 leading-snug">{operationError}</span>
-          <button
-            onClick={onClearError}
-            className="shrink-0 rounded p-0.5 hover:bg-destructive/20"
-            aria-label="Dismiss error"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      )}
 
       <NewBranchModal
         isOpen={showNewBranchModal}

@@ -6,7 +6,13 @@ import readline from 'node:readline';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage } from '@/shared/types.js';
 import { parseFilesInputTag } from '@/shared/image-attachments.js';
-import { createNormalizedMessage, generateMessageId, readObjectRecord, sliceTailPage } from '@/shared/utils.js';
+import {
+  attachToolResultsToToolUseRows,
+  createNormalizedMessage,
+  generateMessageId,
+  readObjectRecord,
+  sliceTailPage,
+} from '@/shared/utils.js';
 import { sessionsDb } from '@/modules/database/index.js';
 
 const PROVIDER = 'claude';
@@ -136,7 +142,7 @@ async function getSessionMessages(
     const jsonLPath = sessionRow?.jsonl_path;
 
     if (!jsonLPath) {
-      return { messages: [], total: 0, hasMore: false };
+      throw new Error(`Claude transcript path is unavailable for session ${sessionId}.`);
     }
 
     // Sub-agent transcripts repeat the *parent's* `sessionId` on every row and
@@ -146,6 +152,10 @@ async function getSessionMessages(
 
     const messages: AnyRecord[] = [];
     const agentToolsCache = new Map<string, AnyRecord[]>();
+    let nonEmptyLineCount = 0;
+    let providerRecordCount = 0;
+    let messageRecordCount = 0;
+    let matchingRecordCount = 0;
 
     const fileStream = fs.createReadStream(jsonLPath);
     const rl = readline.createInterface({
@@ -157,18 +167,48 @@ async function getSessionMessages(
       if (!line.trim()) {
         continue;
       }
+      nonEmptyLineCount += 1;
 
       try {
-        const entry = JSON.parse(line) as AnyRecord;
+        const entry = readObjectRecord(JSON.parse(line));
+        if (!entry) {
+          continue;
+        }
+
+        const isMessageRecord = typeof entry.uuid === 'string'
+          && entry.uuid.length > 0
+          && (typeof entry.type === 'string' || Boolean(readObjectRecord(entry.message)));
+        // Claude can leave a compact-summary row in an otherwise message-free
+        // transcript. It is provider metadata, but has no message uuid.
+        const isSummaryRecord = entry.type === 'summary'
+          && typeof entry.summary === 'string'
+          && entry.summary.length > 0
+          && (typeof entry.leafUuid === 'string' || typeof entry.sessionId === 'string');
+        if (!isMessageRecord && !isSummaryRecord) {
+          continue;
+        }
+        providerRecordCount += 1;
+        if (!isMessageRecord) {
+          continue;
+        }
+        messageRecordCount += 1;
         const belongsToSession = agentId
           ? entry.agentId === agentId
           : entry.sessionId === providerSessionId;
         if (belongsToSession) {
+          matchingRecordCount += 1;
           messages.push(entry);
         }
       } catch {
         // Skip malformed JSONL lines that can happen during concurrent writes.
       }
+    }
+
+    if (
+      nonEmptyLineCount > 0
+      && (providerRecordCount === 0 || (messageRecordCount > 0 && matchingRecordCount === 0))
+    ) {
+      throw new Error(`Claude transcript for session ${sessionId} contains no valid provider records.`);
     }
 
     const agentIds = new Set<string>();
@@ -227,7 +267,7 @@ async function getSessionMessages(
     };
   } catch (error) {
     console.error(`Error reading messages for session ${sessionId}:`, error);
-    return limit === null ? [] : { messages: [], total: 0, hasMore: false };
+    throw error;
   }
 }
 
@@ -647,7 +687,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[ClaudeProvider] Failed to load session ${sessionId}:`, message);
-      return { messages: [], total: 0, hasMore: false, offset: 0, limit: null };
+      throw error;
     }
 
     const rawMessages = Array.isArray(result) ? result : (result.messages || []);
@@ -691,15 +731,11 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       }
     }
 
-    let total = 0;
-    for (const msg of normalized) {
-      if (msg.kind !== 'tool_result') {
-        total += 1;
-      }
-    }
+    const renderableMessages = attachToolResultsToToolUseRows(normalized);
+    const total = renderableMessages.length;
     const normalizedOffset = Math.max(0, offset);
     const normalizedLimit = limit === null ? null : Math.max(0, limit);
-    const { page, hasMore } = sliceTailPage(normalized, normalizedLimit, normalizedOffset);
+    const { page, hasMore } = sliceTailPage(renderableMessages, normalizedLimit, normalizedOffset);
 
     return {
       messages: page,

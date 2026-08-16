@@ -1,4 +1,4 @@
-import { Code2, Download, Eye, Maximize2, Minimize2, Save, Settings as SettingsIcon, X } from 'lucide-react';
+import { Code2, Download, Eye, Loader2, Maximize2, Minimize2, Save, Settings as SettingsIcon, X } from 'lucide-react';
 
 import type { CodeEditorFile } from '../../types/types';
 
@@ -55,7 +55,7 @@ export default function CodeEditorHeader({
   const saveTitle = saveSuccess ? labels.saved : saving ? labels.saving : labels.save;
 
   return (
-    <div className="flex min-w-0 flex-shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-1.5">
+    <div className="flex min-w-0 flex-shrink-0 flex-col items-stretch gap-1 border-b border-border px-3 py-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
       {/* File info - can shrink */}
       <div className="flex min-w-0 flex-1 shrink items-center gap-2">
         <div className="min-w-0 shrink">
@@ -72,19 +72,25 @@ export default function CodeEditorHeader({
       </div>
 
       {/* Buttons - don't shrink, always visible */}
-      <div className="flex shrink-0 items-center gap-0.5">
+      <div className="flex max-w-full flex-wrap items-center justify-end gap-0.5 sm:shrink-0">
+        {(saving || saveSuccess) && (
+          <span className="mr-1 shrink-0 whitespace-nowrap text-xs text-muted-foreground" role="status" aria-live="polite">
+            {saving ? labels.saving : labels.saved}
+          </span>
+        )}
         {isMarkdownFile && (
           <button
             type="button"
             onClick={onToggleMarkdownPreview}
-            className={`flex items-center justify-center rounded-md p-1.5 transition-colors ${
+            className={`flex min-h-11 min-w-11 items-center justify-center rounded-md p-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
               markdownPreview
                 ? 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400'
                 : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white'
             }`}
             title={markdownPreview ? labels.editMarkdown : labels.previewMarkdown}
+            aria-label={markdownPreview ? labels.editMarkdown : labels.previewMarkdown}
           >
-            {markdownPreview ? <Code2 className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            {markdownPreview ? <Code2 className="h-4 w-4" aria-hidden="true" /> : <Eye className="h-4 w-4" aria-hidden="true" />}
           </button>
         )}
 
@@ -92,48 +98,54 @@ export default function CodeEditorHeader({
           <button
             type="button"
             onClick={onOpenHtmlPreview}
-            className="flex items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
+            className="flex min-h-11 min-w-11 items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
             title={labels.previewHtml}
+            aria-label={labels.previewHtml}
           >
-            <Eye className="h-4 w-4" />
+            <Eye className="h-4 w-4" aria-hidden="true" />
           </button>
         )}
 
         <button
           type="button"
           onClick={onOpenSettings}
-          className="flex items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
+          className="flex min-h-11 min-w-11 items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
           title={labels.settings}
+          aria-label={labels.settings}
         >
-          <SettingsIcon className="h-4 w-4" />
+          <SettingsIcon className="h-4 w-4" aria-hidden="true" />
         </button>
 
         <button
           type="button"
           onClick={onDownload}
-          className="flex items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
+          className="flex min-h-11 min-w-11 items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
           title={labels.download}
+          aria-label={labels.download}
         >
-          <Download className="h-4 w-4" />
+          <Download className="h-4 w-4" aria-hidden="true" />
         </button>
 
         <button
           type="button"
           onClick={onSave}
           disabled={saving}
-          className={`flex items-center justify-center rounded-md p-1.5 transition-colors disabled:opacity-50 ${
+          className={`flex min-h-11 min-w-11 items-center justify-center rounded-md p-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 ${
             saveSuccess
               ? 'bg-green-50 text-green-600 dark:bg-green-900/30 dark:text-green-400'
               : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white'
           }`}
           title={saveTitle}
+          aria-label={saveTitle}
         >
-          {saveSuccess ? (
+          {saving ? (
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : saveSuccess ? (
             <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
           ) : (
-            <Save className="h-4 w-4" />
+            <Save className="h-4 w-4" aria-hidden="true" />
           )}
         </button>
 
@@ -141,20 +153,22 @@ export default function CodeEditorHeader({
           <button
             type="button"
             onClick={onToggleFullscreen}
-            className="flex items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
+            className="flex min-h-11 min-w-11 items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
             title={isFullscreen ? labels.exitFullscreen : labels.fullscreen}
+            aria-label={isFullscreen ? labels.exitFullscreen : labels.fullscreen}
           >
-            {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+            {isFullscreen ? <Minimize2 className="h-4 w-4" aria-hidden="true" /> : <Maximize2 className="h-4 w-4" aria-hidden="true" />}
           </button>
         )}
 
         <button
           type="button"
           onClick={onClose}
-          className="flex items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
+          className="flex min-h-11 min-w-11 items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
           title={labels.close}
+          aria-label={labels.close}
         >
-          <X className="h-4 w-4" />
+          <X className="h-4 w-4" aria-hidden="true" />
         </button>
       </div>
     </div>

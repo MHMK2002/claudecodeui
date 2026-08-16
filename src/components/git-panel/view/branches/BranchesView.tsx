@@ -1,5 +1,6 @@
 import { Check, GitBranch, Globe, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
+
 import type { ConfirmationRequest, GitRemoteStatus } from '../../types/types';
 import NewBranchModal from '../modals/NewBranchModal';
 
@@ -81,22 +82,25 @@ function BranchRow({ name, isCurrent, isRemote, aheadCount, behindCount, isMobil
       </div>
 
       {/* Actions */}
-      <div className={`flex shrink-0 items-center gap-1 ${isCurrent ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}>
+      <div className={`flex shrink-0 items-center gap-1 ${isCurrent ? 'opacity-100' : 'opacity-0 group-focus-within:opacity-100 group-hover:opacity-100'} transition-opacity`}>
         {isCurrent ? (
           <Check className="h-4 w-4 text-primary" />
         ) : !isRemote ? (
           <>
             <button
+              type="button"
               onClick={onSwitch}
-              className="rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              className="min-h-11 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               title={`Switch to ${name}`}
             >
               Switch
             </button>
             <button
+              type="button"
               onClick={onDelete}
-              className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+              className="flex h-11 w-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               title={`Delete ${name}`}
+              aria-label={`Delete branch ${name}`}
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>
@@ -185,8 +189,9 @@ export default function BranchesView({
           {localBranches.length} local{remoteBranches.length > 0 ? `, ${remoteBranches.length} remote` : ''}
         </span>
         <button
+          type="button"
           onClick={() => setShowNewBranchModal(true)}
-          className="flex items-center gap-1.5 rounded-lg bg-primary/10 px-3 py-1.5 text-sm font-medium text-primary transition-colors hover:bg-primary/20"
+          className="flex min-h-11 items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <Plus className="h-3.5 w-3.5" />
           New branch
@@ -202,12 +207,15 @@ export default function BranchesView({
           onChange={(event) => setBranchSearchQuery(event.target.value)}
           placeholder="Search branches..."
           className="w-full bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
+          aria-label="Search local and remote branches"
         />
         {branchSearchQuery && (
           <button
+            type="button"
             onClick={() => setBranchSearchQuery('')}
-            className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             title="Clear search"
+            aria-label="Clear branch search"
           >
             <X className="h-3.5 w-3.5" />
           </button>

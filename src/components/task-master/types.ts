@@ -127,3 +127,38 @@ export type TaskKanbanColumn = {
   headerColor: string;
   tasks: TaskMasterTask[];
 };
+
+export type TaskSetupOperation = {
+  path: string;
+  action: 'create' | 'replace' | 'merge';
+  description: string;
+  source: 'reference' | 'generated';
+};
+
+export type TaskSetupPlan = {
+  attemptId: string;
+  before: {
+    status: 'missing' | 'partial' | 'invalid' | 'valid';
+    missing: string[];
+    invalid: string[];
+  };
+  operations: TaskSetupOperation[];
+  modelDefaults: unknown;
+  changesExistingModelDefaults: false;
+  repair: boolean;
+};
+
+export type TaskSetupProgress = {
+  stage: 'backup' | 'taskmaster' | 'instructions' | 'integration' | 'validate' | 'rollback' | 'success';
+  message: string;
+  completed: number;
+  total: number;
+};
+
+export type TaskSetupResult = {
+  after: TaskSetupPlan['before'];
+  added: string[];
+  replaced: string[];
+  merged: string[];
+  rollbackPerformed: boolean;
+};

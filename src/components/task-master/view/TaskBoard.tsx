@@ -5,26 +5,28 @@ import { api } from '../../../utils/api';
 import { useTaskMaster } from '../context/TaskMasterContext';
 import { useTaskBoardState } from '../hooks/useTaskBoardState';
 import type { PrdFile, TaskBoardView, TaskMasterProject, TaskMasterTask, TaskSelection } from '../types';
-import type { TaskWorkflowCallbacks } from '../workflow';
 
 import TaskBoardContent from './TaskBoardContent';
 import TaskBoardToolbar from './TaskBoardToolbar';
 import TaskEmptyState from './TaskEmptyState';
-import CreateTaskModal from './modals/CreateTaskModal';
 import TaskHelpModal from './modals/TaskHelpModal';
-import TaskMasterSetupModal from './modals/TaskMasterSetupModal';
+import NextTaskBanner from './NextTaskBanner';
 
-type TaskBoardProps = TaskWorkflowCallbacks & {
+type TaskBoardProps = {
   tasks?: TaskMasterTask[];
   onTaskClick?: ((task: TaskSelection) => void) | null;
   className?: string;
   showParentTasks?: boolean;
   defaultView?: TaskBoardView;
   currentProject?: TaskMasterProject | null;
-  onTaskCreated?: (() => void) | null;
   onShowPRDEditor?: ((file?: PrdFile) => void) | null;
   existingPRDs?: PrdFile[];
   onRefreshPRDs?: ((showNotification?: boolean) => void) | null;
+  onOpenSetup: () => void;
+  onOpenCreateTask: () => void;
+  onStartTask: (task: TaskMasterTask) => void;
+  isStartingTask: boolean;
+  suppressStartAction?: boolean;
 };
 
 export default function TaskBoard({
@@ -34,20 +36,18 @@ export default function TaskBoard({
   showParentTasks = false,
   defaultView = 'kanban',
   currentProject = null,
-  onTaskCreated = null,
   onShowPRDEditor = null,
   existingPRDs = [],
   onRefreshPRDs = null,
-  sendMessage,
-  onSessionEstablished,
-  onNavigateToSession,
-  onSessionProcessing,
+  onOpenSetup,
+  onOpenCreateTask,
+  onStartTask,
+  isStartingTask,
+  suppressStartAction = false,
 }: TaskBoardProps) {
-  const { projectTaskMaster, refreshProjects, refreshTasks, setCurrentProject } = useTaskMaster();
+  const { projectTaskMaster } = useTaskMaster();
 
-  const [showCreateModal, setShowCreateModal] = useState(false);
   const [showHelpModal, setShowHelpModal] = useState(false);
-  const [showSetupModal, setShowSetupModal] = useState(false);
 
   const {
     searchTerm,
@@ -104,15 +104,6 @@ export default function TaskBoard({
     }
   };
 
-  const refreshAfterSetup = () => {
-    void refreshProjects();
-    if (currentProject) {
-      setCurrentProject(currentProject);
-    }
-    void refreshTasks();
-    onRefreshPRDs?.(false);
-  };
-
   if (tasks.length === 0) {
     return (
       <>
@@ -120,37 +111,27 @@ export default function TaskBoard({
           className={className}
           hasTaskMasterDirectory={hasTaskMasterDirectory}
           existingPrds={existingPRDs}
-          onOpenSetupModal={() => setShowSetupModal(true)}
+          onOpenSetupModal={onOpenSetup}
           onCreatePrd={() => onShowPRDEditor?.()}
-          onCreateTask={() => setShowCreateModal(true)}
+          onCreateTask={onOpenCreateTask}
           onOpenPrd={(prd) => {
             void loadPrdAndOpenEditor(prd);
           }}
         />
 
-        <TaskMasterSetupModal
-          isOpen={showSetupModal}
-          project={currentProject}
-          onClose={() => setShowSetupModal(false)}
-          onAfterClose={refreshAfterSetup}
-        />
-
-        <CreateTaskModal
-          isOpen={showCreateModal}
-          project={currentProject}
-          sendMessage={sendMessage}
-          onSessionEstablished={onSessionEstablished}
-          onNavigateToSession={onNavigateToSession}
-          onSessionProcessing={onSessionProcessing}
-          onTaskCreated={onTaskCreated}
-          onClose={() => setShowCreateModal(false)}
-        />
       </>
     );
   }
 
   return (
     <div className={cn('space-y-4', className)}>
+      {filteredTasks.length > 0 && !isStartingTask && !suppressStartAction && (
+        <NextTaskBanner
+          onStartTask={onStartTask}
+          isStartingTask={isStartingTask}
+          actionEmphasis="primary"
+        />
+      )}
       <TaskBoardToolbar
         hasProject={Boolean(currentProject)}
         hasTaskMasterConfigured={hasTaskMasterDirectory}
@@ -182,7 +163,7 @@ export default function TaskBoard({
           void loadPrdAndOpenEditor(prd);
         }}
         onOpenHelp={() => setShowHelpModal(true)}
-        onOpenCreateTask={() => setShowCreateModal(true)}
+        onOpenCreateTask={onOpenCreateTask}
       />
 
       <TaskBoardContent
@@ -192,19 +173,7 @@ export default function TaskBoard({
         filteredTasks={filteredTasks}
         showParentTasks={showParentTasks}
         onTaskClick={(task) => onTaskClick?.(task)}
-      />
-
-      <CreateTaskModal
-        isOpen={showCreateModal}
-        project={currentProject}
-        sendMessage={sendMessage}
-        onSessionEstablished={onSessionEstablished}
-        onNavigateToSession={onNavigateToSession}
-        onSessionProcessing={onSessionProcessing}
-        onTaskCreated={onTaskCreated}
-        onClose={() => {
-          setShowCreateModal(false);
-        }}
+        onClearFilters={clearFilters}
       />
 
       <TaskHelpModal
@@ -213,12 +182,6 @@ export default function TaskBoard({
         onCreatePrd={() => onShowPRDEditor?.()}
       />
 
-      <TaskMasterSetupModal
-        isOpen={showSetupModal}
-        project={currentProject}
-        onClose={() => setShowSetupModal(false)}
-        onAfterClose={refreshAfterSetup}
-      />
     </div>
   );
 }

@@ -452,9 +452,22 @@ const ensureProviderProfilesSchema = (db: Database): void => {
 
 const ensureScheduledRunsSchema = (db: Database): void => {
   db.exec(SCHEDULED_RUNS_TABLE_SCHEMA_SQL);
+  const scheduledRunColumns = getTableInfo(db, 'scheduled_runs').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'scheduled_runs', scheduledRunColumns, 'project_id', 'TEXT');
+  addColumnToTableIfNotExists(db, 'scheduled_runs', scheduledRunColumns, 'provider_profile_id', 'INTEGER');
+  db.exec(`
+    UPDATE scheduled_runs
+    SET project_id = (
+      SELECT projects.project_id
+      FROM projects
+      WHERE projects.project_path = scheduled_runs.project_path
+    )
+    WHERE project_id IS NULL
+  `);
   db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_runs_user_id ON scheduled_runs(user_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_runs_due ON scheduled_runs(is_enabled, next_run_at)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_runs_project ON scheduled_runs(project_path)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_runs_project_id ON scheduled_runs(project_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_runs_in_flight ON scheduled_runs(in_flight_run_id)');
 
   db.exec(SCHEDULED_RUN_HISTORY_TABLE_SCHEMA_SQL);

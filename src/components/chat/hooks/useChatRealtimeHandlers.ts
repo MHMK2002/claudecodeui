@@ -186,6 +186,18 @@ export function useChatRealtimeHandlers({
       /*  Provider NormalizedMessage handling                            */
       /* -------------------------------------------------------------- */
 
+      if (
+        sid
+        && (
+          ['stream_delta', 'thinking', 'tool_use', 'tool_result'].includes(msg.kind)
+          || (msg.kind === 'text' && msg.role === 'assistant')
+        )
+      ) {
+        // Replayed/live activity can arrive before a reconnect subscribe ack.
+        // Treat concrete provider work as authoritative running evidence.
+        onSessionProcessing?.(sid);
+      }
+
       // --- Streaming: buffer for performance ---
       if (msg.kind === 'stream_delta') {
         const text = (msg.content as string) || '';

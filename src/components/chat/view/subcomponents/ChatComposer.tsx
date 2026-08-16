@@ -10,7 +10,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, Wand2 } from 'lucide-react';
+import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, Wand2 } from 'lucide-react';
 
 import { useVoiceInput } from '../../hooks/useVoiceInput';
 import { useVoiceAvailable } from '../../hooks/useVoiceAvailable';
@@ -24,7 +24,11 @@ import type { PendingPermissionRequest, PermissionMode } from '../../types/types
 import type {
   LLMProvider,
   ProviderModelOption,
+  ProviderSelectionCatalog,
 } from '../../../../types/app';
+import {
+  getProviderCatalogSendBlockReason,
+} from '../../../../shared/providerSelectionCatalog';
 import {
   PromptInput,
   PromptInputHeader,
@@ -36,6 +40,11 @@ import {
   PromptInputSubmit,
 } from '../../../../shared/view/ui';
 import { getTextDirection } from '../../../../utils/textDirection';
+import {
+  resolveChatPrimaryVisual,
+  resolveChatRunControls,
+  type ChatPrimaryAction,
+} from '../../utils/chatRunControls';
 
 import CommandMenu from './CommandMenu';
 import ActivityIndicator from './ActivityIndicator';
@@ -73,6 +82,17 @@ interface ChatComposerProps {
   handleGrantToolPermission: (suggestion: { entry: string; toolName: string }) => { success: boolean };
   activity: SessionActivity | null;
   isLoading: boolean;
+  primaryAction: ChatPrimaryAction;
+  isSocketConnected: boolean;
+  sendBlockedReason: string | null;
+  transportFailure: {
+    action: 'send' | 'stop' | 'permission';
+    message: string;
+    sessionId: string | null;
+    projectId: string | null;
+  } | null;
+  onRetryConnection: () => void;
+  onDismissTransportFailure: () => void;
   onAbortSession: () => void;
   permissionMode: PermissionMode | string;
   availablePermissionModes: (PermissionMode | string)[];
@@ -93,6 +113,11 @@ interface ChatComposerProps {
   availableModelOptions: ProviderModelOption[];
   onSelectModel: (model: string) => void;
   modelsLoading: boolean;
+  providerSelectionCatalog: ProviderSelectionCatalog | null;
+  providerCatalogLoading: boolean;
+  providerCatalogError: string | null;
+  onRetryProviderCatalog: () => void;
+  onOpenAgentSettings: () => void;
   tokenBudget: Record<string, unknown> | null;
   onShowTokenUsage: () => void;
   slashCommandsCount: number;
@@ -168,6 +193,12 @@ export default function ChatComposer({
   handleGrantToolPermission,
   activity,
   isLoading,
+  primaryAction,
+  isSocketConnected,
+  sendBlockedReason,
+  transportFailure,
+  onRetryConnection,
+  onDismissTransportFailure,
   onAbortSession,
   permissionMode,
   availablePermissionModes,
@@ -186,6 +217,11 @@ export default function ChatComposer({
   availableModelOptions,
   onSelectModel,
   modelsLoading,
+  providerSelectionCatalog,
+  providerCatalogLoading,
+  providerCatalogError,
+  onRetryProviderCatalog,
+  onOpenAgentSettings,
   tokenBudget,
   onShowTokenUsage,
   slashCommandsCount,
@@ -321,6 +357,20 @@ export default function ChatComposer({
 
   const hasQueuedDraft = Boolean(queuedDraft);
   const canQueueDraft = isLoading && Boolean(input.trim() || attachedFiles.length > 0);
+  const runControls = resolveChatRunControls({
+    isRunning: isLoading,
+    canInterrupt: Boolean(activity?.canInterrupt),
+    hasDraft: canQueueDraft,
+    connectionAvailable: isSocketConnected && transportFailure?.action !== 'stop',
+  });
+  const primaryVisual = resolveChatPrimaryVisual(isLoading, isTranscribing);
+  const providerCatalogSendBlockReason = getProviderCatalogSendBlockReason(
+    providerCatalogError,
+    isLoading,
+  );
+  const connectionUnavailable = !isSocketConnected || Boolean(transportFailure);
+  const connectionMessage = transportFailure?.message
+    ?? 'Chat is reconnecting. Your draft and pending actions are preserved.';
   const submitHint = canQueueDraft
     ? hasQueuedDraft
       ? t('input.hintText.updateQueued', { defaultValue: 'Enter to update queued message' })
@@ -328,24 +378,25 @@ export default function ChatComposer({
     : sendByCtrlEnter
       ? t('input.hintText.ctrlEnter')
       : t('input.hintText.enter');
-  const placeholderWithHint = input
-    ? placeholder
-    : placeholder
-      ? `${placeholder}\n${submitHint}`
-      : submitHint;
-  const submitAriaLabel = canQueueDraft
-    ? hasQueuedDraft
-      ? t('input.queue.update', { defaultValue: 'Update queued message' })
-      : t('input.queue.sendNext', { defaultValue: 'Queue next message' })
-    : isLoading
-      ? t('input.stop')
-      : t('input.send');
+  const queueAriaLabel = hasQueuedDraft
+    ? t('input.queue.update', { defaultValue: 'Update queued message' })
+    : t('input.queue.sendNext', { defaultValue: 'Queue next message' });
+  const submitAriaLabel = isLoading ? t('input.stop') : t('input.send');
+  const mainControlIsPrimary = primaryAction === (isLoading ? 'stop' : 'send');
+
+  const handleFormSubmit = useCallback((event: FormEvent<HTMLFormElement>) => {
+    if (sendBlockedReason || transportFailure?.action === 'send') {
+      event.preventDefault();
+      return;
+    }
+    onSubmit(event);
+  }, [onSubmit, sendBlockedReason, transportFailure?.action]);
 
   return (
     <div className="chat-composer-shell relative flex-shrink-0 px-2 pb-2 pt-0 sm:px-4 sm:pb-4 md:px-4 md:pb-6">
       {!hasPendingPermissions && (
         <div className="pointer-events-none absolute bottom-full left-1/2 z-10 w-[calc(100%-1rem)] max-w-[54.25rem] -translate-x-1/2 translate-y-px bg-transparent sm:w-[calc(100%-2rem)]">
-          <ActivityIndicator activity={activity} onAbort={onAbortSession} isInputFocused={isInputFocused} />
+          <ActivityIndicator activity={activity} isInputFocused={isInputFocused} />
         </div>
       )}
 
@@ -355,6 +406,8 @@ export default function ChatComposer({
             pendingPermissionRequests={pendingPermissionRequests}
             handlePermissionDecision={handlePermissionDecision}
             handleGrantToolPermission={handleGrantToolPermission}
+            deliveryDisabled={connectionUnavailable}
+            deliveryDisabledReason={connectionUnavailable ? connectionMessage : null}
           />
         </div>
       )}
@@ -370,7 +423,106 @@ export default function ChatComposer({
         />
       )}
 
-      {!hasQuestionPanel && <div className="relative mx-auto max-w-[54.25rem]">
+      <div className="relative mx-auto max-w-[54.25rem]">
+        {providerCatalogError && (
+          <div
+            id="provider-catalog-recovery"
+            role="alert"
+            className="mb-2 flex flex-col gap-2 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-foreground sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div className="min-w-0">
+              <p className="font-medium">Providers could not be loaded.</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                {providerCatalogSendBlockReason ?? providerCatalogError}
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={onRetryProviderCatalog}
+                disabled={providerCatalogLoading}
+                data-ux-primary={primaryAction === 'retry-catalog' ? 'true' : undefined}
+                className={`min-h-11 rounded-md px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-wait disabled:opacity-60 ${
+                  primaryAction === 'retry-catalog'
+                    ? 'bg-primary text-primary-foreground'
+                    : 'border border-border bg-background text-foreground'
+                }`}
+              >
+                {providerCatalogLoading ? 'Retrying…' : 'Retry'}
+              </button>
+              <button
+                type="button"
+                onClick={onOpenAgentSettings}
+                className="min-h-11 rounded-md border border-border bg-background px-3 py-2 text-sm font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                Open Agent Settings
+              </button>
+            </div>
+          </div>
+        )}
+        {connectionUnavailable && (
+          <div
+            id="chat-connection-recovery"
+            role="alert"
+            className="mb-2 flex flex-col gap-2 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-foreground sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div className="min-w-0">
+              <p className="font-medium">Chat connection unavailable.</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">{connectionMessage}</p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={onRetryConnection}
+                data-ux-primary={primaryAction === 'retry-connection' ? 'true' : undefined}
+                className={`min-h-11 rounded-md px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                  primaryAction === 'retry-connection'
+                    ? 'bg-primary text-primary-foreground'
+                    : 'border border-border bg-background text-foreground'
+                }`}
+              >
+                Retry connection
+              </button>
+              {transportFailure && (
+                <button
+                  type="button"
+                  onClick={onDismissTransportFailure}
+                  className="min-h-11 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  Dismiss
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {hasQuestionPanel ? (
+          isLoading ? (
+            <div className="flex items-center justify-end gap-3 rounded-lg border border-border bg-background p-2">
+              {runControls.stopExplanation && (
+                <span id="question-stop-unavailable-reason" className="text-xs text-muted-foreground">
+                  {runControls.stopExplanation}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={onAbortSession}
+                disabled={runControls.mainDisabled}
+                aria-label={t('input.stop')}
+                aria-describedby={runControls.stopExplanation ? 'question-stop-unavailable-reason' : undefined}
+                data-ux-primary={primaryAction === 'stop' ? 'true' : undefined}
+                className={`min-h-11 rounded-md border px-4 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60 ${
+                  primaryAction === 'stop'
+                    ? 'border-primary bg-primary text-primary-foreground'
+                    : 'border-border bg-background text-foreground'
+                }`}
+              >
+                {t('input.stop')}
+              </button>
+            </div>
+          ) : null
+        ) : (
+          <>
         {showFileDropdown && filteredFiles.length > 0 && (
           <div className="absolute bottom-full left-0 right-0 z-50 mb-2 max-h-48 overflow-y-auto rounded-xl border border-border/50 bg-card/95 shadow-lg backdrop-blur-md">
             {filteredFiles.map((file, index) => (
@@ -409,7 +561,7 @@ export default function ChatComposer({
         />
 
         <PromptInput
-          onSubmit={onSubmit as (event: FormEvent<HTMLFormElement>) => void}
+          onSubmit={handleFormSubmit}
           status={isLoading ? 'streaming' : 'ready'}
           className={[
             isTextareaExpanded ? 'chat-input-expanded' : '',
@@ -451,7 +603,7 @@ export default function ChatComposer({
             </PromptInputHeader>
           )}
 
-          <input {...getInputProps()} />
+          <input {...getInputProps()} aria-label={t('input.attachFiles')} />
 
           <PromptInputBody>
             <div ref={inputHighlightRef} aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden rounded-xl">
@@ -475,9 +627,19 @@ export default function ChatComposer({
               onFocus={() => onInputFocusChange?.(true)}
               onBlur={() => onInputFocusChange?.(false)}
               onInput={onTextareaInput}
-              placeholder={placeholderWithHint}
+              placeholder={placeholder}
+              aria-description={submitHint}
             />
         </PromptInputBody>
+
+        {runControls.stopExplanation && (
+          <div
+            id="stop-unavailable-reason"
+            className="border-t border-border/30 px-3 py-2 text-xs text-muted-foreground"
+          >
+            {runControls.stopExplanation}
+          </div>
+        )}
 
         <PromptInputFooter>
           <PromptInputTools className="min-w-0">
@@ -530,51 +692,71 @@ export default function ChatComposer({
 
           </PromptInputTools>
 
-          <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-            <ComposerProviderMenu
-              currentProvider={currentProvider}
-              currentProfileId={currentProviderProfileId}
-              onSelectProvider={onSelectProvider}
-              disabled={providerSwitching}
-            />
+          <div className="ml-auto flex shrink-0 items-center gap-1.5 sm:gap-2">
+            <div
+              role="group"
+              aria-label="Chat configuration"
+              className="flex shrink-0 items-center divide-x divide-border overflow-hidden rounded-lg border border-input bg-background"
+            >
+              <ComposerProviderMenu
+                currentProvider={currentProvider}
+                currentProfileId={currentProviderProfileId}
+                onSelectProvider={onSelectProvider}
+                disabled={providerSwitching}
+                catalog={providerSelectionCatalog}
+                loading={providerCatalogLoading}
+                error={providerCatalogError}
+              />
 
-            {providerSwitchError && (
+              {providerSwitchError && (
+                <button
+                  type="button"
+                  onClick={onDismissProviderSwitchError}
+                  className="h-11 min-w-0 truncate bg-destructive/10 px-2 text-xs text-destructive transition-colors hover:bg-destructive/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                  aria-live="polite"
+                  title={providerSwitchError}
+                >
+                  {providerSwitchError}
+                </button>
+              )}
+
+              <ComposerModelMenu
+                effort={effort}
+                effortOptions={availableEffortOptions}
+                onSelectEffort={onSelectEffort}
+                model={model}
+                modelOptions={availableModelOptions}
+                onSelectModel={onSelectModel}
+                modelsLoading={modelsLoading}
+              />
+
+              <ComposerPermissionMenu
+                permissionMode={permissionMode}
+                permissionModes={availablePermissionModes}
+                onSelectPermissionMode={onSelectPermissionMode}
+                providerLabel={providerLabel}
+              />
+            </div>
+
+            {runControls.queueVisible && (
               <button
                 type="button"
-                onClick={onDismissProviderSwitchError}
-                className="min-w-0 truncate rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive transition-colors hover:bg-destructive/20"
-                aria-live="polite"
-                title={providerSwitchError}
+                onClick={(event) => {
+                  event.preventDefault();
+                  onSubmit(event);
+                }}
+                aria-label={queueAriaLabel}
+                title={queueAriaLabel}
+                className="min-h-11 rounded-lg border border-border bg-background px-3 text-sm font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                {providerSwitchError}
+                {hasQueuedDraft ? 'Update queue' : 'Queue'}
               </button>
             )}
 
-            <ComposerModelMenu
-              effort={effort}
-              effortOptions={availableEffortOptions}
-              onSelectEffort={onSelectEffort}
-              model={model}
-              modelOptions={availableModelOptions}
-              onSelectModel={onSelectModel}
-              modelsLoading={modelsLoading}
-            />
-
-            <ComposerPermissionMenu
-              permissionMode={permissionMode}
-              permissionModes={availablePermissionModes}
-              onSelectPermissionMode={onSelectPermissionMode}
-              providerLabel={providerLabel}
-            />
-
-            <PromptInputSubmit
-              onClick={
-                canQueueDraft
-                  ? (e: MouseEvent<HTMLButtonElement>) => {
-                      e.preventDefault();
-                      onSubmit(e);
-                    }
-                  : isLoading
+            {!sendBlockedReason && transportFailure?.action !== 'send' && (
+              <PromptInputSubmit
+                onClick={
+                  isLoading
                     ? onAbortSession
                     : isRecording
                       ? (e: MouseEvent<HTMLButtonElement>) => {
@@ -582,30 +764,41 @@ export default function ChatComposer({
                           voiceStopCommit({ send: true });
                         }
                       : undefined
-              }
-              disabled={
-                isLoading
-                  ? false
-                  : isRecording
-                    ? false
-                    : isTranscribing
-                      ? true
-                      : !input.trim() && attachedFiles.length === 0
-              }
-              aria-label={submitAriaLabel}
-              title={submitAriaLabel}
-              className="h-10 w-10 sm:h-10 sm:w-10"
-            >
-              {isTranscribing ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : canQueueDraft ? (
-                <ArrowUpIcon className="h-4 w-4" />
-              ) : undefined}
-            </PromptInputSubmit>
+                }
+                disabled={
+                  isLoading
+                    ? runControls.mainDisabled
+                    : isRecording
+                      ? false
+                      : isTranscribing
+                        ? true
+                        : !input.trim() && attachedFiles.length === 0
+                }
+                aria-label={submitAriaLabel}
+                aria-describedby={
+                  runControls.stopExplanation
+                    ? 'stop-unavailable-reason'
+                    : undefined
+                }
+                data-ux-primary={mainControlIsPrimary ? 'true' : undefined}
+                title={submitAriaLabel}
+                className={`h-11 w-11 sm:h-11 sm:w-11 ${
+                  mainControlIsPrimary
+                    ? ''
+                    : 'border border-border bg-muted text-muted-foreground shadow-none hover:bg-muted'
+                }`}
+              >
+                {primaryVisual === 'transcribing' ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : undefined}
+              </PromptInputSubmit>
+            )}
           </div>
         </PromptInputFooter>
       </PromptInput>
-      </div>}
+          </>
+        )}
+      </div>
 
       {enhanceOpen && onApplyEnhancedText && (
         <EnhanceTextModal

@@ -16,3 +16,11 @@ export type PreferenceToggleItem = {
 };
 
 export type QuickSettingsHandleStyle = CSSProperties;
+
+export type ProjectDrawerTab = 'tasks' | 'scheduledRuns' | 'quickSettings';
+
+export type ProjectDrawerState = {
+  isOpen: boolean;
+  activeTab: ProjectDrawerTab;
+  width: number;
+};

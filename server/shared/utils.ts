@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import {
   access,
@@ -27,8 +27,160 @@ import type {
   ProviderCurrentActiveModel,
   ProviderModelsDefinition,
   ProviderSkillSource,
+  RuntimeMode,
   WorkspacePathValidationResult,
 } from '@/shared/types.js';
+
+import { LOCAL_SESSION_COOKIE_NAME } from '../../shared/local-session.js';
+import productManifest from '../../shared/product-config.json' with { type: 'json' };
+import {
+  resolveRuntimeMode,
+  validateRuntimeModeHost,
+} from '../../shared/runtime-mode.js';
+
+//----------------- SHARED PRODUCT CONFIGURATION ------------
+/**
+ * Immutable product identity and build-default features consumed by the server
+ * entrypoint plus Auth, Agent, Browser Use, and CLI modules. The repository-root
+ * JSON manifest remains the sole value source; this export only establishes the
+ * backend shared-module boundary required by those consumers.
+ */
+export const PRODUCT_CONFIG = Object.freeze({
+  ...productManifest,
+  features: Object.freeze({ ...productManifest.features }),
+});
+
+/**
+ * Hosted runtime switch consumed by Auth, Agent, and Browser Use. Hosted mode
+ * cannot be enabled by an environment variable unless the shared product
+ * manifest explicitly makes the feature available.
+ */
+export const IS_PLATFORM = PRODUCT_CONFIG.features.hosted
+  && process.env.VITE_IS_PLATFORM === 'true';
+
+/**
+ * Process-wide runtime boundary consumed by Auth, WebSocket, and the server
+ * composition root. Desktop modes require the Electron ownership nonce, so an
+ * ordinary web process cannot opt into passwordless behavior with one env var.
+ */
+export const RUNTIME_MODE = resolveRuntimeMode({
+  configuredMode: process.env.CLOUDCLI_RUNTIME_MODE,
+  isPlatform: IS_PLATFORM,
+  desktopManaged: Boolean(process.env.CLOUDCLI_DESKTOP_OWNER_NONCE),
+}) as RuntimeMode;
+
+/** Used by the server entrypoint to fail before binding outside its runtime boundary. */
+export function validateServerRuntimeHost(host: string): string {
+  return validateRuntimeModeHost(RUNTIME_MODE, host);
+}
+
+// ---------------------------
+
+//----------------- LOCAL SESSION SECURITY ------------
+/** Host-only HttpOnly cookie shared by Auth REST and WebSocket authentication. */
+export const SESSION_COOKIE_NAME = LOCAL_SESSION_COOKIE_NAME;
+
+/**
+ * Reads one cookie value without accepting duplicate-name ambiguity. Used by
+ * Auth REST middleware and the WebSocket upgrade verifier.
+ */
+export function readCookieValue(
+  cookieHeader: string | string[] | undefined,
+  name: string,
+): string | null {
+  const raw = Array.isArray(cookieHeader) ? cookieHeader.join(';') : cookieHeader;
+  if (!raw) return null;
+  const matches = raw
+    .split(';')
+    .map((part) => part.trim())
+    .filter((part) => part.startsWith(`${name}=`));
+  if (matches.length !== 1) return null;
+  const value = matches[0].slice(name.length + 1);
+  try {
+    return decodeURIComponent(value) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Serializes the host-only session cookie set by Auth routes. SameSite Strict
+ * prevents adding ambient cross-site authority when standalone login also
+ * enables cookie-authenticated WebSockets.
+ */
+export function serializeSessionCookie(
+  token: string,
+  options: { secure?: boolean; maxAgeSeconds?: number } = {},
+): string {
+  const maxAge = options.maxAgeSeconds ?? (7 * 24 * 60 * 60);
+  return [
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Strict',
+    `Max-Age=${Math.max(0, Math.floor(maxAge))}`,
+    options.secure ? 'Secure' : null,
+  ].filter(Boolean).join('; ');
+}
+
+/** Used by Auth logout/expiry responses to remove the host-only session cookie. */
+export function serializeExpiredSessionCookie(secure = false): string {
+  return serializeSessionCookie('', { secure, maxAgeSeconds: 0 });
+}
+
+/** Constant-time comparison used by Desktop lifecycle and local-session challenges. */
+export function secureStringsMatch(left: string, right: string): boolean {
+  const leftBytes = Buffer.from(left);
+  const rightBytes = Buffer.from(right);
+  return leftBytes.length === rightBytes.length
+    && timingSafeEqual(leftBytes, rightBytes);
+}
+
+/** Accepts Node's normalized IPv4/IPv6 loopback addresses for local-only endpoints. */
+export function isLoopbackNetworkAddress(address: string | undefined): boolean {
+  return address === '127.0.0.1'
+    || address === '::1'
+    || address === '::ffff:127.0.0.1';
+}
+
+/**
+ * Compares a browser-supplied Origin with the HTTP Host origin, including its
+ * port. Desktop local callers may also use one explicit loopback dev-server
+ * origin. This prevents sibling localhost apps from reusing ambient host-only
+ * cookies across ports for REST mutations or WebSocket upgrades.
+ */
+export function isBrowserOriginAllowed(options: {
+  origin: string | undefined;
+  requestHost: string | undefined;
+  secure: boolean;
+  allowedOrigin?: string;
+  loopbackOnly?: boolean;
+}): boolean {
+  const normalizeOrigin = (value: string | undefined): URL | null => {
+    try {
+      return value ? new URL(value) : null;
+    } catch {
+      return null;
+    }
+  };
+  const clientOrigin = normalizeOrigin(options.origin);
+  const requestOrigin = normalizeOrigin(options.requestHost
+    ? `${options.secure ? 'https' : 'http'}://${options.requestHost}`
+    : undefined);
+  const allowedOrigin = normalizeOrigin(options.allowedOrigin);
+  if (!clientOrigin || !requestOrigin) return false;
+  if (!['http:', 'https:'].includes(clientOrigin.protocol)) return false;
+  if (
+    options.loopbackOnly
+    && !['localhost', '127.0.0.1', '::1', '[::1]'].includes(clientOrigin.hostname)
+  ) {
+    return false;
+  }
+  return clientOrigin.origin === requestOrigin.origin
+    || clientOrigin.origin === allowedOrigin?.origin;
+}
+
+// ---------------------------
 
 //----------------- NORMALIZED MESSAGE HELPER INPUT TYPES ------------
 /**
@@ -466,6 +618,38 @@ export function sliceTailPage<T>(
     page: items.slice(start, end),
     hasMore: start > 0,
   };
+}
+
+/**
+ * Claude and Codex history adapters use this shared projection after fully
+ * normalizing a transcript and before pagination. A standalone tool-result
+ * row is folded into its matching tool-use row and then removed, so `total`,
+ * returned rows, and pagination offsets all count the same renderable units.
+ * Unmatched tool-result rows are intentionally omitted, matching the Chat UI's
+ * existing behavior for incomplete provider pairs.
+ */
+export function attachToolResultsToToolUseRows(
+  messages: NormalizedMessage[],
+): NormalizedMessage[] {
+  const results = new Map<string, NormalizedMessage>();
+  for (const message of messages) {
+    if (message.kind === 'tool_result' && message.toolId) {
+      results.set(message.toolId, message);
+    }
+  }
+
+  for (const message of messages) {
+    if (message.kind !== 'tool_use' || !message.toolId || message.toolResult) continue;
+    const result = results.get(message.toolId);
+    if (!result) continue;
+    message.toolResult = {
+      content: typeof result.content === 'string' ? result.content : '',
+      isError: Boolean(result.isError),
+      ...(result.toolUseResult !== undefined ? { toolUseResult: result.toolUseResult } : {}),
+    };
+  }
+
+  return messages.filter((message) => message.kind !== 'tool_result');
 }
 
 // ---------------------------
@@ -1156,6 +1340,47 @@ export const terminalTextStyles = {
   dim: (text: string): string =>
     `${ANSI_TERMINAL_STYLES.dim}${text}${ANSI_TERMINAL_STYLES.reset}`,
 };
+
+// ---------------------------
+//----------------- SYSTEM LOGIN SHELL UTILITIES ------------
+/**
+ * Resolves the operating system's interactive login shell for the Shell and
+ * command-terminal WebSocket services. POSIX shells are launched directly
+ * with `-l`; Windows launches COMSPEC (or PowerShell) directly with no command
+ * wrapper. Returning `null` lets callers emit a typed SHELL_UNAVAILABLE error
+ * before attempting to create a PTY.
+ */
+export function resolveSystemLoginShell(options: {
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  isExecutable?: (candidate: string) => boolean;
+} = {}): { file: string; args: string[] } | null {
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+
+  if (platform === 'win32') {
+    const file = env.ComSpec || env.COMSPEC || 'powershell.exe';
+    return { file, args: [] };
+  }
+
+  const isExecutable = options.isExecutable ?? ((candidate: string) => {
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  const fallback = platform === 'darwin' ? '/bin/zsh' : '/bin/bash';
+  const candidates = [env.SHELL, fallback, '/bin/sh']
+    .filter((candidate): candidate is string => Boolean(candidate));
+  const file = candidates.find((candidate, index) => (
+    path.isAbsolute(candidate)
+    && candidates.indexOf(candidate) === index
+    && isExecutable(candidate)
+  ));
+  return file ? { file, args: ['-l'] } : null;
+}
 
 // ---------------------------
 //----------------- RUNTIME PATH RESOLUTION UTILITIES ------------

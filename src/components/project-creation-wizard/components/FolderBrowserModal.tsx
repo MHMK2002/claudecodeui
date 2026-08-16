@@ -1,20 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Eye, EyeOff, FolderOpen, FolderPlus, Loader2, Plus, X } from 'lucide-react';
-import { Button, Input } from '../../../shared/view/ui';
+import { Eye, EyeOff, FolderOpen, Loader2, Plus, X } from 'lucide-react';
+
+import { Button, Dialog, DialogContent, DialogTitle, Input } from '../../../shared/view/ui';
 import { browseFilesystemFolders, createFolderInFilesystem } from '../data/workspaceApi';
 import { getParentPath, joinFolderPath } from '../utils/pathUtils';
 import type { FolderSuggestion } from '../types';
 
 type FolderBrowserModalProps = {
   isOpen: boolean;
-  autoAdvanceOnSelect: boolean;
+  allowCreateFolder?: boolean;
   onClose: () => void;
-  onFolderSelected: (folderPath: string, advanceToConfirm: boolean) => void;
+  onFolderSelected: (folderPath: string) => void;
 };
 
 export default function FolderBrowserModal({
   isOpen,
-  autoAdvanceOnSelect,
+  allowCreateFolder = false,
   onClose,
   onFolderSelected,
 }: FolderBrowserModalProps) {
@@ -30,7 +31,6 @@ export default function FolderBrowserModal({
   const loadFolders = useCallback(async (pathToLoad: string) => {
     setLoadingFolders(true);
     setError(null);
-
     try {
       const result = await browseFilesystemFolders(pathToLoad);
       setCurrentPath(result.path);
@@ -43,45 +43,28 @@ export default function FolderBrowserModal({
   }, []);
 
   useEffect(() => {
-    if (!isOpen) {
-      return;
-    }
-    loadFolders('~');
+    if (isOpen) void loadFolders('~');
   }, [isOpen, loadFolders]);
 
   const visibleFolders = useMemo(
-    () =>
-      folders
-        .filter((folder) => showHiddenFolders || !folder.name.startsWith('.'))
-        .sort((firstFolder, secondFolder) =>
-          firstFolder.name.toLowerCase().localeCompare(secondFolder.name.toLowerCase()),
-        ),
+    () => folders
+      .filter((folder) => showHiddenFolders || !folder.name.startsWith('.'))
+      .sort((first, second) => first.name.localeCompare(second.name, undefined, { sensitivity: 'base' })),
     [folders, showHiddenFolders],
   );
 
-  const resetNewFolderState = () => {
+  const resetNewFolder = () => {
     setShowNewFolderInput(false);
     setNewFolderName('');
   };
 
-  const handleClose = () => {
-    setError(null);
-    resetNewFolderState();
-    onClose();
-  };
-
   const handleCreateFolder = useCallback(async () => {
-    if (!newFolderName.trim()) {
-      return;
-    }
-
+    if (!newFolderName.trim()) return;
     setCreatingFolder(true);
     setError(null);
-
     try {
-      const folderPath = joinFolderPath(currentPath, newFolderName);
-      const createdPath = await createFolderInFilesystem(folderPath);
-      resetNewFolderState();
+      const createdPath = await createFolderInFilesystem(joinFolderPath(currentPath, newFolderName));
+      resetNewFolder();
       await loadFolders(createdPath);
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : 'Failed to create folder');
@@ -92,160 +75,131 @@ export default function FolderBrowserModal({
 
   const parentPath = getParentPath(currentPath);
 
-  if (!isOpen) {
-    return null;
-  }
-
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
-      <div className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-lg border border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-800">
-        <div className="flex items-center justify-between border-b border-gray-200 p-4 dark:border-gray-700">
-          <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-100 dark:bg-blue-900/50">
-              <FolderOpen className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-            </div>
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Select Folder</h3>
+    <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="flex max-h-[85dvh] w-[calc(100vw-1rem)] max-w-2xl flex-col overflow-hidden p-0">
+        <div className="flex items-center justify-between border-b border-border p-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <FolderOpen className="h-5 w-5 shrink-0 text-primary" aria-hidden="true" />
+            <DialogTitle className="not-sr-only truncate text-lg font-semibold">Select folder</DialogTitle>
           </div>
-
-          <div className="flex items-center gap-2">
-            <button
+          <div className="flex items-center gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="min-h-11 min-w-11"
               onClick={() => setShowHiddenFolders((previous) => !previous)}
-              className={`rounded-md p-2 transition-colors ${
-                showHiddenFolders
-                  ? 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400'
-                  : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300'
-              }`}
-              title={showHiddenFolders ? 'Hide hidden folders' : 'Show hidden folders'}
+              aria-label={showHiddenFolders ? 'Hide hidden folders' : 'Show hidden folders'}
+              aria-pressed={showHiddenFolders}
             >
-              {showHiddenFolders ? <Eye className="h-5 w-5" /> : <EyeOff className="h-5 w-5" />}
-            </button>
-            <button
-              onClick={() => setShowNewFolderInput((previous) => !previous)}
-              className={`rounded-md p-2 transition-colors ${
-                showNewFolderInput
-                  ? 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400'
-                  : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300'
-              }`}
-              title="Create new folder"
+              {showHiddenFolders ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
+            </Button>
+            {allowCreateFolder && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="min-h-11 min-w-11"
+                onClick={() => setShowNewFolderInput((previous) => !previous)}
+                aria-label="Create destination folder"
+                aria-expanded={showNewFolderInput}
+              >
+                <Plus aria-hidden="true" />
+              </Button>
+            )}
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="min-h-11 min-w-11"
+              onClick={onClose}
+              aria-label="Close folder browser"
             >
-              <Plus className="h-5 w-5" />
-            </button>
-            <button
-              onClick={handleClose}
-              className="rounded-md p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
-            >
-              <X className="h-5 w-5" />
-            </button>
+              <X aria-hidden="true" />
+            </Button>
           </div>
         </div>
 
         {showNewFolderInput && (
-          <div className="border-b border-gray-200 bg-blue-50 px-4 py-3 dark:border-gray-700 dark:bg-blue-900/20">
-            <div className="flex items-center gap-2">
-              <Input
-                type="text"
-                value={newFolderName}
-                onChange={(event) => setNewFolderName(event.target.value)}
-                placeholder="New folder name"
-                className="flex-1"
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    handleCreateFolder();
-                  }
-                  if (event.key === 'Escape') {
-                    resetNewFolderState();
-                  }
-                }}
-                autoFocus
-              />
-              <Button
-                size="sm"
-                onClick={handleCreateFolder}
-                disabled={!newFolderName.trim() || creatingFolder}
-              >
-                {creatingFolder ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Create'}
-              </Button>
-              <Button size="sm" variant="ghost" onClick={resetNewFolderState}>
-                Cancel
-              </Button>
-            </div>
+          <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/50 p-3">
+            <Input
+              value={newFolderName}
+              onChange={(event) => setNewFolderName(event.target.value)}
+              placeholder="New folder name"
+              aria-label="New folder name"
+              className="h-11 min-w-48 flex-1"
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void handleCreateFolder();
+                if (event.key === 'Escape') resetNewFolder();
+              }}
+              autoFocus
+            />
+            <Button type="button" variant="outline" className="min-h-11" onClick={() => void handleCreateFolder()} disabled={!newFolderName.trim() || creatingFolder}>
+              {creatingFolder && <Loader2 className="animate-spin" aria-hidden="true" />}
+              Create
+            </Button>
+            <Button type="button" variant="outline" className="min-h-11" onClick={resetNewFolder}>Cancel</Button>
           </div>
         )}
 
         {error && (
-          <div className="px-4 pt-3">
-            <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+          <div className="flex items-center justify-between gap-3 border-b border-destructive/30 bg-destructive/10 px-4 py-3" role="alert">
+            <p className="text-sm text-destructive">{error}</p>
+            <Button type="button" variant="outline" size="sm" className="min-h-11" onClick={() => void loadFolders(currentPath)}>
+              Retry
+            </Button>
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="min-h-56 flex-1 overflow-y-auto p-3">
           {loadingFolders ? (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+            <div className="flex min-h-44 items-center justify-center gap-2" role="status">
+              <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
+              <span className="text-sm text-muted-foreground">Loading folders…</span>
             </div>
           ) : (
             <div className="space-y-1">
               {parentPath && (
-                <button
-                  onClick={() => loadFolders(parentPath)}
-                  className="flex w-full items-center gap-3 rounded-lg px-4 py-3 text-left hover:bg-gray-100 dark:hover:bg-gray-700"
-                >
-                  <FolderOpen className="h-5 w-5 text-gray-400" />
-                  <span className="font-medium text-gray-700 dark:text-gray-300">..</span>
-                </button>
+                <Button type="button" variant="ghost" className="h-11 w-full justify-start" onClick={() => void loadFolders(parentPath)}>
+                  <FolderOpen aria-hidden="true" />
+                  Parent folder
+                </Button>
               )}
-
-              {visibleFolders.length === 0 ? (
-                <div className="py-8 text-center text-gray-500 dark:text-gray-400">
-                  No subfolders found
+              {visibleFolders.length === 0 && !error ? (
+                <p className="py-8 text-center text-sm text-muted-foreground">No subfolders found.</p>
+              ) : visibleFolders.map((folder) => (
+                <div key={folder.path} className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="h-11 min-w-0 flex-1 justify-start"
+                    onClick={() => void loadFolders(folder.path)}
+                    title={`Open ${folder.path}`}
+                  >
+                    <FolderOpen className="shrink-0 text-primary" aria-hidden="true" />
+                    <span className="truncate">{folder.name}</span>
+                  </Button>
+                  <Button type="button" variant="outline" className="h-11" onClick={() => onFolderSelected(folder.path)}>
+                    Select
+                  </Button>
                 </div>
-              ) : (
-                visibleFolders.map((folder) => (
-                  <div key={folder.path} className="flex items-center gap-2">
-                    <button
-                      onClick={() => loadFolders(folder.path)}
-                      className="flex flex-1 items-center gap-3 rounded-lg px-4 py-3 text-left hover:bg-gray-100 dark:hover:bg-gray-700"
-                    >
-                      <FolderPlus className="h-5 w-5 text-blue-500" />
-                      <span className="font-medium text-gray-900 dark:text-white">
-                        {folder.name}
-                      </span>
-                    </button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => onFolderSelected(folder.path, autoAdvanceOnSelect)}
-                      className="px-3 text-xs"
-                    >
-                      Select
-                    </Button>
-                  </div>
-                ))
-              )}
+              ))}
             </div>
           )}
         </div>
 
-        <div className="border-t border-gray-200 dark:border-gray-700">
-          <div className="flex items-center gap-2 bg-gray-50 px-4 py-3 dark:bg-gray-900/50">
-            <span className="text-sm text-gray-600 dark:text-gray-400">Path:</span>
-            <code className="flex-1 truncate font-mono text-sm text-gray-900 dark:text-white">
-              {currentPath}
-            </code>
+        <div className="border-t border-border">
+          <div className="flex min-w-0 items-center gap-2 bg-muted/50 px-4 py-3 text-sm">
+            <span className="shrink-0 text-muted-foreground">Current folder:</span>
+            <code className="truncate">{currentPath}</code>
           </div>
           <div className="flex items-center justify-end gap-2 p-4">
-            <Button variant="outline" onClick={handleClose}>
-              Cancel
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => onFolderSelected(currentPath, autoAdvanceOnSelect)}
-            >
-              Use this folder
-            </Button>
+            <Button type="button" variant="outline" className="min-h-11" onClick={onClose}>Cancel</Button>
+            <Button type="button" className="min-h-11" onClick={() => onFolderSelected(currentPath)}>Use this folder</Button>
           </div>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

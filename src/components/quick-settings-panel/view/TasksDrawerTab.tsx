@@ -19,7 +19,6 @@ import {
   type TaskWorkflowCallbacks,
 } from '../../task-master/workflow';
 import TaskDetailModal from '../../task-master/view/TaskDetailModal';
-import CreateTaskModal from '../../task-master/view/modals/CreateTaskModal';
 
 type TaskFilter = 'all' | 'ready' | 'running' | 'completed';
 type TaskGroup = Exclude<TaskFilter, 'all'>;
@@ -44,24 +43,34 @@ function getImplementationSessionId(task: TaskMasterTask): string | null {
     : null;
 }
 
+type TasksDrawerTabProps = TaskWorkflowCallbacks & {
+  onCreateTask: () => void;
+};
+
 export default function TasksDrawerTab({
   sendMessage,
   onSessionEstablished,
   onNavigateToSession,
   onSessionProcessing,
-}: TaskWorkflowCallbacks) {
+  onCreateTask,
+}: TasksDrawerTabProps) {
   const {
     currentProject,
+    projectTaskMaster,
     tasks,
     isLoadingTasks,
     error,
     refreshTasks,
   } = useTaskMaster();
   const [filter, setFilter] = useState<TaskFilter>('all');
-  const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedTask, setSelectedTask] = useState<TaskMasterTask | null>(null);
   const [launchingTaskId, setLaunchingTaskId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const isConfigured = Boolean(
+    projectTaskMaster?.hasTaskmaster
+      || currentProject?.taskmaster?.hasTaskmaster
+      || currentProject?.taskMasterConfigured,
+  );
 
   const taskCounts = useMemo(() => {
     const counts: Record<TaskGroup, number> = {
@@ -119,15 +128,17 @@ export default function TasksDrawerTab({
           >
             <RefreshCw className={cn('h-4 w-4', isLoadingTasks && 'animate-spin')} />
           </button>
-          <button
-            type="button"
-            onClick={() => setShowCreateModal(true)}
-            disabled={!currentProject}
-            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-blue-600 px-2.5 text-xs font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-40"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            Task
-          </button>
+          {tasks.length > 0 && (
+            <button
+              type="button"
+              onClick={onCreateTask}
+              disabled={!currentProject}
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-40"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Create task
+            </button>
+          )}
         </div>
       </div>
 
@@ -168,7 +179,7 @@ export default function TasksDrawerTab({
             Loading tasks…
           </div>
         ) : visibleTasks.length === 0 ? (
-          <TaskEmptyState hasTasks={tasks.length > 0} onCreate={() => setShowCreateModal(true)} />
+          <TaskEmptyState hasTasks={tasks.length > 0} isConfigured={isConfigured} onCreate={onCreateTask} />
         ) : (
           <div className="space-y-2">
             {visibleTasks.map((task) => (
@@ -184,17 +195,6 @@ export default function TasksDrawerTab({
           </div>
         )}
       </div>
-
-      <CreateTaskModal
-        isOpen={showCreateModal}
-        project={currentProject}
-        sendMessage={sendMessage}
-        onSessionEstablished={onSessionEstablished}
-        onNavigateToSession={onNavigateToSession}
-        onSessionProcessing={onSessionProcessing}
-        onTaskCreated={refreshTasks}
-        onClose={() => setShowCreateModal(false)}
-      />
 
       <TaskDetailModal
         task={selectedTask}
@@ -277,19 +277,29 @@ function TaskRow({ task, isLaunching, onOpen, onRun, onOpenSession }: TaskRowPro
   );
 }
 
-function TaskEmptyState({ hasTasks, onCreate }: { hasTasks: boolean; onCreate: () => void }) {
+function TaskEmptyState({
+  hasTasks,
+  isConfigured,
+  onCreate,
+}: {
+  hasTasks: boolean;
+  isConfigured: boolean;
+  onCreate: () => void;
+}) {
   return (
     <div className="flex flex-col items-center justify-center px-5 py-12 text-center">
       <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-full border border-dashed border-gray-300 text-gray-400 dark:border-gray-700 dark:text-gray-500">
         <ListChecks className="h-5 w-5" />
       </div>
       <p className="text-sm font-medium text-gray-900 dark:text-white">
-        {hasTasks ? 'No tasks in this view' : 'No tasks yet'}
+        {hasTasks ? 'No tasks in this view' : isConfigured ? 'No tasks yet' : 'Tasks are not set up'}
       </p>
       {!hasTasks && (
         <>
           <p className="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">
-            Capture an idea, clarify it, and run it when you are ready.
+            {isConfigured
+              ? 'Capture an idea, clarify it, and run it when you are ready.'
+              : 'Set up TaskMaster for this project before creating tasks.'}
           </p>
           <button
             type="button"
@@ -297,7 +307,7 @@ function TaskEmptyState({ hasTasks, onCreate }: { hasTasks: boolean; onCreate: (
             className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
           >
             <Plus className="h-3.5 w-3.5" />
-            Create task
+            {isConfigured ? 'Create task' : 'Set up Tasks'}
           </button>
         </>
       )}

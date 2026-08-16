@@ -20,13 +20,15 @@ test('git init does not run when repository validation fails for an execution er
     })));
     return child;
   }) as Parameters<typeof createGitRouter>[0]['spawnProcess'];
-  const unexpectedProvider = async (): Promise<never> => { throw new Error('unexpected provider call'); };
   const router = createGitRouter({
     fileSystem: { access: async () => undefined } as unknown as Parameters<typeof createGitRouter>[0]['fileSystem'],
     spawnProcess,
     resolveProjectPathById: () => '/workspace/repo',
-    queryClaude: unexpectedProvider,
-    queryCursor: unexpectedProvider,
+    commitMessageService: {
+      generate: async () => { throw new Error('unexpected generation'); },
+      inspectSnapshot: async () => { throw new Error('unexpected snapshot'); },
+      validateCommitSnapshot: async () => { throw new Error('unexpected commit validation'); },
+    } as unknown as Parameters<typeof createGitRouter>[0]['commitMessageService'],
   });
   const app = express();
   app.use(express.json());
@@ -41,9 +43,11 @@ test('git init does not run when repository validation fails for an execution er
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ project: 'project-1' }),
     });
-    const body = await response.json() as { success: boolean; error: string };
+    const body = await response.json() as { success: boolean; error: string; code: string; action: string };
     assert.equal(body.success, false);
-    assert.match(body.error, /permission denied/);
+    assert.equal(body.code, 'PERMISSION_DENIED');
+    assert.equal(body.error, 'Git cannot write to this project');
+    assert.equal(body.action, 'RETRY');
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }

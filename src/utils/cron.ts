@@ -1,8 +1,7 @@
 /**
  * Client-side cron helpers. Mirrors the field grammar and parse semantics of
  * `server/utils/cron.js`. Only `validateCron` and `describeCron` are exposed
- * for live form preview — `nextRunAt` is server-only (it uses timezone-aware
- * Date arithmetic that we don't want to duplicate on the client).
+ * for live form validation and the next-three-runs preview.
  */
 
 type CronFieldSet = Set<number>;
@@ -127,4 +126,89 @@ export function describeCron(expr: string, timeZone: string): string {
   if (everyMinute && singleHour) return `Every minute of hour ${pad(hourArr[0])} (${timeZone})`;
   if (singleHour && singleMinute) return `Every day at ${pad(hourArr[0])}:${pad(minuteArr[0])} (${timeZone})`;
   return `Custom schedule: ${expr} (${timeZone})`;
+}
+
+type ZonedParts = {
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  weekday: number;
+};
+
+const WEEKDAY_NUMBER: Record<string, number> = {
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+};
+
+function zonedParts(date: Date, formatter: Intl.DateTimeFormat): ZonedParts {
+  const values = Object.fromEntries(
+    formatter.formatToParts(date).map((part) => [part.type, part.value]),
+  );
+  const parsedHour = Number.parseInt(values.hour ?? '', 10);
+  return {
+    month: Number.parseInt(values.month ?? '', 10),
+    day: Number.parseInt(values.day ?? '', 10),
+    hour: parsedHour === 24 ? 0 : parsedHour,
+    minute: Number.parseInt(values.minute ?? '', 10),
+    weekday: WEEKDAY_NUMBER[values.weekday ?? ''] ?? date.getUTCDay(),
+  };
+}
+
+/**
+ * Returns the next matching UTC instants while evaluating cron fields in the
+ * selected IANA timezone. Probing real instants makes DST gaps skip cleanly
+ * and repeated wall-clock minutes remain distinct, monotonic executions.
+ */
+export function nextCronRuns(
+  expr: string,
+  timeZone: string,
+  from: Date = new Date(),
+  count = 3,
+): Date[] {
+  const validation = validateCron(expr);
+  if (!validation.ok) throw new Error(validation.error);
+  if (!Number.isInteger(count) || count < 1 || count > 20) {
+    throw new Error('Preview count must be between 1 and 20.');
+  }
+
+  // Constructing once validates the timezone and avoids rebuilding Intl state
+  // for every probed minute.
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour12: false,
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    weekday: 'short',
+  });
+  const { minute, hour, dayOfMonth, month, dayOfWeek } = validation.fields;
+  const firstMinute = from.getTime() + 60_000 - (from.getTime() % 60_000);
+  const results: Date[] = [];
+  const maxIterations = 2 * 366 * 24 * 60;
+
+  for (let index = 0; index < maxIterations && results.length < count; index += 1) {
+    const probe = new Date(firstMinute + index * 60_000);
+    const parts = zonedParts(probe, formatter);
+    if (!month.has(parts.month)) continue;
+
+    const dayOfMonthRestricted = dayOfMonth.size !== 31;
+    const dayOfWeekRestricted = dayOfWeek.size !== 7;
+    const dayMatches = dayOfMonthRestricted && dayOfWeekRestricted
+      ? dayOfMonth.has(parts.day) && dayOfWeek.has(parts.weekday)
+      : dayOfMonth.has(parts.day) || dayOfWeek.has(parts.weekday);
+    if (!dayMatches || !hour.has(parts.hour) || !minute.has(parts.minute)) continue;
+    results.push(probe);
+  }
+
+  if (results.length !== count) {
+    throw new Error(`Could not find ${count} future runs for this schedule.`);
+  }
+  return results;
 }

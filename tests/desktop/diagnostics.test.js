@@ -11,11 +11,27 @@ test('desktop diagnostics redact credentials and sensitive URL parameters', () =
     token: 'top-secret',
     message: 'Authorization: Bearer abc.def.ghi',
     url: 'http://localhost:3001/callback?code=secret-code&view=chat',
+    email: 'person@example.com',
+    projectName: 'private-project',
+    appPath: '/Users/person/work/private-project',
   });
 
   assert.equal(redacted.token, '[REDACTED]');
-  assert.doesNotMatch(JSON.stringify(redacted), /top-secret|secret-code|abc\.def\.ghi/);
-  assert.match(redacted.url, /view=chat/);
+  assert.doesNotMatch(JSON.stringify(redacted), /top-secret|secret-code|abc\.def\.ghi|person@example\.com|private-project|\/Users\/person/);
+  assert.equal(redacted.url, '[REDACTED_LOCAL_URL]');
+});
+
+test('desktop diagnostics redact embedded local URLs and platform paths in startup lines', () => {
+  const redacted = [
+    'cwd: /opt/cloudcli/server',
+    '$ /Applications/CloudCLI.app/Contents/MacOS/CloudCLI /private/tmp/server.js',
+    'Using existing at http://localhost:3001/workspace?project=private',
+    'runtime C:\\Program Files\\CloudCLI\\server.exe',
+  ].map((line) => redactDiagnosticValue(line)).join('\n');
+
+  assert.doesNotMatch(redacted, /\/opt\/cloudcli|\/Applications\/CloudCLI|\/private\/tmp|localhost:3001|Program Files/i);
+  assert.match(redacted, /\[REDACTED_PATH\]/);
+  assert.match(redacted, /\[REDACTED_LOCAL_URL\]/);
 });
 
 test('desktop diagnostics rotate within a fixed file bound and return a sanitized tail', async (t) => {

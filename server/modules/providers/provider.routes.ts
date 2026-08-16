@@ -8,6 +8,7 @@ import { providerModelsService } from '@/modules/providers/services/provider-mod
 import { providerSelectionService } from '@/modules/providers/services/provider-selection.service.js';
 import { providerTokenUsageService } from '@/modules/providers/services/provider-token-usage.service.js';
 import { providerSkillsService } from '@/modules/providers/services/skills.service.js';
+import { createProviderSelectionCatalogRouter } from '@/modules/providers/provider-selection.routes.js';
 import { sessionConversationsSearchService } from '@/modules/providers/services/session-conversations-search.service.js';
 import { sessionExportService } from '@/modules/providers/services/session-export.service.js';
 import {
@@ -637,14 +638,7 @@ const parseSessionModelPayload = (payload: unknown): string => {
   return model;
 };
 
-router.get(
-  '/selection-catalog',
-  asyncHandler(async (req: Request, res: Response) => {
-    const userId = readAuthenticatedUserId(req);
-    const catalog = await providerSelectionService.getPublicSelectionCatalog(userId);
-    res.json(createApiSuccessResponse(catalog));
-  }),
-);
+router.use(createProviderSelectionCatalogRouter());
 
 router.get(
   '/:provider/auth/status',
@@ -1114,8 +1108,8 @@ router.post(
 
 router.patch(
   '/sessions/:sessionId/messages/:messageId',
-  asyncHandler(async (req: Request, res: Response) => {
-    const sessionId = parseSessionId(req.params.sessionId);
+  asyncHandler(async (req: Request) => {
+    parseSessionId(req.params.sessionId);
     const messageId = typeof req.params.messageId === 'string' ? req.params.messageId.trim() : '';
     if (!messageId) {
       throw new AppError('messageId is required.', {
@@ -1123,21 +1117,16 @@ router.patch(
         statusCode: 400,
       });
     }
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    const content = typeof body.content === 'string' ? body.content : '';
-    if (!content.trim()) {
-      throw new AppError('content is required.', {
-        code: 'INVALID_REQUEST_BODY',
-        statusCode: 400,
-      });
-    }
-    const images = Array.isArray(body.images) ? (body.images as unknown[]) : [];
-    const result = await sessionRewindService.rewind(sessionId, {
-      messageId,
-      mode: 'conversation',
-      providerProfile: resolveSessionProviderProfile(req, sessionId),
-    });
-    res.json(createApiSuccessResponse(result));
+    // PATCH + a later WebSocket send cannot be atomic because both supported
+    // providers allocate a fork id only after their external side effect.
+    // Reject before profile lookup, fork creation, DB mutation, or broadcast.
+    throw new AppError(
+      'Transactional edit and resubmit is unavailable. Copy the message to the composer instead.',
+      {
+        code: 'TRANSACTIONAL_EDIT_UNAVAILABLE',
+        statusCode: 409,
+      },
+    );
   }),
 );
 
@@ -1187,8 +1176,13 @@ router.get(
     const rawFormat =
       typeof req.query.format === 'string' ? req.query.format.trim().toLowerCase() : '';
     const format: 'zip' | 'md' = rawFormat === 'md' ? 'md' : 'zip';
+    const expectedTranscriptDigest = readOptionalQueryString(req.query.expectedDigest)?.trim().toLowerCase() ?? '';
 
-    const result = await sessionExportService.exportSession(sessionId, format);
+    const result = await sessionExportService.exportSession(
+      sessionId,
+      format,
+      expectedTranscriptDigest,
+    );
     res.setHeader('Content-Type', result.contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${sessionExportService.sanitizeFilename(result.filename)}"`);
     res.setHeader('Content-Length', String(result.buffer.length));

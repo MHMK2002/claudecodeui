@@ -566,12 +566,22 @@ export const sessionsService = {
     }
 
     const provider = session.provider as LLMProvider;
-    const result = await providerRegistry.resolveProvider(provider).sessions.fetchHistory(sessionId, {
-      limit: options.limit ?? null,
-      offset: options.offset ?? 0,
-      projectPath: session.project_path ?? '',
-      providerSessionId: session.provider_session_id,
-    });
+    let result: FetchHistoryResult;
+    try {
+      result = await providerRegistry.resolveProvider(provider).sessions.fetchHistory(sessionId, {
+        limit: options.limit ?? null,
+        offset: options.offset ?? 0,
+        projectPath: session.project_path ?? '',
+        providerSessionId: session.provider_session_id,
+      });
+    } catch (error) {
+      const cause = error instanceof Error ? error.message : String(error);
+      console.warn(`[SessionsService] ${provider} history is unavailable for ${sessionId}: ${cause}`);
+      throw new AppError('Conversation history could not be loaded. Try again.', {
+        code: 'PROVIDER_HISTORY_UNAVAILABLE',
+        statusCode: 502,
+      });
+    }
 
     return {
       ...result,

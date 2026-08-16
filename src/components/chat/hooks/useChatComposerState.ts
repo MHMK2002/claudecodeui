@@ -32,6 +32,8 @@ import type {
 } from '../types/types';
 import type { Project, ProjectSession, LLMProvider, ProviderModelsCacheInfo } from '../../../types/app';
 import { escapeRegExp } from '../utils/chatFormatting';
+import { isChatSubmissionBlocked } from '../../../shared/providerSelectionCatalog';
+import type { SendWebSocketMessage } from '../../../contexts/webSocketDispatch';
 
 import { useFileMentions } from './useFileMentions';
 import { type SlashCommand, useSlashCommands } from './useSlashCommands';
@@ -59,10 +61,14 @@ interface UseChatComposerStateArgs {
   selectedClaudeProfileId: number | null;
   selectedCodexProfileId: number | null;
   isLoading: boolean;
+  /** Current socket state, used to keep drafts intact while reconnecting. */
+  isSocketConnected: boolean;
+  /** Non-null while every idle send path (button, Enter, voice) must preserve the draft. */
+  sendBlockedReason?: string | null;
   processingSessions?: SessionActivityMap;
   canAbortSession: boolean;
   tokenBudget: Record<string, unknown> | null;
-  sendMessage: (message: unknown) => void;
+  sendMessage: SendWebSocketMessage;
   sendByCtrlEnter?: boolean;
   onSessionProcessing?: MarkSessionProcessing;
   /**
@@ -279,6 +285,8 @@ export function useChatComposerState({
   selectedClaudeProfileId,
   selectedCodexProfileId,
   isLoading,
+  isSocketConnected,
+  sendBlockedReason = null,
   processingSessions,
   canAbortSession,
   tokenBudget,
@@ -294,6 +302,12 @@ export function useChatComposerState({
   setIsUserScrolledUp,
   setPendingPermissionRequests,
 }: UseChatComposerStateArgs) {
+  const [transportFailure, setTransportFailure] = useState<{
+    action: 'send' | 'stop' | 'permission';
+    message: string;
+    sessionId: string | null;
+    projectId: string | null;
+  } | null>(null);
   const [input, setInput] = useState(() => {
     if (typeof window !== 'undefined' && selectedProject) {
       // Draft inputs are keyed by the DB projectId so per-project drafts
@@ -337,8 +351,29 @@ export function useChatComposerState({
 
   const sessionKeyRef = useRef(sessionKey);
   const processingSessionsRef = useRef<SessionActivityMap | undefined>(processingSessions);
+  const sendBlockedReasonRef = useRef<string | null>(sendBlockedReason);
   sessionKeyRef.current = sessionKey;
   processingSessionsRef.current = processingSessions;
+  sendBlockedReasonRef.current = sendBlockedReason;
+
+  const previousSocketConnectedRef = useRef(isSocketConnected);
+  useEffect(() => {
+    const wasConnected = previousSocketConnectedRef.current;
+    previousSocketConnectedRef.current = isSocketConnected;
+    if (!wasConnected && isSocketConnected) {
+      setTransportFailure(null);
+    }
+  }, [isSocketConnected]);
+
+  useEffect(() => {
+    setTransportFailure((current) => (
+      current
+      && current.sessionId === sessionKey
+      && current.projectId === (selectedProjectId ?? null)
+        ? current
+        : null
+    ));
+  }, [selectedProjectId, sessionKey]);
 
   const [queuedDraft, setQueuedDraft] = useState<QueuedDraft | null>(() => {
     if (typeof window === 'undefined' || !sessionKey) {
@@ -761,6 +796,12 @@ export function useChatComposerState({
       queuedSubmission?: QueuedDraft,
     ) => {
       event.preventDefault();
+      if (
+        isChatSubmissionBlocked(sendBlockedReason)
+        || transportFailure?.action === 'send'
+      ) {
+        return;
+      }
       const currentInput = queuedSubmission?.content ?? inputValueRef.current;
       const currentAttachments = queuedSubmission?.attachments ?? attachedFiles;
       const previouslyUploadedAttachments = queuedSubmission?.uploadedAttachments ?? [];
@@ -828,8 +869,7 @@ export function useChatComposerState({
             processingSessionsRef.current
             && !processingSessionsRef.current.has(queuedSessionKey)
           ) {
-            clearQueuedMessage(queuedSessionKey);
-            sendMessage({
+            const dispatched = sendMessage({
               type: 'chat.send',
               sessionId: queuedSessionKey,
               content: durableDraft.content,
@@ -838,7 +878,10 @@ export function useChatComposerState({
                 attachments: durableDraft.uploadedAttachments ?? [],
               },
             });
-            onSessionProcessing?.(queuedSessionKey, { statusText: null, canInterrupt: true });
+            if (dispatched.ok) {
+              clearQueuedMessage(queuedSessionKey);
+              onSessionProcessing?.(queuedSessionKey, { statusText: null, canInterrupt: true });
+            }
           }
           return;
         }
@@ -960,6 +1003,29 @@ export function useChatComposerState({
         timestamp: new Date(),
       };
 
+      // The browser WebSocket API accepts a frame synchronously. Do not
+      // publish an optimistic row, mark a run, or clear the editable draft
+      // until that acceptance succeeds; a reconnect race must be lossless.
+      const dispatched = sendMessage({
+        type: 'chat.send',
+        sessionId: targetSessionId,
+        content: messageContent,
+        options: {
+          ...(queuedSubmission?.options ?? buildSendOptions(messageContent)),
+          attachments: uploadedAttachments,
+        },
+      });
+      if (!dispatched.ok) {
+        setTransportFailure({
+          action: 'send',
+          sessionId: targetSessionId,
+          projectId: selectedProject.projectId,
+          message: 'The chat connection closed before Send completed. Your draft is still here.',
+        });
+        return;
+      }
+      setTransportFailure(null);
+
       addMessage(userMessage);
       // Mark this request as processing in the per-session activity map (the
       // single source of truth the indicator derives from). The id is always
@@ -971,19 +1037,6 @@ export function useChatComposerState({
 
       setIsUserScrolledUp(false);
       setTimeout(() => scrollToBottom(), 100);
-
-      // One message shape for every provider. The backend resolves the
-      // provider, project path, and provider-native resume id from the
-      // session row; `options` only carries composer-level preferences.
-      sendMessage({
-        type: 'chat.send',
-        sessionId: targetSessionId,
-        content: messageContent,
-        options: {
-          ...(queuedSubmission?.options ?? buildSendOptions(messageContent)),
-          attachments: uploadedAttachments,
-        },
-      });
 
       setInput('');
       inputValueRef.current = '';
@@ -1015,6 +1068,8 @@ export function useChatComposerState({
       selectedCodexProfileId,
       resetCommandMenuState,
       scrollToBottom,
+      sendBlockedReason,
+      transportFailure?.action,
       selectedProject,
       sendMessage,
       sessionKey,
@@ -1183,17 +1238,21 @@ export function useChatComposerState({
         });
       }
       if (target) {
-        if (send) {
+        if (send && !isChatSubmissionBlocked(sendBlockedReasonRef.current)) {
           // Same session-addressed dispatch the app-level auto-send uses; the backend
           // resolves provider/path from the session row. No optimistic addMessage —
           // the user message surfaces when they reopen the origin session.
-          sendMessage({
+          const dispatched = sendMessage({
             type: 'chat.send',
             sessionId: target,
             content: trimmed,
             options: { ...(voiceOrigin.options ?? {}), images: [] },
           });
-          onSessionProcessing?.(target, { statusText: null, canInterrupt: true });
+          if (dispatched.ok) {
+            onSessionProcessing?.(target, { statusText: null, canInterrupt: true });
+          } else {
+            writeQueuedMessage(target, { content: trimmed, options: voiceOrigin.options });
+          }
         } else {
           // A fill-only transcript is persisted as that origin's draft, including
           // when the origin did not have a backend session id at commit time.
@@ -1565,11 +1624,21 @@ export function useChatComposerState({
 
     // The backend resolves the provider from the session row, so no provider
     // field is needed here.
-    sendMessage({
+    const dispatched = sendMessage({
       type: 'chat.abort',
       sessionId: targetSessionId,
     });
-  }, [canAbortSession, currentSessionId, selectedSession?.id, sendMessage]);
+    if (!dispatched.ok) {
+      setTransportFailure({
+        action: 'stop',
+        sessionId: targetSessionId,
+        projectId: selectedProjectId ?? null,
+        message: 'The chat connection closed before Stop was delivered. Reconnect and try again.',
+      });
+      return;
+    }
+    setTransportFailure(null);
+  }, [canAbortSession, currentSessionId, selectedProjectId, selectedSession?.id, sendMessage]);
 
   const handleGrantToolPermission = useCallback(
     (suggestion: { entry: string; toolName: string }) => {
@@ -1592,8 +1661,9 @@ export function useChatComposerState({
         return;
       }
 
+      const deliveredIds: string[] = [];
       validIds.forEach((requestId) => {
-        sendMessage({
+        const dispatched = sendMessage({
           type: 'chat.permission-response',
           requestId,
           allow: Boolean(decision?.allow),
@@ -1601,13 +1671,25 @@ export function useChatComposerState({
           message: decision?.message,
           rememberEntry: decision?.rememberEntry,
         });
+        if (dispatched.ok) deliveredIds.push(requestId);
       });
 
+      if (deliveredIds.length !== validIds.length) {
+        setTransportFailure({
+          action: 'permission',
+          sessionId: sessionKey,
+          projectId: selectedProjectId ?? null,
+          message: 'The connection closed before your response was delivered. Your pending question is still available.',
+        });
+      } else {
+        setTransportFailure(null);
+      }
+
       setPendingPermissionRequests((previous) =>
-        previous.filter((request) => !validIds.includes(request.requestId)),
+        previous.filter((request) => !deliveredIds.includes(request.requestId)),
       );
     },
-    [sendMessage, setPendingPermissionRequests],
+    [sendMessage, sessionKey, setPendingPermissionRequests],
   );
 
   const [isInputFocused, setIsInputFocused] = useState(false);
@@ -1666,6 +1748,8 @@ export function useChatComposerState({
     setInputText,
     restoreDraft,
     handleAbortSession,
+    transportFailure,
+    clearTransportFailure: () => setTransportFailure(null),
     handlePermissionDecision,
     handleGrantToolPermission,
     handleInputFocusChange,

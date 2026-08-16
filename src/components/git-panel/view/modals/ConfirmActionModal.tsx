@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { Check, Download, RotateCcw, Trash2, Upload } from 'lucide-react';
+
 import {
   CONFIRMATION_ACTION_LABELS,
   CONFIRMATION_BUTTON_CLASSES,
@@ -27,7 +28,7 @@ function renderConfirmActionIcon(actionType: ConfirmationRequest['type']) {
     return <Download className="h-4 w-4" />;
   }
 
-  if (actionType === 'revertLocalCommit') {
+  if (actionType === 'revertLocalCommit' || actionType === 'abortGitOperation') {
     return <RotateCcw className="h-4 w-4" />;
   }
 

@@ -21,32 +21,52 @@
   "homepage": "https://cloudcli.ai",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/siteboon/claudecodeui.git"
-  },
-  "bugs": {
-    "url": "https://github.com/siteboon/claudecodeui/issues"
+    "url": "https://github.com/MHMK2002/claudecodeui"
   },
   "scripts": {
+    "predev": "node scripts/generate-build-identity.mjs --force",
     "dev": "concurrently --kill-others \"npm run server:dev\" \"npm run client\"",
     "server": "node dist-server/server/index.js",
+    "preserver:dev": "node scripts/generate-build-identity.mjs",
     "server:dev": "tsx --tsconfig server/tsconfig.json server/index.ts",
+    "preserver:dev-watch": "node scripts/generate-build-identity.mjs",
     "server:dev-watch": "tsx watch --tsconfig server/tsconfig.json server/index.ts",
+    "preclient": "node scripts/generate-build-identity.mjs",
     "client": "vite",
+    "predesktop": "node scripts/generate-build-identity.mjs",
     "desktop": "electron electron/main.js",
+    "predesktop:dev": "node scripts/generate-build-identity.mjs",
     "desktop:dev": "cross-env ELECTRON_DEV_URL=http://127.0.0.1:5173 electron electron/main.js",
+    "predesktop:stage": "npm run validate:product-config && npm run validate:build-identity",
     "desktop:stage": "node scripts/release/prepare-desktop-app.js",
-    "desktop:pack": "npm run build && npm run desktop:stage && electron-builder --projectDir .desktop-build/desktop-app --dir",
-    "desktop:dist:mac": "npm run build && npm run desktop:stage && electron-builder --projectDir .desktop-build/desktop-app --mac dmg",
-    "desktop:dist:win": "npm run build && npm run desktop:stage && electron-builder --projectDir .desktop-build/desktop-app --win nsis",
+    "desktop:pack": "npm run build && npm run desktop:stage && electron-builder --projectDir .desktop-build/desktop-app --dir && node --test tests/desktop/server-health-identity.test.js",
+    "desktop:dist:mac": "npm run build && npm run desktop:stage && electron-builder --projectDir .desktop-build/desktop-app --mac",
+    "desktop:dist:win": "npm run build && npm run desktop:stage && electron-builder --projectDir .desktop-build/desktop-app --win",
+    "desktop:dist:linux": "npm run build && npm run desktop:stage && electron-builder --projectDir .desktop-build/desktop-app --linux",
     "server:bundle": "npm run build && node scripts/release/build-server-bundle.js",
     "desktop:icon:mac": "node electron/scripts/generate-macos-icon.js",
     "build": "npm run build:client && npm run build:server",
+    "prebuild:client": "npm run validate:product-config && node scripts/generate-build-identity.mjs --force",
     "build:client": "vite build",
-    "prebuild:server": "node -e \"require('node:fs').rmSync('dist-server', { recursive: true, force: true })\"",
-    "build:server": "tsc -p server/tsconfig.json && tsc-alias -p server/tsconfig.json",
+    "prebuild:server": "npm run validate:product-config && npm run validate:build-identity && node -e \"require('node:fs').rmSync('dist-server', { recursive: true, force: true })\"",
+    "build:server": "tsc -p server/tsconfig.json && tsc-alias -p server/tsconfig.json && node scripts/copy-server-runtime-assets.mjs && node scripts/embed-server-build-identity.mjs",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p server/tsconfig.json",
-    "test": "tsx --tsconfig server/tsconfig.json --test \"server/**/*.test.ts\" \"server/**/*.test.js\"",
+    "validate:product-config": "node scripts/validate-product-config.mjs",
+    "validate:build-identity": "node scripts/validate-build-identity.mjs",
+    "ux:audit": "node scripts/ux-audit.mjs",
+    "test": "npm run test:server",
+    "test:server": "tsx --tsconfig server/tsconfig.json --test \"server/**/*.test.ts\" \"server/**/*.test.js\"",
+    "test:frontend": "tsx --tsconfig tsconfig.json --test \"src/**/*.test.ts\" \"src/**/*.test.tsx\" \"src/**/*.test.js\" \"src/**/*.test.jsx\"",
+    "pretest:desktop": "npm run build",
+    "test:desktop": "node --test tests/desktop/*.test.js tests/product-config.test.js",
+    "test:e2e": "playwright test",
+    "test:contrast": "node scripts/contrast-check.mjs",
+    "test:a11y": "node scripts/contrast-check.mjs && playwright test tests/e2e/accessibility.spec.ts",
+    "prestorybook": "node scripts/generate-build-identity.mjs",
+    "storybook": "storybook dev -p 6006 --no-open",
+    "prebuild-storybook": "npm run validate:product-config && node scripts/generate-build-identity.mjs --force",
+    "build-storybook": "storybook build",
     "lint": "eslint src/ server/",
     "lint:fix": "eslint src/ server/ --fix",
     "start": "npm run build && npm run server",
@@ -90,7 +110,8 @@
       "icon": "electron/assets/logo-macos.icns",
       "notarize": true,
       "target": [
-        "dmg"
+        "dmg",
+        "zip"
       ],
       "extendInfo": {
         "CFBundleName": "CloudCLI",
@@ -109,6 +130,13 @@
       "icon": "electron/assets/logo-windows.ico",
       "target": [
         "nsis"
+      ]
+    },
+    "linux": {
+      "category": "Development",
+      "icon": "public/logo-512.png",
+      "target": [
+        "AppImage"
       ]
     },
     "nsis": {
@@ -165,6 +193,7 @@
     "cors": "^2.8.5",
     "cross-spawn": "^7.0.3",
     "dompurify": "^3.4.7",
+    "electron-updater": "6.8.9",
     "express": "^4.18.2",
     "fuse.js": "^7.0.0",
     "gray-matter": "^4.0.3",
@@ -197,10 +226,14 @@
     "ws": "^8.14.2"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@commitlint/cli": "^20.5.0",
     "@commitlint/config-conventional": "^20.5.0",
     "@eslint/js": "^9.39.3",
+    "@playwright/test": "^1.62.1",
     "@release-it/conventional-changelog": "^10.0.5",
+    "@storybook/addon-a11y": "^10.5.8",
+    "@storybook/react-vite": "^10.5.8",
     "@types/better-sqlite3": "^7.6.13",
     "@types/cors": "^2.8.19",
     "@types/cross-spawn": "^6.0.6",
@@ -234,6 +267,7 @@
     "postcss": "^8.4.32",
     "release-it": "^19.0.5",
     "sharp": "^0.34.2",
+    "storybook": "^10.5.8",
     "tailwindcss": "^3.4.0",
     "tsc-alias": "^1.8.16",
     "tsx": "^4.21.0",

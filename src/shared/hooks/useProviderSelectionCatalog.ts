@@ -4,6 +4,7 @@ import {
   AUTH_SESSION_EXPIRED_EVENT,
   authenticatedFetch,
 } from '../../utils/api';
+import { decodeProviderSelectionCatalogResponse } from '../providerSelectionCatalog';
 import type {
   LLMProvider,
   ProviderModelsDefinition,
@@ -13,11 +14,6 @@ import type {
   ResolvedProviderSelection,
 } from '../../types/app';
 
-type SelectionCatalogApiResponse = {
-  success?: boolean;
-  data?: ProviderSelectionCatalog;
-};
-
 const CATALOG_TTL_MS = 15_000;
 let cachedCatalog: { value: ProviderSelectionCatalog; expiresAt: number } | null = null;
 let catalogGeneration = 0;
@@ -25,7 +21,13 @@ let inFlightCatalog: { generation: number; promise: Promise<ProviderSelectionCat
 const invalidationListeners = new Set<() => void>();
 let authListenerSubscribers = 0;
 
-async function requestProviderSelectionCatalog(force = false): Promise<ProviderSelectionCatalog> {
+/**
+ * Lazily loads the shared catalog through the same cache/invalidation path as
+ * mounted pickers. Git calls this only after an explicit Generate action.
+ */
+export async function loadProviderSelectionCatalog(
+  force = false,
+): Promise<ProviderSelectionCatalog> {
   if (!force && cachedCatalog && cachedCatalog.expiresAt > Date.now()) {
     return cachedCatalog.value;
   }
@@ -36,11 +38,7 @@ async function requestProviderSelectionCatalog(force = false): Promise<ProviderS
   const requestGeneration = catalogGeneration;
   const promise = (async () => {
     const response = await authenticatedFetch('/api/providers/selection-catalog');
-    const body = (await response.json()) as SelectionCatalogApiResponse;
-    if (!response.ok || !body.success || !Array.isArray(body.data?.providers)) {
-      throw new Error('Failed to load the provider selection catalog.');
-    }
-    const value = { providers: body.data.providers };
+    const value = await decodeProviderSelectionCatalogResponse(response);
     if (requestGeneration === catalogGeneration) {
       cachedCatalog = { value, expiresAt: Date.now() + CATALOG_TTL_MS };
     }
@@ -106,8 +104,9 @@ export function useProviderSelectionCatalog(): ProviderSelectionCatalogState {
     let cancelled = false;
 
     const load = async () => {
+      setLoading(true);
       try {
-        const value = await requestProviderSelectionCatalog(reloadToken > 0);
+        const value = await loadProviderSelectionCatalog(reloadToken > 0);
         if (cancelled) {
           return;
         }

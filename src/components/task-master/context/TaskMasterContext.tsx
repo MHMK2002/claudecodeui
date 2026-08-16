@@ -13,6 +13,7 @@ import type {
   TaskMasterTask,
   TaskMasterWebSocketMessage,
 } from '../types';
+import { ownsTaskRequest } from './taskRequestOwnership';
 
 const TaskMasterContext = createContext<TaskMasterContextValue | null>(null);
 
@@ -59,7 +60,7 @@ export function useTaskMaster() {
 
 export function TaskMasterProvider({ children }: { children: React.ReactNode }) {
   const { latestMessage } = useWebSocket();
-  const { user, token, isLoading: isAuthLoading } = useAuth();
+  const { user, isLoading: isAuthLoading } = useAuth();
 
   const [projects, setProjects] = useState<TaskMasterProject[]>([]);
   const [currentProject, setCurrentProjectState] = useState<TaskMasterProject | null>(null);
@@ -79,9 +80,15 @@ export function TaskMasterProvider({ children }: { children: React.ReactNode }) 
   const currentProjectIdRef = useRef<string | null>(null);
   const projectTaskMasterRef = useRef<TaskMasterProjectInfo | null>(null);
   const taskMasterRequestSeqRef = useRef(0);
+  const tasksRequestSeqRef = useRef(0);
 
   useEffect(() => {
-    currentProjectIdRef.current = currentProject?.projectId ?? null;
+    const nextProjectId = currentProject?.projectId ?? null;
+    if (currentProjectIdRef.current !== nextProjectId) {
+      currentProjectIdRef.current = nextProjectId;
+      tasksRequestSeqRef.current += 1;
+      setIsLoadingTasks(false);
+    }
   }, [currentProject?.projectId]);
 
   useEffect(() => {
@@ -129,7 +136,7 @@ export function TaskMasterProvider({ children }: { children: React.ReactNode }) 
 
   const refreshCurrentProjectTaskMaster = useCallback(
     async (projectId: string) => {
-      if (!projectId || !user || !token) {
+      if (!projectId || !user) {
         return;
       }
 
@@ -163,18 +170,25 @@ export function TaskMasterProvider({ children }: { children: React.ReactNode }) 
         handleError('load selected project TaskMaster info', caughtError);
       }
     },
-    [applyTaskMasterInfo, handleError, token, user],
+    [applyTaskMasterInfo, handleError, user],
   );
 
   const setCurrentProject = useCallback(
     (project: TaskMasterProjectInput) => {
       const normalizedProject = project ? enrichProject(project as TaskMasterProject) : null;
+      const nextProjectId = normalizedProject?.projectId ?? null;
+      if (currentProjectIdRef.current !== nextProjectId) {
+        currentProjectIdRef.current = nextProjectId;
+        tasksRequestSeqRef.current += 1;
+      }
       setCurrentProjectState(normalizedProject);
       setProjectTaskMaster(normalizedProject?.taskmaster ?? null);
 
       // Project-scoped task data is reset immediately to avoid stale task rendering.
       setTasks([]);
       setNextTask(null);
+      setIsLoadingTasks(false);
+      setError(null);
 
       // `projectId` is the DB primary key used for every TaskMaster API call.
       if (!normalizedProject?.projectId) {
@@ -188,7 +202,9 @@ export function TaskMasterProvider({ children }: { children: React.ReactNode }) 
   );
 
   const refreshProjects = useCallback(async () => {
-    if (!user || !token) {
+    if (!user) {
+      currentProjectIdRef.current = null;
+      tasksRequestSeqRef.current += 1;
       setProjects([]);
       setCurrentProjectState(null);
       setProjectTaskMaster(null);
@@ -240,6 +256,8 @@ export function TaskMasterProvider({ children }: { children: React.ReactNode }) 
 
       if (!matchingProject) {
         taskMasterRequestSeqRef.current += 1;
+        currentProjectIdRef.current = null;
+        tasksRequestSeqRef.current += 1;
         setCurrentProjectState(null);
         setProjectTaskMaster(null);
         setTasks([]);
@@ -264,17 +282,24 @@ export function TaskMasterProvider({ children }: { children: React.ReactNode }) 
     } finally {
       setIsLoading(false);
     }
-  }, [clearError, handleError, refreshCurrentProjectTaskMaster, token, user]);
+  }, [clearError, handleError, refreshCurrentProjectTaskMaster, user]);
 
   const refreshTasks = useCallback(async () => {
     // TaskMaster tasks endpoint now lives under /api/taskmaster/tasks/:projectId.
     const projectId = currentProject?.projectId;
+    const requestSequence = ++tasksRequestSeqRef.current;
 
-    if (!projectId || !user || !token) {
+    if (!projectId || !user) {
       setTasks([]);
       setNextTask(null);
       return;
     }
+    const requestStillOwnsState = () => ownsTaskRequest(
+      requestSequence,
+      tasksRequestSeqRef.current,
+      projectId,
+      currentProjectIdRef.current,
+    );
 
     try {
       setIsLoadingTasks(true);
@@ -289,19 +314,21 @@ export function TaskMasterProvider({ children }: { children: React.ReactNode }) 
       const data = (await response.json()) as { tasks?: TaskMasterTask[] };
       const loadedTasks = Array.isArray(data.tasks) ? data.tasks : [];
 
+      if (!requestStillOwnsState()) return;
       setTasks(loadedTasks);
       setNextTask(getNextTask(loadedTasks));
     } catch (caughtError) {
+      if (!requestStillOwnsState()) return;
       handleError('load tasks', caughtError);
       setTasks([]);
       setNextTask(null);
     } finally {
-      setIsLoadingTasks(false);
+      if (requestStillOwnsState()) setIsLoadingTasks(false);
     }
-  }, [clearError, currentProject?.projectId, handleError, token, user]);
+  }, [clearError, currentProject?.projectId, handleError, user]);
 
   const refreshMCPStatus = useCallback(async () => {
-    if (!user || !token) {
+    if (!user) {
       setMcpServerStatus(null);
       return;
     }
@@ -323,20 +350,20 @@ export function TaskMasterProvider({ children }: { children: React.ReactNode }) 
     } finally {
       setIsLoadingMCP(false);
     }
-  }, [clearError, handleError, token, user]);
+  }, [clearError, handleError, user]);
 
   useEffect(() => {
-    if (!isAuthLoading && user && token) {
+    if (!isAuthLoading && user) {
       void refreshProjects();
       void refreshMCPStatus();
     }
-  }, [isAuthLoading, refreshMCPStatus, refreshProjects, token, user]);
+  }, [isAuthLoading, refreshMCPStatus, refreshProjects, user]);
 
   useEffect(() => {
-    if (currentProject?.projectId && user && token) {
+    if (currentProject?.projectId && user) {
       void refreshTasks();
     }
-  }, [currentProject?.projectId, refreshTasks, token, user]);
+  }, [currentProject?.projectId, refreshTasks, user]);
 
   useEffect(() => {
     const message = latestMessage as TaskMasterWebSocketMessage | null;

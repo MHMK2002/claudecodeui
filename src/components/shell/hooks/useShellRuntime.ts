@@ -3,41 +3,37 @@ import type { FitAddon } from '@xterm/addon-fit';
 import type { Terminal } from '@xterm/xterm';
 
 import type { UseShellRuntimeOptions, UseShellRuntimeResult } from '../types/types';
+import { useAuth } from '../../auth/context/AuthContext';
 
 import { useShellConnection } from './useShellConnection';
 import { useShellTerminal } from './useShellTerminal';
 
 export function useShellRuntime({
   selectedProject,
-  selectedSession,
-  initialCommand,
-  isPlainShell,
+  command,
   minimal,
   autoConnect,
   isRestarting,
   onProcessComplete,
   onOutputRef,
 }: UseShellRuntimeOptions): UseShellRuntimeResult {
+  const { runtimeMode } = useAuth();
   const terminalContainerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
   const selectedProjectRef = useRef(selectedProject);
-  const selectedSessionRef = useRef(selectedSession);
-  const initialCommandRef = useRef(initialCommand);
-  const isPlainShellRef = useRef(isPlainShell);
+  const commandRef = useRef(command);
   const onProcessCompleteRef = useRef(onProcessComplete);
-  const lastSessionIdRef = useRef<string | null>(selectedSession?.id ?? null);
+  const lastTerminalKeyRef = useRef(`${selectedProject?.projectId ?? ''}:${command ?? ''}`);
 
   // Keep mutable values in refs so websocket handlers always read current data.
   useEffect(() => {
     selectedProjectRef.current = selectedProject;
-    selectedSessionRef.current = selectedSession;
-    initialCommandRef.current = initialCommand;
-    isPlainShellRef.current = isPlainShell;
+    commandRef.current = command;
     onProcessCompleteRef.current = onProcessComplete;
-  }, [selectedProject, selectedSession, initialCommand, isPlainShell, onProcessComplete]);
+  }, [command, onProcessComplete, selectedProject]);
 
   const closeSocket = useCallback(() => {
     const activeSocket = wsRef.current;
@@ -66,17 +62,22 @@ export function useShellRuntime({
     closeSocket,
   });
 
-  const { isConnected, isConnecting, connectToShell, disconnectFromShell } = useShellConnection({
+  const {
+    isConnected,
+    isConnecting,
+    connectionError,
+    connectToShell,
+    disconnectFromShell,
+  } = useShellConnection({
     wsRef,
     terminalRef,
     fitAddonRef,
     selectedProjectRef,
-    selectedSessionRef,
-    initialCommandRef,
-    isPlainShellRef,
+    commandRef,
     onProcessCompleteRef,
     isInitialized,
     autoConnect,
+    runtimeMode,
     closeSocket,
     clearTerminalScreen,
     onOutputRef,
@@ -101,13 +102,13 @@ export function useShellRuntime({
   }, [disconnectFromShell, disposeTerminal, selectedProject]);
 
   useEffect(() => {
-    const currentSessionId = selectedSession?.id ?? null;
-    if (lastSessionIdRef.current !== currentSessionId && isInitialized) {
+    const currentTerminalKey = `${selectedProject?.projectId ?? ''}:${command ?? ''}`;
+    if (lastTerminalKeyRef.current !== currentTerminalKey && isInitialized) {
       disconnectFromShell();
     }
 
-    lastSessionIdRef.current = currentSessionId;
-  }, [disconnectFromShell, isInitialized, selectedSession?.id]);
+    lastTerminalKeyRef.current = currentTerminalKey;
+  }, [command, disconnectFromShell, isInitialized, selectedProject?.projectId]);
 
   return {
     terminalContainerRef,
@@ -116,6 +117,7 @@ export function useShellRuntime({
     isConnected,
     isInitialized,
     isConnecting,
+    connectionError,
     connectToShell,
     disconnectFromShell,
   };

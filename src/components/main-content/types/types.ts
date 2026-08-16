@@ -13,6 +13,9 @@ import type {
 } from '../../../hooks/useSessionProtection';
 import type { SessionEstablishedContext, SessionNavigationOptions } from '../../chat/types/types';
 import type { SettingsMainTab } from '../../settings/types/types';
+import type { SessionStore } from '../../../stores/useSessionStore';
+import type { SendWebSocketMessage } from '../../../contexts/webSocketDispatch';
+import type { ScheduleWorkspaceRequest } from '../../../types/scheduledRuns';
 
 export type TaskMasterTask = {
   id: string | number;
@@ -50,7 +53,7 @@ export type MainContentProps = {
   activeTab: AppTab;
   setActiveTab: Dispatch<SetStateAction<AppTab>>;
   ws: WebSocket | null;
-  sendMessage: (message: unknown) => void;
+  sendMessage: SendWebSocketMessage;
   isMobile: boolean;
   onMenuClick: () => void;
   isLoading: boolean;
@@ -67,9 +70,14 @@ export type MainContentProps = {
   onProjectSelect: (project: Project) => void;
   /** Silently re-syncs the sidebar project list after worktree projects change. */
   onProjectsRefresh: () => void;
+  /** Durable request counter for opening task setup/intake from the project drawer. */
+  taskWorkspaceRequest: number;
+  scheduleWorkspaceRequest: ScheduleWorkspaceRequest | null;
+  onCloseScheduleWorkspace: () => void;
 };
 
 export type MainContentHeaderProps = {
+  sessionStore: SessionStore;
   activeTab: AppTab;
   setActiveTab: Dispatch<SetStateAction<AppTab>>;
   selectedProject: Project;

@@ -8,72 +8,105 @@ const preloadSource = await readFile(
   'utf8',
 );
 
-function runPreload({ hostname, persistedToken = null, initialToken = null }) {
-  const values = new Map();
-  if (initialToken) values.set('auth-token', initialToken);
-  const sent = [];
-  const intervals = [];
+function runPreload({ protocol = 'http:', hostname }) {
+  const exposed = new Map();
+  const invoked = [];
+  const invocationArguments = [];
   const ipcRenderer = {
-    invoke() {},
+    invoke(channel, ...args) {
+      invoked.push(channel);
+      invocationArguments.push({ channel, args });
+      return Promise.resolve({ success: true });
+    },
     on() {},
     removeListener() {},
-    send(channel, value) {
-      sent.push([channel, value]);
-    },
-    sendSync(channel) {
-      sent.push([channel]);
-      return persistedToken;
-    },
-  };
-  const window = {
-    location: { protocol: 'http:', hostname },
-    localStorage: {
-      getItem: (key) => values.get(key) ?? null,
-      setItem: (key, value) => values.set(key, value),
-      removeItem: (key) => values.delete(key),
-    },
   };
 
   vm.runInNewContext(preloadSource, {
-    require: () => ({ contextBridge: { exposeInMainWorld() {} }, ipcRenderer }),
-    setInterval(callback) {
-      intervals.push(callback);
-      return intervals.length;
+    require: (request) => {
+      if (request === '../shared/product-config.json') {
+        return { features: { cloud: false } };
+      }
+      if (request === 'electron') {
+        return {
+          contextBridge: {
+            exposeInMainWorld(name, value) {
+              exposed.set(name, value);
+            },
+          },
+          ipcRenderer,
+        };
+      }
+      throw new Error(`Unexpected preload dependency: ${request}`);
     },
-    window,
+    window: { location: { protocol, hostname } },
   });
 
-  return { intervals, sent, values };
+  return { exposed, invoked, invocationArguments };
 }
 
-test('preload restores desktop auth before the local app starts on a new origin', () => {
-  const runtime = runPreload({ hostname: 'localhost', persistedToken: 'persisted-token' });
+test('preload exposes only tokenless local-session renewal on loopback app pages', async () => {
+  for (const hostname of ['localhost', '127.0.0.1']) {
+    const runtime = runPreload({ hostname });
+    const bridge = runtime.exposed.get('cloudcliDesktopLocalSession');
 
-  assert.equal(runtime.values.get('auth-token'), 'persisted-token');
-  assert.deepEqual(runtime.sent, [
-    ['cloudcli-desktop:get-local-auth-token'],
-    ['cloudcli-desktop:update-local-auth-token', 'persisted-token'],
-  ]);
+    assert.deepEqual(Object.keys(bridge), ['renew']);
+    assert.deepEqual(await bridge.renew(), { success: true });
+    assert.deepEqual(runtime.invoked, ['cloudcli-desktop:renew-local-session']);
+  }
 });
 
-test('preload mirrors login and logout changes back to the desktop store', () => {
-  const runtime = runPreload({ hostname: '127.0.0.1', initialToken: 'first-token' });
-  const poll = runtime.intervals[0];
+test('preload exposes no local-session authority to remote origins', () => {
+  const runtime = runPreload({ protocol: 'https:', hostname: 'example.com' });
 
-  runtime.values.set('auth-token', 'refreshed-token');
-  poll();
-  runtime.values.delete('auth-token');
-  poll();
-
-  assert.deepEqual(runtime.sent.slice(-2), [
-    ['cloudcli-desktop:update-local-auth-token', 'refreshed-token'],
-    ['cloudcli-desktop:update-local-auth-token', null],
-  ]);
+  assert.equal(runtime.exposed.has('cloudcliDesktopLocalSession'), false);
+  assert.equal(runtime.exposed.has('cloudcliDesktopPdf'), false);
+  assert.deepEqual(runtime.invoked, []);
 });
 
-test('preload never requests desktop credentials for a remote origin', () => {
-  const runtime = runPreload({ hostname: 'example.com', persistedToken: 'persisted-token' });
+test('preload exposes the PDF bridge only on loopback workspace pages', async () => {
+  const localRuntime = runPreload({ hostname: '127.0.0.1' });
+  const bridge = localRuntime.exposed.get('cloudcliDesktopPdf');
+  const payload = { html: '<!doctype html><p>Safe</p>', suggestedFilename: 'chat.pdf' };
 
-  assert.equal(runtime.values.has('auth-token'), false);
-  assert.deepEqual(runtime.sent, []);
+  assert.deepEqual(Object.keys(bridge), ['exportPdf']);
+  assert.deepEqual(await bridge.exportPdf(payload), { success: true });
+  assert.deepEqual(localRuntime.invoked, ['cloudcli-desktop:export-pdf']);
+  assert.deepEqual(localRuntime.invocationArguments, [{
+    channel: 'cloudcli-desktop:export-pdf',
+    args: [payload],
+  }]);
+
+  const launcherRuntime = runPreload({ protocol: 'file:', hostname: '' });
+  assert.equal(launcherRuntime.exposed.has('cloudcliDesktopPdf'), false);
+});
+
+test('preload exposes the desktop updater bridge only on loopback workspace pages', async () => {
+  const localRuntime = runPreload({ hostname: '127.0.0.1' });
+  const bridge = localRuntime.exposed.get('cloudcliDesktopUpdater');
+
+  assert.deepEqual(Object.keys(bridge), [
+    'getState',
+    'check',
+    'restartAndInstall',
+    'onStateChanged',
+  ]);
+  await bridge.getState();
+  await bridge.check();
+  await bridge.restartAndInstall();
+  assert.deepEqual(localRuntime.invoked, [
+    'cloudcli-desktop:updater-get-state',
+    'cloudcli-desktop:updater-check',
+    'cloudcli-desktop:updater-restart-and-install',
+  ]);
+
+  const launcherRuntime = runPreload({ protocol: 'file:', hostname: '' });
+  const remoteRuntime = runPreload({ protocol: 'https:', hostname: 'example.com' });
+  assert.equal(launcherRuntime.exposed.has('cloudcliDesktopUpdater'), false);
+  assert.equal(remoteRuntime.exposed.has('cloudcliDesktopUpdater'), false);
+});
+
+test('preload no longer reads, writes, or polls renderer token storage', () => {
+  assert.doesNotMatch(preloadSource, /localStorage|auth-token|get-local-auth-token|update-local-auth-token/);
+  assert.doesNotMatch(preloadSource, /setInterval/);
 });

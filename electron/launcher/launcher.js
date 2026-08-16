@@ -1,5 +1,7 @@
 window.__MOCK_STATE__ = {
-  account: { connected: true, email: 'you@cloudcli.ai' },
+  productName: 'CloudCLI',
+  features: { cloud: false, hosted: false, pro: false },
+  account: { connected: false, email: null },
   activeTarget: { kind: 'launcher', name: 'Launcher', url: null },
   cloudLoading: false,
   desktopSettings: { keepLocalServerRunning: false, exposeLocalServerOnNetwork: false, themeMode: 'system' },
@@ -7,12 +9,8 @@ window.__MOCK_STATE__ = {
   shareableWebUrl: 'http://localhost:3001',
   localServerRunning: false,
   localStartupLogs: [],
-  environments: [
-    { id: 'env-api', name: 'api-gateway', subdomain: 'api-gateway', access_url: 'https://api-gateway.cloudcli.ai', status: 'running', region: 'fra1', agent: 'Claude Code' },
-    { id: 'env-web', name: 'web-frontend', subdomain: 'web-frontend', access_url: 'https://web-frontend.cloudcli.ai', status: 'stopped', region: 'sfo1', agent: 'Codex' },
-    { id: 'env-data', name: 'data-pipeline', subdomain: 'data-pipeline', access_url: 'https://data-pipeline.cloudcli.ai', status: 'stopped', region: 'fra1', agent: 'Cursor' },
-    { id: 'env-ml', name: 'ml-trainer', subdomain: 'ml-trainer', access_url: 'https://ml-trainer.cloudcli.ai', status: 'paused', region: 'iad1', agent: 'OpenCode' },
-  ],
+  localStartupFailure: null,
+  environments: [],
 };
 
 (function cloudCliLauncher() {
@@ -33,11 +31,20 @@ window.__MOCK_STATE__ = {
       mockState.activeTarget = { kind: 'local', name: 'Local CloudCLI', url: mockState.localWebUrl };
       return Promise.resolve(clone(mockState));
     },
+    restartAndRepairLocal: function () {
+      mockState.localStartupFailure = null;
+      return mockBridge.openLocal();
+    },
     openLocalWebUi: function () {
       mockState.localServerRunning = true;
       return Promise.resolve(clone(mockState));
     },
     copyLocalWebUrl: function () { return Promise.resolve(clone(mockState)); },
+    configureLanAccess: function (options) {
+      mockState.desktopSettings.exposeLocalServerOnNetwork = options.enabled === true;
+      mockState.runtimeMode = options.enabled ? 'desktop-lan' : 'desktop-local';
+      return Promise.resolve(clone(mockState));
+    },
     connectCloud: function () {
       mockState.account = { connected: true, email: 'you@cloudcli.ai' };
       return Promise.resolve(clone(mockState));
@@ -107,6 +114,10 @@ window.__MOCK_STATE__ = {
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  }
+
+  function cloudEnabled(state) {
+    return !!(state && state.features && state.features.cloud === true);
   }
 
   function statusMeta(status) {
@@ -269,6 +280,10 @@ window.__MOCK_STATE__ = {
     switch (name) {
       case 'local':
         return CC.run('Starting Local CloudCLI...', function () { return bridge.openLocal(); });
+      case 'retry-local':
+        return CC.run('Retrying local workspace...', function () { return bridge.openLocal(); });
+      case 'restart-repair':
+        return CC.run('Restarting and repairing Local CloudCLI...', function () { return bridge.restartAndRepairLocal(); });
       case 'connect':
         return CC.run('Opening cloudcli.ai to connect your account...', function () { return bridge.connectCloud(); });
       case 'logout':
@@ -283,6 +298,40 @@ window.__MOCK_STATE__ = {
         return CC.run('Saved', function () { return bridge.updateSetting(node.key, node.value); });
       case 'set-theme-mode':
         return CC.run('Saved', function () { return bridge.updateSetting('themeMode', node.value); });
+      case 'setup-lan':
+        CC.ui.showLanSetup = true;
+        return CC.openSheet('local-settings');
+      case 'cancel-lan-setup':
+        CC.ui.showLanSetup = false;
+        return CC.openSheet('local-settings');
+      case 'enable-lan': {
+        var usernameInput = document.querySelector('[data-cc-lan-username]');
+        var passwordInput = document.querySelector('[data-cc-lan-password]');
+        var username = usernameInput ? usernameInput.value.trim() : '';
+        var password = passwordInput ? passwordInput.value : '';
+        if (username.length < 3) {
+          usernameInput.setCustomValidity('Enter at least 3 characters.');
+          usernameInput.reportValidity();
+          usernameInput.focus();
+          return;
+        }
+        usernameInput.setCustomValidity('');
+        if (password.length < 8) {
+          passwordInput.setCustomValidity('Enter at least 8 characters.');
+          passwordInput.reportValidity();
+          passwordInput.focus();
+          return;
+        }
+        passwordInput.setCustomValidity('');
+        CC.ui.showLanSetup = false;
+        return CC.run('Saving credentials and restarting for LAN access...', function () {
+          return bridge.configureLanAccess({ enabled: true, username: username, password: password });
+        });
+      }
+      case 'disable-lan':
+        return CC.run('Disabling LAN access and restarting locally...', function () {
+          return bridge.configureLanAccess({ enabled: false });
+        });
       case 'settings-toggle':
         return CC.run('Opening desktop settings...', function () { return bridge.showDesktopSettings(); });
       case 'desktop-settings-toggle':
@@ -309,18 +358,20 @@ window.__MOCK_STATE__ = {
   };
 
   CC.titlebar = function (state) {
+    var hasCloud = cloudEnabled(state);
     var conn = connected(state);
     var activeEnvironmentId = state.activeTarget && state.activeTarget.kind === 'remote' ? state.activeTarget.id : null;
     var activeRefreshable = state.activeTarget && (state.activeTarget.kind === 'remote' || state.activeTarget.kind === 'local');
-    var envActions = activeEnvironmentId ? '<button class="btn sm tb-action no-drag" data-cc-action="env-row-menu" data-cc-environment-id="' + esc(activeEnvironmentId) + '" title="Open environment actions">Open environment in...</button>' : '';
+    var envActions = hasCloud && activeEnvironmentId ? '<button class="btn sm tb-action no-drag" data-cc-action="env-row-menu" data-cc-environment-id="' + esc(activeEnvironmentId) + '" title="Open environment actions">Open environment in...</button>' : '';
     var refreshAction = activeRefreshable ? '<button class="icon-btn tb-action no-drag" data-cc-action="refresh-tab" title="Refresh">' + icon('refresh', 16) + '</button>' : '';
-    var logoutAction = (conn || authState(state) === 'expired') ? '<button class="icon-btn tb-action no-drag" data-cc-action="logout" title="Logout">' + icon('logOut', 16) + '</button>' : '';
+    var accountAction = hasCloud ? '<button class="btn sm tb-action no-drag" data-cc-action="connect" title="' + esc(authState(state) === 'expired' ? 'Reconnect your CloudCLI account' : accountLabel(state)) + '"><span class="dot" style="background:' + (conn ? 'var(--ok)' : (authState(state) === 'expired' ? 'var(--warn)' : 'var(--tx3)')) + '"></span>' + esc(accountLabel(state)) + '</button>' : '';
+    var logoutAction = hasCloud && (conn || authState(state) === 'expired') ? '<button class="icon-btn tb-action no-drag" data-cc-action="logout" title="Logout">' + icon('logOut', 16) + '</button>' : '';
     return '<div class="titlebar">' +
-      '<div class="brand"><img class="mk" src="' + esc(LOGO_URL) + '" alt=""><span>CloudCLI</span></div>' +
+      '<div class="brand"><img class="mk" src="' + esc(LOGO_URL) + '" alt=""><span>' + esc(state.productName || 'CloudCLI') + '</span></div>' +
       '<span style="flex:1"></span>' +
       refreshAction +
       envActions +
-      '<button class="btn sm tb-action no-drag" data-cc-action="connect" title="' + esc(authState(state) === 'expired' ? 'Reconnect your CloudCLI account' : accountLabel(state)) + '"><span class="dot" style="background:' + (conn ? 'var(--ok)' : (authState(state) === 'expired' ? 'var(--warn)' : 'var(--tx3)')) + '"></span>' + esc(accountLabel(state)) + '</button>' +
+      accountAction +
       logoutAction +
       '<button class="icon-btn tb-action no-drag" data-cc-action="settings-toggle" title="Settings">' + icon('settings', 16) + '</button>' +
       '</div>';
@@ -331,8 +382,7 @@ window.__MOCK_STATE__ = {
     var running = !!state.localServerRunning;
     return '<div class="statusbar">' +
       '<span><span class="dot" style="width:7px;height:7px;background:' + (running ? 'var(--ok)' : 'var(--tx3)') + '"></span> local ' + (running ? 'running · ' + esc(localUrl(state)) : 'idle') + '</span>' +
-      '<span class="sep">·</span><span>' + esc(envCount(state)) + '</span>' +
-      '<span class="sep">·</span><span>' + (authState(state) === 'expired' ? 'session expired' : (connected(state) ? esc(accountLabel(state)) : 'not connected')) + '</span>' +
+      (cloudEnabled(state) ? '<span class="sep">·</span><span>' + esc(envCount(state)) + '</span><span class="sep">·</span><span>' + (authState(state) === 'expired' ? 'session expired' : (connected(state) ? esc(accountLabel(state)) : 'not connected')) + '</span>' : '') +
       '<span style="flex:1"></span>' +
       (status.msg ? '<span class="status-msg ' + esc(status.tone) + '">' + esc(status.msg) + '</span><span class="sep">·</span>' : '') +
       ((state.appVersion || VERSION) ? '<span>v' + esc(state.appVersion || VERSION) + '</span>' : '') +
@@ -402,7 +452,7 @@ window.__MOCK_STATE__ = {
     if (options.includePreferences) {
       body +=
         '<label class="cc-toggle"><input type="checkbox" data-cc-setting="keepLocalServerRunning"' + (settings.keepLocalServerRunning ? ' checked' : '') + '><span><b>Keep server running</b><br>Leave Local CloudCLI available after you quit the app.</span></label>' +
-        '<label class="cc-toggle"><input type="checkbox" data-cc-setting="exposeLocalServerOnNetwork"' + (settings.exposeLocalServerOnNetwork ? ' checked' : '') + '><span><b>Allow LAN access</b><br>Use the copied URL from another device on this network.</span></label>';
+        CC.buildLanAccessControls(state);
     }
     body += '</div>';
     return CC.renderSection(
@@ -410,6 +460,22 @@ window.__MOCK_STATE__ = {
       options.title || 'Run Local CloudCLI on this machine',
       body
     );
+  };
+
+  CC.buildLanAccessControls = function (state) {
+    var enabled = !!((state.desktopSettings || {}).exposeLocalServerOnNetwork);
+    if (enabled) {
+      return '<div class="cc-lan-access"><div class="cc-meta"><b>LAN access is enabled.</b><br>Other devices must sign in. Shell remains disabled outside loopback.</div>' +
+        '<button class="btn sm" type="button" data-cc-action="disable-lan">Disable LAN access</button></div>';
+    }
+    if (CC.ui.showLanSetup) {
+      return '<div class="cc-lan-access"><div class="cc-meta"><b>Set LAN sign-in credentials</b><br>The server will restart on the network only after credentials are saved.</div>' +
+        '<label class="cc-field"><span>Username</span><input autocomplete="username" data-cc-lan-username minlength="3"></label>' +
+        '<label class="cc-field"><span>Password</span><input type="password" autocomplete="new-password" data-cc-lan-password minlength="8"></label>' +
+        '<div class="cc-row2"><button class="btn primary sm" type="button" data-cc-action="enable-lan">Enable LAN access</button><button class="btn sm" type="button" data-cc-action="cancel-lan-setup">Cancel</button></div></div>';
+    }
+    return '<div class="cc-lan-access"><div class="cc-meta"><b>LAN access is off.</b><br>Enabling it requires a username, password, and a real server restart.</div>' +
+      '<button class="btn sm" type="button" data-cc-action="setup-lan">Set up LAN access</button></div>';
   };
 
   CC.buildThemeSection = function (state) {
@@ -430,7 +496,7 @@ window.__MOCK_STATE__ = {
       CC.renderSection('PREFERENCES', 'How the local service behaves', '' +
         '<div class="cc-surface">' +
         '<label class="cc-toggle"><input type="checkbox" data-cc-setting="keepLocalServerRunning"' + ((state.desktopSettings || {}).keepLocalServerRunning ? ' checked' : '') + '><span><b>Keep server running</b><br>Leave Local CloudCLI available after you quit the app.</span></label>' +
-        '<label class="cc-toggle"><input type="checkbox" data-cc-setting="exposeLocalServerOnNetwork"' + ((state.desktopSettings || {}).exposeLocalServerOnNetwork ? ' checked' : '') + '><span><b>Allow LAN access</b><br>Use the copied URL from another device on this network.</span></label>' +
+        CC.buildLanAccessControls(state) +
         '</div>'
       ),
     ];
@@ -570,10 +636,30 @@ window.__MOCK_STATE__ = {
       CC.icon(iconName, 16) + '<span>' + label + '</span><span class="sb-meta">' + CC.esc(meta) + '</span></button>';
   }
 
+  function startupDetails(state) {
+    var logs = (state.localStartupLogs || []).slice(-80);
+    if (!logs.length) return '';
+    return '<details class="startup-details"><summary>Startup details</summary>' +
+      '<pre tabindex="0">' + CC.esc(logs.join('\n')) + '</pre></details>';
+  }
+
   function localPane(state) {
+    var failure = state.localStartupFailure;
+    if (failure && failure.kind === 'compatibility') {
+      return '<div class="pane-h"><div><h2 class="pane-title">Compatibility repair</h2><p class="pane-sub">The local workspace runtime does not match this Desktop build.</p></div></div>' +
+        '<div class="card" role="alert"><div class="card-head"><div><div class="card-t">Local server needs repair</div><div class="card-sub">' + CC.esc(failure.message || 'The bundled local server could not be verified.') + '</div></div></div>' +
+        startupDetails(state) +
+        '<div class="card-actions"><button class="btn pri" data-cc-action="restart-repair">' + CC.icon('refresh', 15) + 'Restart and repair</button><button class="btn" data-cc-action="diagnostics">' + CC.icon('copy', 14) + 'Copy diagnostics</button></div></div>';
+    }
+    if (failure) {
+      return '<div class="pane-h"><div><h2 class="pane-title">Local workspace did not open</h2><p class="pane-sub">Review the startup result or try again.</p></div></div>' +
+        '<div class="card" role="alert"><div class="card-head"><div><div class="card-t">Could not start the local workspace</div><div class="card-sub">' + CC.esc(failure.message || 'The local server did not become ready.') + '</div></div></div>' +
+        startupDetails(state) +
+        '<div class="card-actions"><button class="btn pri" data-cc-action="retry-local">' + CC.icon('refresh', 15) + 'Retry</button><button class="btn" data-cc-action="diagnostics">' + CC.icon('copy', 14) + 'Copy diagnostics</button></div></div>';
+    }
     return '<div class="pane-h"><div><h2 class="pane-title">Local servers</h2><p class="pane-sub">Manage Local CloudCLI on this machine. No account required.</p></div></div>' +
       '<div class="card"><div class="card-head"><div><div class="card-t">Local server</div><div class="card-sub mono">' + CC.esc(CC.localUrl(state) || 'Starts on demand') + '</div></div><div class="card-tools"><span class="dot" style="background:' + (state.localServerRunning ? 'var(--ok)' : 'var(--tx3)') + '"></span><button class="icon-btn" data-cc-action="local-settings-toggle" title="Local settings">' + CC.icon('gear', 16) + '</button></div></div>' +
-      '<div class="card-actions"><button class="btn pri" data-cc-action="local">' + CC.icon('play', 15) + 'Open Local CloudCLI</button><button class="btn" data-cc-action="open-web">' + CC.icon('arrow', 14) + 'Open in browser</button><button class="btn" data-cc-action="copy-web">' + CC.icon('copy', 14) + 'Copy URL</button></div></div>';
+      '<div class="card-actions"><button class="btn pri" data-cc-action="local">' + CC.icon('play', 15) + 'Open Local Workspace</button><button class="btn" data-cc-action="open-web">' + CC.icon('arrow', 14) + 'Open in browser</button><button class="btn" data-cc-action="copy-web">' + CC.icon('copy', 14) + 'Copy URL</button></div></div>';
   }
 
   function envRow(environment) {
@@ -605,11 +691,12 @@ window.__MOCK_STATE__ = {
   }
 
   function renderBody(state) {
-    var section = CC.ui.section || ((CC.connected(state) || CC.authState(state) === 'expired') ? 'cloud' : 'local');
+    var hasCloud = !!(state.features && state.features.cloud === true);
+    var section = hasCloud ? (CC.ui.section || ((CC.connected(state) || CC.authState(state) === 'expired') ? 'cloud' : 'local')) : 'local';
     CC.ui.section = section;
     var nav = '<div class="sb"><div class="sb-grp"><div class="lbl">Launcher</div>' +
       navItem('local', 'terminal', 'Local servers', state.localServerRunning ? 'on' : 'idle', section) +
-      navItem('cloud', 'cloud', 'Cloud environments', (state.environments || []).length, section) +
+      (hasCloud ? navItem('cloud', 'cloud', 'Cloud environments', (state.environments || []).length, section) : '') +
       '</div></div>';
     return nav + '<div class="sb-main">' + (section === 'local' ? localPane(state) : cloudPane(state)) + '</div>';
   }

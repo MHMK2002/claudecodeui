@@ -1,4 +1,5 @@
 import type { MarkSessionProcessing } from '../../hooks/useSessionProtection';
+import type { SendWebSocketMessage } from '../../contexts/webSocketDispatch';
 import type {
   LLMProvider,
   Project,
@@ -6,6 +7,7 @@ import type {
   ResolvedProviderSelection,
 } from '../../types/app';
 import { authenticatedFetch } from '../../utils/api';
+import { decodeProviderSelectionCatalogResponse } from '../../shared/providerSelectionCatalog';
 import type { SessionEstablishedContext } from '../chat/types/types';
 
 import type { TaskMasterTask } from './types';
@@ -14,11 +16,28 @@ import { runSingleFlight } from './single-flight';
 export type ProviderSelection = ResolvedProviderSelection;
 
 export type TaskWorkflowCallbacks = {
-  sendMessage: (message: unknown) => void;
+  sendMessage: SendWebSocketMessage;
   onSessionEstablished?: (sessionId: string, context: SessionEstablishedContext) => void;
   onNavigateToSession?: (sessionId: string) => void;
   onSessionProcessing?: MarkSessionProcessing;
 };
+
+export type TaskLaunchProgress = {
+  stage: 'provider' | 'reserve' | 'session' | 'bind' | 'dispatch' | 'delivery' | 'complete';
+  message: string;
+  sessionId?: string;
+};
+
+function requireAcceptedWorkflowDispatch(
+  result: ReturnType<SendWebSocketMessage>,
+  workflowLabel: string,
+): void {
+  if (result.ok) return;
+  const reason = result.reason === 'not-connected'
+    ? 'Chat is disconnected.'
+    : 'The Chat socket could not accept the message.';
+  throw new Error(`${workflowLabel} was not delivered. ${reason} Reconnect and retry.`);
+}
 
 type IntakeProposal = {
   intakeId: string;
@@ -120,7 +139,7 @@ function resolveCatalogTaskSelection(
 
 async function readSettingsProviderSelection(): Promise<ProviderSelection> {
   const response = await authenticatedFetch('/api/providers/selection-catalog');
-  const catalog = await readResponse<ProviderSelectionCatalog>(response);
+  const catalog = await decodeProviderSelectionCatalogResponse(response);
   const selection = resolveCatalogTaskSelection(catalog, readCurrentProviderSelection());
   if (!selection) {
     throw new Error('Configure an available provider, profile, and model in Settings first.');
@@ -217,7 +236,11 @@ function projectId(project: Project): string {
   return project.projectId;
 }
 
-async function allocateSession(project: Project, selection: ProviderSelection): Promise<string> {
+async function allocateSession(
+  project: Project,
+  selection: ProviderSelection,
+  signal?: AbortSignal,
+): Promise<string> {
   const response = await authenticatedFetch('/api/providers/sessions', {
     method: 'POST',
     body: JSON.stringify({
@@ -226,6 +249,7 @@ async function allocateSession(project: Project, selection: ProviderSelection): 
       providerProfileId: selection.providerProfileId,
       model: selection.model,
     }),
+    signal,
   });
   const data = await readResponse<{ sessionId: string }>(response);
   if (!data.sessionId) {
@@ -289,8 +313,7 @@ export async function startTaskIntake(args: {
     intake: { prompt: string; contentHash: string };
   }>(bindResponse);
 
-  args.onSessionProcessing?.(sessionId, { statusText: 'Starting task intake…', canInterrupt: true });
-  args.sendMessage({
+  const dispatchResult = args.sendMessage({
     type: 'chat.send',
     sessionId,
     content: bound.intake.prompt,
@@ -301,6 +324,8 @@ export async function startTaskIntake(args: {
     },
     options: { model: selection.model },
   });
+  requireAcceptedWorkflowDispatch(dispatchResult, 'Task intake');
+  args.onSessionProcessing?.(sessionId, { statusText: 'Starting task intake…', canInterrupt: true });
   const context: SessionEstablishedContext = {
     provider: selection.provider,
     project: args.project,
@@ -347,12 +372,15 @@ function createLaunchKey(): string {
 async function waitForLinkedLaunch(
   project: Project,
   attemptId: string,
+  signal?: AbortSignal,
   timeoutMs = 30_000,
 ): Promise<LaunchAttempt> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    signal?.throwIfAborted();
     const response = await authenticatedFetch(
       `/api/taskmaster/workflow/${encodeURIComponent(projectId(project))}/launches/${encodeURIComponent(attemptId)}`,
+      { signal },
     );
     const data = await readResponse<{ attempt: LaunchAttempt }>(response);
     if (data.attempt.status === 'linked') {
@@ -370,15 +398,21 @@ type StartTaskImplementationArgs = {
   project: Project;
   task: TaskMasterTask;
   selection?: ProviderSelection;
+  signal?: AbortSignal;
+  onProgress?: (progress: TaskLaunchProgress) => void;
 } & TaskWorkflowCallbacks;
 
 async function runTaskImplementation(args: StartTaskImplementationArgs): Promise<{ attemptId: string; sessionId: string }> {
+  args.signal?.throwIfAborted();
+  args.onProgress?.({ stage: 'provider', message: 'Checking the provider configuration' });
   const selection = args.selection ?? await readSettingsProviderSelection();
   const storageKey = launchStorageKey(args.project, args.task);
   const idempotencyKey = localStorage.getItem(storageKey) || createLaunchKey();
   localStorage.setItem(storageKey, idempotencyKey);
   let attempt: LaunchAttempt | null = null;
   try {
+    args.signal?.throwIfAborted();
+    args.onProgress?.({ stage: 'reserve', message: 'Preparing the approved task snapshot' });
     const beginResponse = await authenticatedFetch(
       `/api/taskmaster/workflow/${encodeURIComponent(projectId(args.project))}/tasks/${encodeURIComponent(String(args.task.id))}/launch`,
       {
@@ -388,18 +422,23 @@ async function runTaskImplementation(args: StartTaskImplementationArgs): Promise
           providerProfileId: selection.providerProfileId,
           idempotencyKey,
         }),
+        signal: args.signal,
       },
     );
     const begun = await readResponse<{ attempt: LaunchAttempt }>(beginResponse);
     attempt = begun.attempt;
 
     if (!attempt.sessionId && attempt.status === 'reserved') {
-      const sessionId = await allocateSession(args.project, selection);
+      args.signal?.throwIfAborted();
+      args.onProgress?.({ stage: 'session', message: 'Opening a fresh provider session' });
+      const sessionId = await allocateSession(args.project, selection, args.signal);
+      args.onProgress?.({ stage: 'bind', message: 'Binding the task to its session', sessionId });
       const bindResponse = await authenticatedFetch(
         `/api/taskmaster/workflow/${encodeURIComponent(projectId(args.project))}/launches/${encodeURIComponent(attempt.id)}/bind`,
         {
           method: 'POST',
           body: JSON.stringify({ sessionId }),
+          signal: args.signal,
         },
       );
       const bound = await readResponse<{ attempt: LaunchAttempt }>(bindResponse);
@@ -410,8 +449,13 @@ async function runTaskImplementation(args: StartTaskImplementationArgs): Promise
       throw new Error('The launch attempt has no fresh session.');
     }
     if (attempt.status === 'bound') {
-      args.onSessionProcessing?.(attempt.sessionId, { statusText: 'Starting approved task…', canInterrupt: true });
-      args.sendMessage({
+      args.signal?.throwIfAborted();
+      args.onProgress?.({
+        stage: 'dispatch',
+        message: 'Sending the approved task to the agent',
+        sessionId: attempt.sessionId,
+      });
+      const dispatchResult = args.sendMessage({
         type: 'chat.send',
         sessionId: attempt.sessionId,
         content: attempt.content,
@@ -422,9 +466,16 @@ async function runTaskImplementation(args: StartTaskImplementationArgs): Promise
         },
         options: { model: selection.model },
       });
+      requireAcceptedWorkflowDispatch(dispatchResult, 'Task implementation');
+      args.onSessionProcessing?.(attempt.sessionId, { statusText: 'Starting approved task…', canInterrupt: true });
     }
 
-    const linked = await waitForLinkedLaunch(args.project, attempt.id);
+    args.onProgress?.({
+      stage: 'delivery',
+      message: 'Waiting for the agent to accept delivery',
+      sessionId: attempt.sessionId,
+    });
+    const linked = await waitForLinkedLaunch(args.project, attempt.id, args.signal);
     if (!linked.sessionId) {
       throw new Error('The linked launch has no implementation session.');
     }
@@ -436,6 +487,7 @@ async function runTaskImplementation(args: StartTaskImplementationArgs): Promise
     };
     args.onSessionEstablished?.(linked.sessionId, context);
     args.onNavigateToSession?.(linked.sessionId);
+    args.onProgress?.({ stage: 'complete', message: 'Task started', sessionId: linked.sessionId });
     return { attemptId: linked.id, sessionId: linked.sessionId };
   } catch (error) {
     if (attempt && ['failed', 'expired'].includes(attempt.status)) {

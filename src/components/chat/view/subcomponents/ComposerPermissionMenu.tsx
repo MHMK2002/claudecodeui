@@ -33,37 +33,34 @@ type ModeAppearance = {
 const MODE_APPEARANCE: Record<PermissionMode, ModeAppearance> = {
   default: {
     icon: Hand,
-    trigger: 'border-border/60 bg-muted/50 text-muted-foreground hover:bg-muted',
+    trigger: 'text-muted-foreground',
     item: 'text-foreground',
   },
   auto: {
     icon: Bot,
-    trigger:
-      'border-blue-300/60 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-600/40 dark:bg-blue-900/15 dark:text-blue-300 dark:hover:bg-blue-900/25',
+    trigger: 'text-blue-700 dark:text-blue-300',
     item: 'text-blue-700 dark:text-blue-300',
   },
   acceptEdits: {
     icon: Smile,
-    trigger:
-      'border-green-300/60 bg-green-50 text-green-700 hover:bg-green-100 dark:border-green-600/40 dark:bg-green-900/15 dark:text-green-300 dark:hover:bg-green-900/25',
+    trigger: 'text-green-700 dark:text-green-300',
     item: 'text-green-700 dark:text-green-300',
   },
   bypassPermissions: {
     icon: AlertTriangle,
-    trigger:
-      'border-orange-300/60 bg-orange-50 text-orange-700 hover:bg-orange-100 dark:border-orange-600/40 dark:bg-orange-900/15 dark:text-orange-300 dark:hover:bg-orange-900/25',
+    trigger: 'text-orange-700 dark:text-orange-300',
     item: 'text-orange-600 dark:text-orange-400',
   },
   plan: {
     icon: ClipboardList,
-    trigger: 'border-primary/20 bg-primary/5 text-primary hover:bg-primary/10',
+    trigger: 'text-primary',
     item: 'text-primary',
   },
 };
 
 const UNKNOWN_MODE: ModeAppearance = {
   icon: ShieldQuestion,
-  trigger: 'border-border/60 bg-muted/50 text-muted-foreground hover:bg-muted',
+  trigger: 'text-muted-foreground',
   item: 'text-foreground',
 };
 
@@ -109,7 +106,7 @@ export default function ComposerPermissionMenu({
           updateAnchor();
           setIsOpen((current) => !current);
         }}
-        className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-colors ${activeAppearance.trigger}`}
+        className={`flex h-11 w-11 shrink-0 items-center justify-center bg-transparent transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${activeAppearance.trigger}`}
         aria-haspopup="menu"
         aria-expanded={isOpen}
         aria-label={heading}

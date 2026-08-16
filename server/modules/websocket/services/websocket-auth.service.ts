@@ -1,55 +1,80 @@
 import type { VerifyClientCallbackSync } from 'ws';
 
-import type { AuthenticatedWebSocketRequest } from '@/shared/types.js';
+import type {
+  AuthenticatedWebSocketRequest,
+  AuthenticatedWebSocketUser,
+  RuntimeMode,
+} from '@/shared/types.js';
+import { isBrowserOriginAllowed, isLoopbackNetworkAddress } from '@/shared/utils.js';
 
 type WebSocketAuthDependencies = {
-  isPlatform: boolean;
-  authenticateWebSocket: (token: string | null) => {
-    id?: string | number;
-    userId?: string | number;
-    username?: string;
-    [key: string]: unknown;
-  } | null;
+  runtimeMode: RuntimeMode;
+  allowedDesktopOrigin?: string;
+  authenticateWebSocket: (credentials: {
+    cookieHeader?: string | string[];
+    authorizationHeader?: string | string[];
+  }) => AuthenticatedWebSocketUser | null;
 };
 
 /**
- * Authenticates websocket upgrade requests before the `connection` handler runs.
+ * Authenticates websocket upgrades from the shared HttpOnly session cookie.
+ * JWT/query credentials are rejected before route dispatch so secrets never
+ * enter URLs, proxy logs, history, or diagnostics.
  */
 export function verifyWebSocketClient(
   info: Parameters<VerifyClientCallbackSync<AuthenticatedWebSocketRequest>>[0],
-  dependencies: WebSocketAuthDependencies
+  dependencies: WebSocketAuthDependencies,
 ): boolean {
   const request = info.req as AuthenticatedWebSocketRequest;
   const upgradeUrl = new URL(request.url ?? '/', 'http://localhost');
-  const loggedUrl = new URL(upgradeUrl);
-  if (loggedUrl.searchParams.has('token')) {
-    loggedUrl.searchParams.set('token', 'REDACTED');
+  console.log('WebSocket connection attempt to:', upgradeUrl.pathname);
+
+  if (upgradeUrl.searchParams.has('token') || upgradeUrl.searchParams.has('access_token')) {
+    console.warn('[WARN] WebSocket query credentials are not accepted');
+    return false;
   }
 
-  console.log('WebSocket connection attempt to:', `${loggedUrl.pathname}${loggedUrl.search}`);
-
-  // Platform mode: use the first DB user and skip token checks.
-  if (dependencies.isPlatform) {
-    const user = dependencies.authenticateWebSocket(null);
-    if (!user) {
-      console.log('[WARN] Platform mode: No user found in database');
-      return false;
-    }
-
-    request.user = user;
-    console.log('[OK] Platform mode WebSocket authenticated for user:', user.username);
-    return true;
+  if (
+    dependencies.runtimeMode === 'desktop-local'
+    && !isBrowserOriginAllowed({
+      origin: info.origin,
+      requestHost: request.headers.host,
+      secure: info.secure,
+      allowedOrigin: dependencies.allowedDesktopOrigin,
+      loopbackOnly: true,
+    })
+  ) {
+    console.warn('[WARN] Desktop local WebSocket origin does not match the app origin');
+    return false;
   }
 
-  // OSS mode: read JWT from query string first, then Authorization header.
-  const token =
-    upgradeUrl.searchParams.get('token') ??
-    request.headers.authorization?.split(' ')[1] ??
-    null;
+  if (
+    (upgradeUrl.pathname === '/shell' || upgradeUrl.pathname === '/command-terminal')
+    && (
+      dependencies.runtimeMode === 'desktop-lan'
+      || dependencies.runtimeMode === 'platform'
+      || !isLoopbackNetworkAddress(request.socket.remoteAddress)
+      || !isBrowserOriginAllowed({
+        origin: info.origin,
+        requestHost: request.headers.host,
+        secure: info.secure,
+        allowedOrigin: dependencies.runtimeMode === 'desktop-local'
+          ? dependencies.allowedDesktopOrigin
+          : undefined,
+        loopbackOnly: true,
+      })
+    )
+  ) {
+    console.warn('[WARN] Shell WebSocket is disabled outside a loopback local runtime');
+    return false;
+  }
 
-  const user = dependencies.authenticateWebSocket(token);
+  const user = dependencies.authenticateWebSocket({
+    cookieHeader: request.headers.cookie,
+    authorizationHeader: request.headers.authorization,
+  });
   if (!user) {
-    console.log('[WARN] WebSocket authentication failed');
+    console.warn('[WARN] WebSocket authentication failed');
     return false;
   }
 

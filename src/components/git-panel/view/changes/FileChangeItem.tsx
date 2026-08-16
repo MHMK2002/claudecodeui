@@ -1,4 +1,5 @@
 import { ChevronRight, Trash2 } from 'lucide-react';
+
 import type { FileStatusCode } from '../../types/types';
 import { getStatusBadgeClass, getStatusLabel } from '../../utils/gitPanelUtils';
 import GitDiffViewer from '../shared/GitDiffViewer';
@@ -37,47 +38,62 @@ export default function FileChangeItem({
 
   return (
     <div className="border-b border-border last:border-0">
-      <div className={`flex items-center transition-colors hover:bg-accent/50 ${isMobile ? 'px-2 py-1.5' : 'px-3 py-2'}`}>
-        <input
-          type="checkbox"
-          checked={isSelected}
-          onChange={() => onToggleSelected(filePath)}
-          onClick={(event) => event.stopPropagation()}
-          className={`rounded border-border bg-background text-primary checked:bg-primary focus:ring-primary/40 ${isMobile ? 'mr-1.5' : 'mr-2'}`}
-        />
+      <div className={`flex min-h-14 items-center transition-colors hover:bg-accent/50 ${isMobile ? 'px-1' : 'px-2'}`}>
+        <label
+          className="flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-lg focus-within:ring-2 focus-within:ring-ring hover:bg-accent"
+          title={`${isSelected ? 'Unstage' : 'Stage'} ${filePath}`}
+        >
+          <input
+            type="checkbox"
+            checked={isSelected}
+            aria-label={`${isSelected ? 'Unstage' : 'Stage'} ${filePath}`}
+            onChange={() => onToggleSelected(filePath)}
+            onClick={(event) => event.stopPropagation()}
+            className="h-4 w-4 rounded border-border bg-background text-primary checked:bg-primary focus:ring-primary/40"
+          />
+        </label>
 
-        <div className="flex min-w-0 flex-1 items-center">
+        <div className="flex min-w-0 flex-1 items-center gap-1">
           <button
+            type="button"
             onClick={(event) => {
               event.stopPropagation();
               onToggleExpanded(filePath);
             }}
-            className={`cursor-pointer rounded p-0.5 hover:bg-accent ${isMobile ? 'mr-1' : 'mr-2'}`}
+            className="flex min-h-11 shrink-0 cursor-pointer items-center gap-1 rounded-lg px-2 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             title={isExpanded ? 'Collapse diff' : 'Expand diff'}
+            aria-label={`${isExpanded ? 'Hide' : 'Review'} changes for ${filePath}`}
+            aria-expanded={isExpanded}
           >
-            <ChevronRight className={`h-3 w-3 transition-transform duration-200 ease-in-out ${isExpanded ? 'rotate-90' : 'rotate-0'}`} />
+            <ChevronRight className={`h-4 w-4 transition-transform duration-200 ease-in-out ${isExpanded ? 'rotate-90' : 'rotate-0'}`} />
+            {!isMobile && (
+              <span className="text-xs font-medium">{isExpanded ? 'Hide' : 'Review'}</span>
+            )}
           </button>
 
-          <span
-            className={`flex-1 truncate ${isMobile ? 'text-xs' : 'text-sm'} cursor-pointer hover:text-primary hover:underline`}
+          <button
+            type="button"
+            className={`min-h-11 min-w-0 flex-1 cursor-pointer truncate rounded-lg px-2 text-left ${isMobile ? 'text-xs' : 'text-sm'} hover:bg-accent hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}
             onClick={(event) => {
               event.stopPropagation();
               onOpenFile(filePath);
             }}
-            title="Click to open file"
+            title={`Open ${filePath}`}
           >
             {filePath}
-          </span>
+          </button>
 
           <span className="flex items-center gap-1">
             {(status === 'M' || status === 'D' || status === 'U') && (
               <button
+                type="button"
                 onClick={(event) => {
                   event.stopPropagation();
                   onRequestFileAction(filePath, status);
                 }}
-                className={`${isMobile ? 'px-2 py-1 text-xs' : 'p-1'} flex items-center gap-1 rounded font-medium text-destructive hover:bg-destructive/10`}
+                className={`${isMobile ? 'px-2 text-xs' : 'w-11'} flex min-h-11 items-center justify-center gap-1 rounded-lg font-medium text-destructive hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}
                 title={status === 'U' ? 'Delete untracked file' : 'Discard changes'}
+                aria-label={`${status === 'U' ? 'Delete' : 'Discard changes to'} ${filePath}`}
               >
                 <Trash2 className="h-3 w-3" />
                 {isMobile && <span>{status === 'U' ? 'Delete' : 'Discard'}</span>}
@@ -87,6 +103,7 @@ export default function FileChangeItem({
             <span
               className={`inline-flex h-5 w-5 items-center justify-center rounded border text-[10px] font-bold ${badgeClass}`}
               title={statusLabel}
+              aria-label={statusLabel}
             >
               {status}
             </span>
@@ -107,6 +124,7 @@ export default function FileChangeItem({
           </span>
           {isMobile && (
             <button
+              type="button"
               onClick={(event) => {
                 event.stopPropagation();
                 onToggleWrapText();

@@ -149,7 +149,7 @@ function TaskCard({ task, onClick = null, showParent = false, className = '' }: 
         <div className="min-w-0 flex-1">
           <div className="mb-1 flex items-center gap-2">
             <Tooltip content={`Task ID: ${task.id}`}>
-              <span className="rounded bg-gray-100 px-2 py-0.5 font-mono text-xs text-gray-500 dark:bg-gray-700 dark:text-gray-400">
+              <span className="rounded bg-gray-100 px-2 py-0.5 font-mono text-xs text-foreground dark:bg-gray-700">
                 {task.id}
               </span>
             </Tooltip>

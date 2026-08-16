@@ -89,7 +89,7 @@ export default function TaskBoardToolbar({
   }, []);
 
   return (
-    <>
+    <div className="space-y-3 rounded-xl border border-border bg-card p-3">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="relative max-w-md flex-1">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
@@ -173,7 +173,7 @@ export default function TaskBoardToolbar({
                   <>
                     <button
                       onClick={() => setIsPrdDropdownOpen((current) => !current)}
-                      className="flex items-center gap-2 rounded-lg bg-purple-600 px-3 py-2 font-medium text-white hover:bg-purple-700"
+                      className="flex min-h-11 items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 font-medium text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       title={t('buttons.prdsAvailable', { count: existingPrds.length })}
                     >
                       <FileText className="h-4 w-4" />
@@ -220,7 +220,7 @@ export default function TaskBoardToolbar({
                 ) : (
                   <button
                     onClick={onCreatePrd}
-                    className="flex items-center gap-2 rounded-lg bg-purple-600 px-3 py-2 font-medium text-white hover:bg-purple-700"
+                    className="flex min-h-11 items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 font-medium text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     title={t('buttons.addPRD')}
                   >
                     <FileText className="h-4 w-4" />
@@ -232,7 +232,7 @@ export default function TaskBoardToolbar({
               {(hasTaskMasterConfigured || totalTaskCount > 0) && (
                 <button
                   onClick={onOpenCreateTask}
-                  className="flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 font-medium text-white hover:bg-blue-700"
+                  className="flex min-h-11 items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 font-medium text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   title={t('buttons.addTask')}
                 >
                   <Plus className="h-4 w-4" />
@@ -261,6 +261,6 @@ export default function TaskBoardToolbar({
       />
 
       <TaskQuickSortBar sortField={sortField} sortOrder={sortOrder} onSortChange={onSortChange} />
-    </>
+    </div>
   );
 }

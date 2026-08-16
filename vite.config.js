@@ -1,10 +1,10 @@
-import crypto from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
+import { readBuildIdentityFileSync, serializeBuildIdentity } from './shared/buildIdentity.js'
 import { getConnectableHost, normalizeLoopbackHost } from './shared/networkHosts.js'
 
 export default defineConfig(({ mode }) => {
@@ -22,8 +22,13 @@ export default defineConfig(({ mode }) => {
   // TODO: Remove support for legacy PORT variables in all locations in a future major release, leaving only SERVER_PORT.
   const serverPort = env.SERVER_PORT || env.PORT || 3001
   const packageVersion = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version
-  const buildId = (env.CLOUDCLI_BUILD_ID || `${packageVersion}-${Date.now().toString(36)}-${crypto.randomBytes(8).toString('hex')}`)
-    .replace(/[^A-Za-z0-9._-]/g, '-')
+  const buildIdentity = readBuildIdentityFileSync(path.resolve('.build-identity', 'build-identity.json'), {
+    expectedVersion: packageVersion,
+    source: 'Canonical build identity',
+  })
+  if (env.CLOUDCLI_BUILD_ID && env.CLOUDCLI_BUILD_ID.trim() !== buildIdentity.buildId) {
+    throw new Error('CLOUDCLI_BUILD_ID differs from the generated canonical build identity.')
+  }
 
   return {
     plugins: [
@@ -32,12 +37,28 @@ export default defineConfig(({ mode }) => {
         name: 'cloudcli-build-identity',
         apply: 'build',
         async closeBundle() {
-          await fs.writeFile(path.resolve('dist', 'build-id.txt'), `${buildId}\n`, 'utf8')
+          await fs.writeFile(path.resolve('dist', 'build-identity.json'), serializeBuildIdentity(buildIdentity), 'utf8')
+          await fs.writeFile(path.resolve('dist', 'build-id.txt'), `${buildIdentity.buildId}\n`, 'utf8')
+          const serviceWorkerPath = path.resolve('dist', 'sw.js')
+          const serviceWorkerMarker = 'const EMBEDDED_BUILD_ID = null;'
+          const serviceWorkerSource = await fs.readFile(serviceWorkerPath, 'utf8')
+          if (serviceWorkerSource.split(serviceWorkerMarker).length !== 2) {
+            throw new Error('Service worker build identity injection marker is missing or duplicated.')
+          }
+          await fs.writeFile(
+            serviceWorkerPath,
+            serviceWorkerSource.replace(
+              serviceWorkerMarker,
+              `const EMBEDDED_BUILD_ID = ${JSON.stringify(buildIdentity.buildId)};`,
+            ),
+            'utf8',
+          )
         }
       }
     ],
     define: {
-      'globalThis.__CLOUDCLI_BUILD_ID__': JSON.stringify(buildId)
+      'globalThis.__CLOUDCLI_BUILD_ID__': JSON.stringify(buildIdentity.buildId),
+      'globalThis.__CLOUDCLI_VERSION__': JSON.stringify(buildIdentity.version)
     },
     resolve: {
       alias: {

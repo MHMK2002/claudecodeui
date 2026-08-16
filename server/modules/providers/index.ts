@@ -14,6 +14,13 @@ export {
   providerSelectionService,
 } from './services/provider-selection.service.js';
 
+// providerTextCompletionService: used by Git for isolated, read-only,
+// abortable commit-message text generation across every catalog provider.
+export {
+  ProviderTextCompletionError,
+  providerTextCompletionService,
+} from './services/provider-text-completion.service.js';
+
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
 

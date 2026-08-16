@@ -1,21 +1,43 @@
-import { IS_PLATFORM } from '../../../constants/config';
-import { getStoredAuthToken } from '../../../utils/api';
-import type { ShellIncomingMessage, ShellOutgoingMessage } from '../types/types';
+import type {
+  ShellOutgoingMessage,
+  ShellIncomingMessage,
+  ShellTerminalMode,
+} from '../types/types';
 
-export function getShellWebSocketUrl(): string | null {
+type ShellInitInput = {
+  mode: ShellTerminalMode;
+  projectId?: string;
+  command?: string;
+  cols: number;
+  rows: number;
+  forceRestart?: boolean;
+};
+
+/** Builds the exact trust-boundary payload for local versus command terminals. */
+export function createShellInitMessage(input: ShellInitInput): ShellOutgoingMessage {
+  if (input.mode === 'command-terminal') {
+    return {
+      type: 'init',
+      mode: 'command-terminal',
+      command: input.command ?? '',
+      cols: input.cols,
+      rows: input.rows,
+    };
+  }
+  return {
+    type: 'init',
+    mode: 'interactive-terminal',
+    projectId: input.projectId ?? '',
+    cols: input.cols,
+    rows: input.rows,
+    forceRestart: input.forceRestart || undefined,
+  };
+}
+
+export function getShellWebSocketUrl(mode: ShellTerminalMode): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-
-  if (IS_PLATFORM) {
-    return `${protocol}//${window.location.host}/shell`;
-  }
-
-  const token = getStoredAuthToken();
-  if (!token) {
-    console.error('No authentication token found for Shell WebSocket connection');
-    return null;
-  }
-
-  return `${protocol}//${window.location.host}/shell?token=${encodeURIComponent(token)}`;
+  const pathname = mode === 'command-terminal' ? '/command-terminal' : '/shell';
+  return `${protocol}//${window.location.host}${pathname}`;
 }
 
 export function parseShellMessage(payload: string): ShellIncomingMessage | null {

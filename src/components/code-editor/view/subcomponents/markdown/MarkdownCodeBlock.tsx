@@ -52,7 +52,7 @@ export default function MarkdownCodeBlock({
               setTimeout(() => setCopied(false), 2000);
             }
           })}
-        className="absolute right-2 top-2 z-10 rounded-md border border-border bg-card/90 px-2 py-1 text-xs text-foreground/80 opacity-0 transition-opacity hover:bg-muted group-hover:opacity-100"
+        className="absolute right-2 top-2 z-10 min-h-11 min-w-11 rounded-md border border-border bg-card/90 px-2 py-1 text-xs text-foreground opacity-0 transition-opacity hover:bg-muted group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
       >
         {copied ? 'Copied!' : 'Copy'}
       </button>

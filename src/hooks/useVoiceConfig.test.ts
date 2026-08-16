@@ -4,10 +4,12 @@ import test from 'node:test';
 import {
   DEFAULT_CODEX_CLEANUP_MODEL,
   DEFAULT_CLEANUP_PROMPT,
+  initializeVoiceSecrets,
   normalizeSttLanguages,
   normalizeSttPrompt,
   normalizeSttTerms,
   readVoiceConfig,
+  resetVoiceSecretStateForTests,
 } from './useVoiceConfig';
 
 class MemoryStorage {
@@ -19,6 +21,10 @@ class MemoryStorage {
 
   setItem(key: string, value: string): void {
     this.values.set(key, value);
+  }
+
+  removeItem(key: string): void {
+    this.values.delete(key);
   }
 }
 
@@ -83,4 +89,65 @@ test('falls back to defaults for malformed storage', () => {
   assert.equal(config.cleanupEnabled, false);
   assert.deepEqual(config.sttLanguages, []);
   assert.deepEqual(config.sttTerms, []);
+});
+
+test('migrates legacy secrets only after secure write and read-back', async () => {
+  resetVoiceSecretStateForTests();
+  installStorage({
+    baseUrl: 'https://voice.example/v1',
+    apiKey: 'legacy-openai-secret',
+    sonioxApiKey: 'legacy-soniox-secret',
+  });
+  let secure = { apiKey: '', sonioxApiKey: '' };
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      cloudcliDesktopVoiceSecrets: {
+        get: async () => ({ ...secure }),
+        set: async (patch: Partial<typeof secure>) => {
+          secure = { ...secure, ...patch };
+          return { ...secure };
+        },
+      },
+      dispatchEvent: () => true,
+    },
+  });
+
+  try {
+    assert.equal(await initializeVoiceSecrets(), true);
+    assert.deepEqual(secure, {
+      apiKey: 'legacy-openai-secret',
+      sonioxApiKey: 'legacy-soniox-secret',
+    });
+    const stored = JSON.parse(localStorage.getItem('voiceConfig') ?? '{}') as Record<string, unknown>;
+    assert.equal('apiKey' in stored, false);
+    assert.equal('sonioxApiKey' in stored, false);
+    assert.equal(readVoiceConfig().apiKey, 'legacy-openai-secret');
+  } finally {
+    Reflect.deleteProperty(globalThis, 'window');
+    resetVoiceSecretStateForTests();
+  }
+});
+
+test('keeps legacy secrets when secure read-back does not match', async () => {
+  resetVoiceSecretStateForTests();
+  installStorage({ apiKey: 'do-not-lose-me' });
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      cloudcliDesktopVoiceSecrets: {
+        get: async () => ({ apiKey: '', sonioxApiKey: '' }),
+        set: async () => ({ apiKey: '', sonioxApiKey: '' }),
+      },
+      dispatchEvent: () => true,
+    },
+  });
+  try {
+    await assert.rejects(initializeVoiceSecrets(), /read-back failed/i);
+    const stored = JSON.parse(localStorage.getItem('voiceConfig') ?? '{}') as Record<string, unknown>;
+    assert.equal(stored.apiKey, 'do-not-lose-me');
+  } finally {
+    Reflect.deleteProperty(globalThis, 'window');
+    resetVoiceSecretStateForTests();
+  }
 });

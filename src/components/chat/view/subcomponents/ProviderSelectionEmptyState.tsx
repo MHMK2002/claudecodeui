@@ -5,13 +5,11 @@ import { Trans, useTranslation } from "react-i18next";
 import type {
   ProjectSession,
   LLMProvider,
+  ProviderSelectionCatalog,
 } from "../../../../types/app";
 import SessionProviderLogo from "../../../llm-logo-provider/SessionProviderLogo";
 import { NextTaskBanner } from "../../../task-master";
 import type { TaskMasterTask } from "../../../task-master/types";
-import {
-  useProviderSelectionCatalog,
-} from "../../../../shared/hooks/useProviderSelectionCatalog";
 import {
   Dialog,
   DialogTrigger,
@@ -63,6 +61,8 @@ type ProviderSelectionEmptyStateProps = {
   onShowAllTasks?: (() => void) | null;
   onStartTask?: ((task: TaskMasterTask) => void) | null;
   isStartingTask?: boolean;
+  catalog: ProviderSelectionCatalog | null;
+  catalogLoading: boolean;
 };
 
 type ProviderGroup = {
@@ -116,10 +116,11 @@ export default function ProviderSelectionEmptyState({
   onShowAllTasks,
   onStartTask,
   isStartingTask = false,
+  catalog,
+  catalogLoading,
 }: ProviderSelectionEmptyStateProps) {
   const { t } = useTranslation("chat");
   const [dialogOpen, setDialogOpen] = useState(false);
-  const { catalog, loading: catalogLoading, error: catalogError } = useProviderSelectionCatalog();
 
   const visibleProviderGroups = useMemo<ProviderGroup[]>(() => {
     const entries = (catalog?.providers ?? []).filter((entry) => entry.available);
@@ -266,13 +267,9 @@ export default function ProviderSelectionEmptyState({
                 />
                 <CommandList className="max-h-[350px]">
                   <CommandEmpty>
-                    {catalogError
-                      ? t("providerSelection.catalogError", {
-                          defaultValue: "Providers could not be loaded. Check Settings and try again.",
-                        })
-                      : t("providerSelection.noModelsFound", {
-                          defaultValue: "No models found.",
-                        })}
+                    {t("providerSelection.noModelsFound", {
+                      defaultValue: "No models found.",
+                    })}
                   </CommandEmpty>
                   {visibleProviderGroups.map((group, idx) => (
                     <CommandGroup
@@ -379,6 +376,7 @@ export default function ProviderSelectionEmptyState({
                 onStartTask={onStartTask}
                 isStartingTask={isStartingTask}
                 onShowAllTasks={onShowAllTasks}
+                actionEmphasis="neutral"
               />
             </div>
           )}
@@ -404,6 +402,7 @@ export default function ProviderSelectionEmptyState({
                 onStartTask={onStartTask}
                 isStartingTask={isStartingTask}
                 onShowAllTasks={onShowAllTasks}
+                actionEmphasis="neutral"
               />
             </div>
           )}

@@ -1,5 +1,7 @@
 import type { ReactNode, RefObject } from 'react';
+
 import type { FileTreeNode as FileTreeNodeType, FileTreeViewMode } from '../types/types';
+
 import FileTreeNode from './FileTreeNode';
 
 type FileTreeListProps = {
@@ -51,7 +53,7 @@ export default function FileTreeList({
   operationLoading,
 }: FileTreeListProps) {
   return (
-    <div>
+    <div role="tree" aria-label="Files" tabIndex={-1}>
       {items.map((item) => (
         <FileTreeNode
           key={item.path}

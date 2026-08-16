@@ -11,6 +11,7 @@ type TaskBoardContentProps = {
   filteredTasks: TaskMasterTask[];
   showParentTasks: boolean;
   onTaskClick: (task: TaskSelection) => void;
+  onClearFilters: () => void;
 };
 
 function KanbanColumns({
@@ -53,8 +54,8 @@ function KanbanColumns({
                 <div className="mx-auto mb-2 flex h-8 w-8 items-center justify-center rounded-full bg-gray-200 dark:bg-gray-700">
                   <div className="h-3 w-3 rounded-full bg-gray-300 dark:bg-gray-600" />
                 </div>
-                <div className="text-xs font-medium text-gray-500 dark:text-gray-400">{t('kanban.noTasksYet')}</div>
-                <div className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                <div className="text-xs font-medium text-foreground">{t('kanban.noTasksYet')}</div>
+                <div className="mt-1 text-xs text-foreground">
                   {column.status === 'pending'
                     ? t('kanban.tasksWillAppear')
                     : column.status === 'in-progress'
@@ -89,6 +90,7 @@ export default function TaskBoardContent({
   filteredTasks,
   showParentTasks,
   onTaskClick,
+  onClearFilters,
 }: TaskBoardContentProps) {
   const { t } = useTranslation('tasks');
 
@@ -99,6 +101,13 @@ export default function TaskBoardContent({
           <Search className="mx-auto mb-4 h-12 w-12 opacity-50" />
           <h3 className="mb-2 text-lg font-medium">{t('noMatchingTasks.title')}</h3>
           <p className="text-sm">{t('noMatchingTasks.description')}</p>
+          <button
+            type="button"
+            onClick={onClearFilters}
+            className="mt-4 min-h-11 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            Clear filters
+          </button>
         </div>
       </div>
     );

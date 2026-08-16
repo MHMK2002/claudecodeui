@@ -62,8 +62,14 @@ export default function ImageViewer({ file, onClose }: ImageViewerProps) {
       <div className="mx-4 max-h-[90vh] w-full max-w-4xl overflow-hidden rounded-lg bg-white shadow-xl dark:bg-gray-800">
         <div className="flex items-center justify-between border-b p-4">
           <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{file.name}</h3>
-          <Button variant="ghost" size="sm" onClick={onClose} className="h-8 w-8 p-0">
-            <X className="h-4 w-4" />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            className="min-h-11 min-w-11 p-0 focus-visible:ring-2"
+            aria-label="Close image viewer"
+          >
+            <X className="h-4 w-4" aria-hidden="true" />
           </Button>
         </div>
 

@@ -74,7 +74,7 @@ export default function TasksSettingsTab() {
                         <ol className="list-inside list-decimal space-y-1 text-xs">
                           <li>{t('tasks.notInstalled.steps.restart')}</li>
                           <li>{t('tasks.notInstalled.steps.autoAvailable')}</li>
-                          <li>{t('tasks.notInstalled.steps.initCommand')}</li>
+                          <li>Open the project&apos;s Tasks workspace and choose Set up Tasks.</li>
                         </ol>
                       </div>
                     </div>

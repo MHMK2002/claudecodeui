@@ -16,6 +16,7 @@ export const FILE_STATUS_LABELS: Record<FileStatusCode, string> = {
   A: 'Added',
   D: 'Deleted',
   U: 'Untracked',
+  C: 'Conflict',
 };
 
 export const FILE_STATUS_BADGE_CLASSES: Record<FileStatusCode, string> = {
@@ -23,6 +24,7 @@ export const FILE_STATUS_BADGE_CLASSES: Record<FileStatusCode, string> = {
   A: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 border-green-200 dark:border-green-800/50',
   D: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 border-red-200 dark:border-red-800/50',
   U: 'bg-muted text-muted-foreground border-border',
+  C: 'border-destructive/30 bg-destructive/10 text-destructive',
 };
 
 export const CONFIRMATION_TITLES: Record<ConfirmActionType, string> = {
@@ -34,6 +36,7 @@ export const CONFIRMATION_TITLES: Record<ConfirmActionType, string> = {
   publish: 'Publish Branch',
   revertLocalCommit: 'Revert Local Commit',
   deleteBranch: 'Delete Branch',
+  abortGitOperation: 'Abort Git Operation',
 };
 
 export const CONFIRMATION_ACTION_LABELS: Record<ConfirmActionType, string> = {
@@ -45,6 +48,7 @@ export const CONFIRMATION_ACTION_LABELS: Record<ConfirmActionType, string> = {
   publish: 'Publish',
   revertLocalCommit: 'Revert Commit',
   deleteBranch: 'Delete',
+  abortGitOperation: 'Abort Operation',
 };
 
 export const CONFIRMATION_BUTTON_CLASSES: Record<ConfirmActionType, string> = {
@@ -56,6 +60,7 @@ export const CONFIRMATION_BUTTON_CLASSES: Record<ConfirmActionType, string> = {
   publish: 'bg-purple-600 hover:bg-purple-700',
   revertLocalCommit: 'bg-yellow-600 hover:bg-yellow-700',
   deleteBranch: 'bg-red-600 hover:bg-red-700',
+  abortGitOperation: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
 };
 
 export const CONFIRMATION_ICON_CONTAINER_CLASSES: Record<ConfirmActionType, string> = {
@@ -67,6 +72,7 @@ export const CONFIRMATION_ICON_CONTAINER_CLASSES: Record<ConfirmActionType, stri
   publish: 'bg-yellow-100 dark:bg-yellow-900/30',
   revertLocalCommit: 'bg-yellow-100 dark:bg-yellow-900/30',
   deleteBranch: 'bg-red-100 dark:bg-red-900/30',
+  abortGitOperation: 'bg-destructive/10',
 };
 
 export const CONFIRMATION_ICON_CLASSES: Record<ConfirmActionType, string> = {
@@ -78,4 +84,5 @@ export const CONFIRMATION_ICON_CLASSES: Record<ConfirmActionType, string> = {
   publish: 'text-yellow-600 dark:text-yellow-400',
   revertLocalCommit: 'text-yellow-600 dark:text-yellow-400',
   deleteBranch: 'text-red-600 dark:text-red-400',
+  abortGitOperation: 'text-destructive',
 };

@@ -15,11 +15,10 @@ import type { TFunction } from 'i18next';
 
 import { Button, Input, Tooltip } from '../../../../shared/view/ui';
 import { CLOUDCLI_WORDMARK_FONT_FAMILY } from '../../../../constants/branding';
-import { IS_PLATFORM } from '../../../../constants/config';
+import { IS_PLATFORM, PRODUCT_CONFIG } from '../../../../constants/config';
 import { cn } from '../../../../lib/utils';
 import type { SidebarSearchMode } from '../../types/types';
 
-import GitHubStarBadge from './GitHubStarBadge';
 
 const MOD_KEY =
   typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl';
@@ -159,7 +158,7 @@ export default function SidebarHeader({
         <div className="flex items-center justify-between gap-2">
           {IS_PLATFORM ? (
             <a
-              href="https://cloudcli.ai/dashboard"
+              href={`${PRODUCT_CONFIG.homepageUrl}/dashboard`}
               className="flex min-w-0 items-center gap-2.5 transition-opacity hover:opacity-80"
               title={t('tooltips.viewEnvironments')}
             >
@@ -222,8 +221,6 @@ export default function SidebarHeader({
           </div>
         </div>
 
-        <GitHubStarBadge />
-
         {/* Search bar */}
         {showSearchTools && (
           <div className="mt-2.5 space-y-2">
@@ -272,7 +269,7 @@ export default function SidebarHeader({
         <div className="flex items-center justify-between">
           {IS_PLATFORM ? (
             <a
-              href="https://cloudcli.ai/dashboard"
+              href={`${PRODUCT_CONFIG.homepageUrl}/dashboard`}
               className="flex min-w-0 items-center gap-2.5 transition-opacity active:opacity-70"
               title={t('tooltips.viewEnvironments')}
             >

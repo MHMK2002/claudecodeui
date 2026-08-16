@@ -1,5 +1,6 @@
 import { ChevronDown, ChevronRight, Info } from 'lucide-react';
 import { useState } from 'react';
+
 import { getStatusBadgeClass } from '../../utils/gitPanelUtils';
 
 type FileStatusLegendProps = {
@@ -11,6 +12,7 @@ const LEGEND_ITEMS = [
   { status: 'A', label: 'Added' },
   { status: 'D', label: 'Deleted' },
   { status: 'U', label: 'Untracked' },
+  { status: 'C', label: 'Conflict' },
 ] as const;
 
 export default function FileStatusLegend({ isMobile }: FileStatusLegendProps) {

@@ -370,7 +370,7 @@ const removeSessionFromProject = (project: Project, sessionIdToDelete: string): 
   return updatedProject;
 };
 
-const VALID_TABS: Set<string> = new Set(['chat', 'files', 'shell', 'git', 'tasks', 'browser']);
+const VALID_TABS: Set<string> = new Set(['chat', 'files', 'shell', 'git', 'tasks', 'schedules', 'browser']);
 
 const isValidTab = (tab: string): tab is AppTab => {
   return VALID_TABS.has(tab) || tab.startsWith('plugin:');
@@ -414,7 +414,7 @@ export function useProjectsState({
   const [loadingProgress, setLoadingProgress] = useState<LoadingProgress | null>(null);
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsInitialTab, setSettingsInitialTab] = useState('agents');
+  const [settingsInitialTab, setSettingsInitialTab] = useState('appearance');
   const [externalMessageUpdate, setExternalMessageUpdate] = useState(0);
   /**
    * `newSessionTrigger` is an explicit, monotonic intent signal for user-driven
@@ -646,7 +646,7 @@ export function useProjectsState({
     }
   }, []);
 
-  const openSettings = useCallback((tab = 'tools') => {
+  const openSettings = useCallback((tab = 'appearance') => {
     setSettingsInitialTab(tab);
     setShowSettings(true);
   }, []);
@@ -1008,7 +1008,7 @@ export function useProjectsState({
       clearSessionAttention(session.id);
       setSelectedSession(session);
 
-      if (activeTab === 'tasks' || activeTab === 'browser') {
+      if (activeTab === 'tasks' || activeTab === 'schedules' || activeTab === 'browser') {
         setActiveTab('chat');
       }
 
@@ -1189,7 +1189,10 @@ export function useProjectsState({
       isLoading: isLoadingProjects,
       loadingProgress,
       onRefresh: handleSidebarRefresh,
-      onShowSettings: () => setShowSettings(true),
+      onShowSettings: () => {
+        setSettingsInitialTab('appearance');
+        setShowSettings(true);
+      },
       showSettings,
       settingsInitialTab,
       onCloseSettings: () => setShowSettings(false),

@@ -9,7 +9,6 @@ import {
   Play,
   Settings,
   Target,
-  Terminal,
   Zap,
 } from 'lucide-react';
 
@@ -18,13 +17,13 @@ import { useTaskMaster } from '../context/TaskMasterContext';
 import type { TaskMasterTask } from '../types';
 
 import TaskDetailModal from './TaskDetailModal';
-import TaskMasterSetupModal from './modals/TaskMasterSetupModal';
 
 type NextTaskBannerProps = {
   onShowAllTasks?: (() => void) | null;
   onStartTask?: ((task: TaskMasterTask) => void) | null;
   isStartingTask?: boolean;
   className?: string;
+  actionEmphasis?: 'primary' | 'neutral';
 };
 
 function PriorityIndicator({ priority }: { priority?: string }) {
@@ -56,6 +55,7 @@ export default function NextTaskBanner({
   onStartTask = null,
   isStartingTask = false,
   className = '',
+  actionEmphasis = 'primary',
 }: NextTaskBannerProps) {
   const {
     nextTask,
@@ -64,12 +64,9 @@ export default function NextTaskBanner({
     isLoadingTasks,
     projectTaskMaster,
     refreshTasks,
-    refreshProjects,
-    setCurrentProject,
   } = useTaskMaster();
 
   const [showTaskDetail, setShowTaskDetail] = useState(false);
-  const [showSetupModal, setShowSetupModal] = useState(false);
   const [showSetupDetails, setShowSetupDetails] = useState(false);
 
   if (!currentProject || isLoadingTasks) {
@@ -79,16 +76,9 @@ export default function NextTaskBanner({
   const hasTasks = Array.isArray(tasks) && tasks.length > 0;
   const hasTaskMaster = Boolean(projectTaskMaster?.hasTaskmaster || currentProject.taskmaster?.hasTaskmaster);
 
-  const handleSetupRefresh = () => {
-    void refreshProjects();
-    setCurrentProject(currentProject);
-    void refreshTasks();
-  };
-
   if (!hasTasks && !hasTaskMaster) {
     return (
-      <>
-        <div className={cn('bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-3 mb-4', className)}>
+      <div className={cn('bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-3 mb-4', className)}>
           <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-2">
               <List className="h-4 w-4 text-blue-600 dark:text-blue-400" />
@@ -96,11 +86,17 @@ export default function NextTaskBanner({
             </div>
 
             <button
-              onClick={() => setShowSetupModal(true)}
-              className="flex items-center gap-1 rounded bg-blue-600 px-2 py-1 text-xs text-white transition-colors hover:bg-blue-700"
+              onClick={() => onShowAllTasks?.()}
+              disabled={!onShowAllTasks}
+              className={cn(
+                'flex min-h-11 items-center gap-1 rounded-md border px-3 py-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                actionEmphasis === 'primary'
+                  ? 'border-primary bg-primary text-primary-foreground hover:bg-primary/90'
+                  : 'border-border bg-background text-foreground hover:bg-muted',
+              )}
             >
-              <Terminal className="h-3 w-3" />
-              Initialize
+              <Settings className="h-3 w-3" />
+              Set up Tasks
             </button>
           </div>
 
@@ -119,15 +115,7 @@ export default function NextTaskBanner({
               <p>- Kanban and list views for day-to-day execution.</p>
             </div>
           )}
-        </div>
-
-        <TaskMasterSetupModal
-          isOpen={showSetupModal}
-          project={currentProject}
-          onClose={() => setShowSetupModal(false)}
-          onAfterClose={handleSetupRefresh}
-        />
-      </>
+      </div>
     );
   }
 
@@ -151,10 +139,15 @@ export default function NextTaskBanner({
               <button
                 onClick={() => onStartTask?.(nextTask)}
                 disabled={isStartingTask}
-                className="flex items-center gap-1 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                className={cn(
+                  'flex min-h-11 items-center gap-1 rounded-md border px-3 py-2 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60',
+                  actionEmphasis === 'primary'
+                    ? 'border-primary bg-primary text-primary-foreground hover:bg-primary/90'
+                    : 'border-border bg-background text-foreground hover:bg-muted',
+                )}
               >
                 {isStartingTask ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
-                {isStartingTask ? 'Starting…' : 'Start Task'}
+                {isStartingTask ? 'Starting…' : 'Start task'}
               </button>
 
               <button
@@ -209,7 +202,12 @@ export default function NextTaskBanner({
             {onShowAllTasks && (
               <button
                 onClick={onShowAllTasks}
-                className="rounded bg-purple-600 px-2 py-1 text-xs text-white transition-colors hover:bg-purple-700"
+                className={cn(
+                  'min-h-11 rounded-md border px-3 py-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  actionEmphasis === 'primary'
+                    ? 'border-primary bg-primary text-primary-foreground hover:bg-primary/90'
+                    : 'border-border bg-background text-foreground hover:bg-muted',
+                )}
               >
                 Review
               </button>

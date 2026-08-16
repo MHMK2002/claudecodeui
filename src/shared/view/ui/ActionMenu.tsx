@@ -40,6 +40,34 @@ type ActionMenuProps = {
   onOpenChange?: (open: boolean) => void;
 };
 
+type ActionMenuNavigationKey = 'ArrowDown' | 'ArrowUp' | 'Home' | 'End';
+
+/** Pure focus resolver used by ActionMenu keyboard handling and its regression tests. */
+export function getActionMenuFocusIndex(
+  enabledItems: boolean[],
+  currentIndex: number,
+  key: ActionMenuNavigationKey,
+): number {
+  const enabledIndexes = enabledItems
+    .map((enabled, index) => enabled ? index : -1)
+    .filter((index) => index >= 0);
+  if (enabledIndexes.length === 0) return -1;
+  if (key === 'Home') return enabledIndexes[0];
+  if (key === 'End') return enabledIndexes[enabledIndexes.length - 1];
+
+  const currentPosition = enabledIndexes.indexOf(currentIndex);
+  if (key === 'ArrowDown') {
+    return enabledIndexes[(currentPosition + 1 + enabledIndexes.length) % enabledIndexes.length];
+  }
+  const previousPosition = currentPosition < 0 ? enabledIndexes.length - 1 : currentPosition - 1;
+  return enabledIndexes[(previousPosition + enabledIndexes.length) % enabledIndexes.length];
+}
+
+/** Tab exits a menu through normal browser focus order, so focus must not be restored. */
+export function shouldActionMenuCloseWithoutFocusReturn(key: string): boolean {
+  return key === 'Tab';
+}
+
 export default function ActionMenu({
   label,
   items,
@@ -67,6 +95,7 @@ export default function ActionMenu({
   // focus is not stolen from wherever the user clicked.
   const restoreFocusRef = React.useRef(false);
   const focusMenuOnOpenRef = React.useRef(false);
+  const initialFocusRef = React.useRef<'first' | 'last'>('first');
   const wasOpenRef = React.useRef(false);
   const menuId = React.useId();
 
@@ -130,8 +159,13 @@ export default function ActionMenu({
       wasOpenRef.current = true;
       if (focusMenuOnOpenRef.current) {
         const menu = menuRef.current;
-        const firstItem = menu?.querySelector<HTMLButtonElement>('[role="menuitem"]:not([disabled])');
-        (firstItem ?? menu)?.focus();
+        const items = menu
+          ? Array.from(menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not([disabled])'))
+          : [];
+        const initialItem = initialFocusRef.current === 'last'
+          ? items[items.length - 1]
+          : items[0];
+        (initialItem ?? menu)?.focus();
       }
       return;
     }
@@ -183,7 +217,35 @@ export default function ActionMenu({
       ref={menuRef}
       id={menuId}
       role="menu"
+      aria-label={ariaLabel || label}
       tabIndex={-1}
+      onKeyDown={(event) => {
+        if (shouldActionMenuCloseWithoutFocusReturn(event.key)) {
+          event.preventDefault();
+          const focusable = Array.from(document.querySelectorAll<HTMLElement>(
+            'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+          )).filter((element) => !menuRef.current?.contains(element));
+          const triggerIndex = focusable.findIndex((element) => element === triggerRef.current);
+          const offset = event.shiftKey ? -1 : 1;
+          const destination = focusable[triggerIndex + offset];
+          restoreFocusRef.current = false;
+          setMenuOpen(false);
+          queueMicrotask(() => destination?.focus());
+          return;
+        }
+        if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+        event.preventDefault();
+        const items = Array.from(
+          event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+        );
+        const currentIndex = items.findIndex((item) => item === document.activeElement);
+        const nextIndex = getActionMenuFocusIndex(
+          items.map((item) => !item.disabled),
+          currentIndex,
+          event.key as ActionMenuNavigationKey,
+        );
+        items[nextIndex]?.focus();
+      }}
       className={cn(
         portal ? 'fixed z-[70]' : 'absolute top-full z-50 mt-2',
         'min-w-[220px] rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg',
@@ -198,15 +260,16 @@ export default function ActionMenu({
         const Icon = item.icon;
         return (
           <React.Fragment key={item.key}>
-            {item.showDividerBefore && <div className="mx-2 my-1 h-px bg-border" />}
+            {item.showDividerBefore && <div role="separator" className="mx-2 my-1 h-px bg-border" />}
             <button
               type="button"
               role="menuitem"
+              tabIndex={-1}
               disabled={item.disabled || item.loading}
               onClick={() => runItem(item)}
               className={cn(
-                'flex w-full items-start gap-3 rounded-md px-3 py-2 text-left text-sm transition-colors',
-                'focus:outline-none focus-visible:bg-accent',
+                'flex min-h-11 w-full items-start gap-3 rounded-md px-3 py-2 text-left text-sm transition-colors',
+                'focus:outline-none focus-visible:bg-accent focus-visible:ring-2 focus-visible:ring-ring',
                 item.disabled || item.loading
                   ? 'cursor-not-allowed opacity-50'
                   : item.isDanger
@@ -249,7 +312,23 @@ export default function ActionMenu({
         aria-controls={isOpen ? menuId : undefined}
         onClick={(event) => {
           focusMenuOnOpenRef.current = event.detail === 0;
+          initialFocusRef.current = 'first';
           toggleMenu();
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+          event.preventDefault();
+          focusMenuOnOpenRef.current = true;
+          initialFocusRef.current = event.key === 'ArrowUp' ? 'last' : 'first';
+          if (!isOpen) {
+            toggleMenu();
+            return;
+          }
+          const items = menuRef.current
+            ? Array.from(menuRef.current.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not([disabled])'))
+            : [];
+          const target = event.key === 'ArrowUp' ? items[items.length - 1] : items[0];
+          target?.focus();
         }}
       >
         {TriggerIcon && <TriggerIcon className="h-4 w-4" />}

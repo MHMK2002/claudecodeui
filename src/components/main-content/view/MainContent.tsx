@@ -18,6 +18,8 @@ import EditorSidebar from '../../code-editor/view/EditorSidebar';
 import type { Project } from '../../../types/app';
 import { TaskMasterPanel } from '../../task-master';
 import { useSubagentTranscript } from '../hooks/useSubagentTranscript';
+import { useSessionStore } from '../../../stores/useSessionStore';
+import ScheduleEditorWorkspace from '../../scheduled-runs/ScheduleEditorWorkspace';
 
 import MainContentHeader from './subcomponents/MainContentHeader';
 import MainContentStateView from './subcomponents/MainContentStateView';
@@ -30,8 +32,6 @@ type TaskMasterContextValue = {
 
 type TasksSettingsContextValue = {
   tasksEnabled: boolean;
-  isTaskMasterInstalled: boolean | null;
-  isTaskMasterReady: boolean | null;
 };
 
 function MainContent({
@@ -56,12 +56,16 @@ function MainContent({
   newSessionTrigger,
   onProjectSelect,
   onProjectsRefresh,
+  taskWorkspaceRequest,
+  scheduleWorkspaceRequest,
+  onCloseScheduleWorkspace,
 }: MainContentProps) {
+  const sessionStore = useSessionStore();
   const { preferences } = useUiPreferences();
   const { showRawParameters, showThinking, sendByCtrlEnter } = preferences;
 
   const { currentProject, setCurrentProject } = useTaskMaster() as TaskMasterContextValue;
-  const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings() as TasksSettingsContextValue;
+  const { tasksEnabled } = useTasksSettings() as TasksSettingsContextValue;
   const [browserUseEnabled, setBrowserUseEnabled] = useState(false);
   const selectedSubagentState = useSubagentTranscript(
     selectedSession?.id ?? null,
@@ -97,7 +101,9 @@ function MainContent({
     && (selectedSubagentState.status === 'not-found' || selectedSubagentState.status === 'error'),
   );
 
-  const shouldShowTasksTab = Boolean(tasksEnabled && isTaskMasterInstalled);
+  // Task setup is itself a valid Tasks workspace state, so the tab must stay
+  // reachable before the optional TaskMaster CLI/runtime is installed.
+  const shouldShowTasksTab = Boolean(tasksEnabled);
   const shouldShowBrowserTab = browserUseEnabled;
 
   const {
@@ -180,6 +186,7 @@ function MainContent({
   return (
     <div className="flex h-full flex-col">
       <MainContentHeader
+        sessionStore={sessionStore}
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         selectedProject={selectedProject}
@@ -215,6 +222,7 @@ function MainContent({
             ) : (
             <ErrorBoundary showDetails>
               <ChatInterface
+                sessionStore={sessionStore}
                 selectedProject={selectedProject}
                 selectedSession={transcriptSession}
                 ws={ws}
@@ -248,7 +256,6 @@ function MainContent({
             <div className="h-full w-full overflow-hidden">
               <StandaloneShell
                 project={selectedProject}
-                session={selectedSession}
                 showHeader={false}
                 isActive={activeTab === 'shell'}
               />
@@ -263,6 +270,7 @@ function MainContent({
                 onFileOpen={handleFileOpen}
                 onProjectSelect={onProjectSelect}
                 onProjectsRefresh={onProjectsRefresh}
+                onShowSettings={onShowSettings}
               />
             </div>
           )}
@@ -274,6 +282,18 @@ function MainContent({
               onSessionEstablished={onSessionEstablished}
               onNavigateToSession={(sessionId) => onNavigateToSession(sessionId)}
               onSessionProcessing={onSessionProcessing}
+              onShowSettings={onShowSettings}
+              workspaceRequest={taskWorkspaceRequest}
+            />
+          )}
+
+          {activeTab === 'schedules' && (
+            <ScheduleEditorWorkspace
+              key={`${selectedProject.projectId}:${scheduleWorkspaceRequest?.requestId ?? 0}`}
+              project={selectedProject}
+              editingSchedule={scheduleWorkspaceRequest?.schedule ?? null}
+              onClose={onCloseScheduleWorkspace}
+              onOpenAgentSettings={() => onShowSettings('agents')}
             />
           )}
 
@@ -294,19 +314,21 @@ function MainContent({
           )}
         </div>
 
-        <EditorSidebar
-          editingFile={editingFile}
-          isMobile={isMobile}
-          editorExpanded={editorExpanded}
-          editorWidth={editorWidth}
-          hasManualWidth={hasManualWidth}
-          resizeHandleRef={resizeHandleRef}
-          onResizeStart={handleResizeStart}
-          onCloseEditor={handleCloseEditor}
-          onToggleEditorExpand={handleToggleEditorExpand}
-          projectPath={selectedProject.path}
-          fillSpace={activeTab === 'files'}
-        />
+        {activeTab !== 'schedules' && (
+          <EditorSidebar
+            editingFile={editingFile}
+            isMobile={isMobile}
+            editorExpanded={editorExpanded}
+            editorWidth={editorWidth}
+            hasManualWidth={hasManualWidth}
+            resizeHandleRef={resizeHandleRef}
+            onResizeStart={handleResizeStart}
+            onCloseEditor={handleCloseEditor}
+            onToggleEditorExpand={handleToggleEditorExpand}
+            projectPath={selectedProject.path}
+            fillSpace={activeTab === 'files'}
+          />
+        )}
       </div>
     </div>
   );

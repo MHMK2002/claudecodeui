@@ -5,9 +5,22 @@ import { sessionsDb } from '@/modules/database/index.js';
 import { parseFilesInputTag, toImageAttachments } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage } from '@/shared/types.js';
-import { createNormalizedMessage, generateMessageId, readObjectRecord, sliceTailPage } from '@/shared/utils.js';
+import {
+  attachToolResultsToToolUseRows,
+  createNormalizedMessage,
+  generateMessageId,
+  readObjectRecord,
+  sliceTailPage,
+} from '@/shared/utils.js';
 
 const PROVIDER = 'codex';
+const CODEX_TRANSCRIPT_RECORD_TYPES = new Set([
+  'session_meta',
+  'event_msg',
+  'response_item',
+  'turn_context',
+  'compacted',
+]);
 
 type CodexHistoryResult =
   | AnyRecord[]
@@ -240,8 +253,7 @@ async function getCodexSessionMessages(
     const sessionFilePath = sessionsDb.getSessionById(sessionId)?.jsonl_path;
 
     if (!sessionFilePath) {
-      console.warn(`Codex session file not found for session ${sessionId}`);
-      return { messages: [], total: 0, hasMore: false };
+      throw new Error(`Codex transcript path is unavailable for session ${sessionId}.`);
     }
 
     const messages: AnyRecord[] = [];
@@ -254,6 +266,8 @@ async function getCodexSessionMessages(
     const completedExecCalls = new Set<string>();
     const subagentsByCallId = new Map<string, CodexSubagentRecord>();
     const subagentsByPath = new Map<string, CodexSubagentRecord>();
+    let nonEmptyLineCount = 0;
+    let providerRecordCount = 0;
     const fileStream = fsSync.createReadStream(sessionFilePath);
     const rl = readline.createInterface({
       input: fileStream,
@@ -264,9 +278,17 @@ async function getCodexSessionMessages(
       if (!line.trim()) {
         continue;
       }
+      nonEmptyLineCount += 1;
 
       try {
-        const entry = JSON.parse(line) as AnyRecord;
+        const entry = readObjectRecord(JSON.parse(line));
+        if (!entry
+          || typeof entry.type !== 'string'
+          || !CODEX_TRANSCRIPT_RECORD_TYPES.has(entry.type)
+          || !readObjectRecord(entry.payload)) {
+          continue;
+        }
+        providerRecordCount += 1;
         if (entry.type === 'event_msg' && entry.payload?.type === 'token_count' && entry.payload?.info) {
           const info = entry.payload.info as AnyRecord;
           if (info.total_token_usage) {
@@ -590,6 +612,10 @@ async function getCodexSessionMessages(
       }
     }
 
+    if (nonEmptyLineCount > 0 && providerRecordCount === 0) {
+      throw new Error(`Codex transcript for session ${sessionId} contains no valid provider records.`);
+    }
+
     messages.sort(
       (a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime(),
     );
@@ -614,7 +640,7 @@ async function getCodexSessionMessages(
     return { messages, tokenUsage };
   } catch (error) {
     console.error(`Error reading Codex session messages for ${sessionId}:`, error);
-    return { messages: [], total: 0, hasMore: false };
+    throw error;
   }
 }
 
@@ -894,7 +920,7 @@ export class CodexSessionsProvider implements IProviderSessions {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[CodexProvider] Failed to load session ${sessionId}:`, message);
-      return { messages: [], total: 0, hasMore: false, offset: 0, limit: null };
+      throw error;
     }
 
     const rawMessages = Array.isArray(result) ? result : (result.messages || []);
@@ -920,15 +946,11 @@ export class CodexSessionsProvider implements IProviderSessions {
       }
     }
 
-    let total = 0;
-    for (const msg of normalized) {
-      if (msg.kind !== 'tool_result') {
-        total += 1;
-      }
-    }
+    const renderableMessages = attachToolResultsToToolUseRows(normalized);
+    const total = renderableMessages.length;
     const normalizedOffset = Math.max(0, offset);
     const normalizedLimit = limit === null ? null : Math.max(0, limit);
-    const { page, hasMore } = sliceTailPage(normalized, normalizedLimit, normalizedOffset);
+    const { page, hasMore } = sliceTailPage(renderableMessages, normalizedLimit, normalizedOffset);
 
     return {
       messages: page,

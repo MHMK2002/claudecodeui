@@ -60,12 +60,14 @@ export default function CodeEditor({
     content,
     setContent,
     loading,
+    loadError,
     saving,
     saveSuccess,
     saveError,
     isBinary,
     previewKind,
     fileProjectId,
+    handleRetryLoad,
     handleSave,
     handleDownload,
   } = useCodeEditorDocument({
@@ -193,6 +195,42 @@ export default function CodeEditor({
     );
   }
 
+  if (loadError) {
+    const loadErrorContainerClassName = isSidebar
+      ? 'flex h-full w-full items-center justify-center bg-background p-6'
+      : 'fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 p-4';
+
+    return (
+      <div className={loadErrorContainerClassName}>
+        <div
+          className="w-full max-w-md rounded-lg border border-destructive/30 bg-background p-6 text-center shadow-xl"
+          role="alert"
+        >
+          <h2 className="text-base font-semibold text-foreground">
+            {t('loadError.title', 'Unable to open this file')}
+          </h2>
+          <p className="mt-2 break-words text-sm text-muted-foreground">{loadError}</p>
+          <div className="mt-5 flex flex-wrap justify-center gap-3">
+            <button
+              type="button"
+              onClick={handleRetryLoad}
+              className="min-h-11 rounded-md bg-primary px-4 font-medium text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            >
+              {t('actions.retry', 'Retry')}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="min-h-11 rounded-md border border-border px-4 font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            >
+              {t('actions.close', 'Close')}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // Natively previewable media (image/pdf/audio/video) is rendered inline
   // instead of showing the generic "cannot be displayed" placeholder.
   if (previewKind) {
@@ -280,8 +318,15 @@ export default function CodeEditor({
           />
 
           {saveError && (
-            <div className="border-b border-red-200 bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">
-              {saveError}
+            <div className="flex items-center justify-between gap-3 border-b border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" role="alert">
+              <span>{saveError}</span>
+              <button
+                type="button"
+                onClick={() => void handleSave()}
+                className="min-h-11 rounded-md border border-current px-3 font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                Retry
+              </button>
             </div>
           )}
 

@@ -89,9 +89,7 @@
     "save": "Save",
     "delete": "Delete",
     "rename": "Rename",
-    "joinCommunity": "Join Community",
-    "reportIssue": "Report Issue",
-    "starOnGithub": "Star on GitHub"
+    "reportIssue": "Report Issue"
   },
   "branding": {
     "openSource": "Open Source"

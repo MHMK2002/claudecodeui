@@ -3,10 +3,12 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { IS_PLATFORM } from '../../../constants/config';
 import {
   api,
+  AUTH_LOCAL_SESSION_UNAVAILABLE_EVENT,
   AUTH_SESSION_EXPIRED_EVENT,
   AUTH_TOKEN_REFRESHED_EVENT,
   getAuthTokenRefreshDelay,
   isValidRefreshedToken,
+  setAuthRuntimeMode,
   storeAuthToken,
 } from '../../../utils/api';
 import { invalidateProviderAuthStatusCache } from '../../provider-auth/providerAuthStatusCache';
@@ -19,6 +21,7 @@ import type {
   AuthUser,
   AuthUserPayload,
   OnboardingStatusPayload,
+  RuntimeMode,
 } from '../types';
 import { parseJsonSafely, resolveApiErrorMessage } from '../utils';
 
@@ -32,6 +35,11 @@ const persistToken = (token: string) => {
 
 const clearStoredToken = () => {
   localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+};
+
+const initialRuntimeMode = (): RuntimeMode | null => {
+  if (IS_PLATFORM) return 'platform';
+  return window.cloudcliDesktopLocalSession ? 'desktop-local' : null;
 };
 
 export function useAuth(): AuthContextValue {
@@ -49,6 +57,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(true);
+  const [runtimeMode, setRuntimeMode] = useState<RuntimeMode | null>(initialRuntimeMode);
+  const [localBootstrapReady, setLocalBootstrapReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const setSession = useCallback((nextUser: AuthUser, nextToken: string) => {
@@ -86,7 +96,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   }, [checkOnboardingStatus]);
 
   const refreshSession = useCallback(async () => {
-    if (IS_PLATFORM || !token || !user) {
+    if (IS_PLATFORM || runtimeMode === 'desktop-local' || !token || !user) {
       return;
     }
 
@@ -106,7 +116,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       // and the next scheduled refresh will retry while the token remains valid.
       console.warn('[Auth] Session refresh failed:', caughtError);
     }
-  }, [token, user]);
+  }, [runtimeMode, token, user]);
 
   useEffect(() => {
     const handleTokenRefreshed = (event: Event) => {
@@ -119,12 +129,19 @@ export function AuthProvider({ children }: AuthProviderProps) {
       clearSession();
       setError(AUTH_ERROR_MESSAGES.sessionExpired);
     };
+    const handleLocalSessionUnavailable = () => {
+      setUser(null);
+      setLocalBootstrapReady(false);
+      setError(AUTH_ERROR_MESSAGES.localSessionUnavailable);
+    };
 
     window.addEventListener(AUTH_TOKEN_REFRESHED_EVENT, handleTokenRefreshed);
     window.addEventListener(AUTH_SESSION_EXPIRED_EVENT, handleSessionExpired);
+    window.addEventListener(AUTH_LOCAL_SESSION_UNAVAILABLE_EVENT, handleLocalSessionUnavailable);
     return () => {
       window.removeEventListener(AUTH_TOKEN_REFRESHED_EVENT, handleTokenRefreshed);
       window.removeEventListener(AUTH_SESSION_EXPIRED_EVENT, handleSessionExpired);
+      window.removeEventListener(AUTH_LOCAL_SESSION_UNAVAILABLE_EVENT, handleLocalSessionUnavailable);
     };
   }, [clearSession]);
 
@@ -135,6 +152,39 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
       const statusResponse = await api.auth.status();
       const statusPayload = await parseJsonSafely<AuthStatusPayload>(statusResponse);
+      if (!statusResponse.ok || !statusPayload?.runtimeMode) {
+        throw new Error('Authentication status returned an invalid response.');
+      }
+      const nextRuntimeMode = statusPayload.runtimeMode;
+      setRuntimeMode(nextRuntimeMode);
+      setAuthRuntimeMode(nextRuntimeMode);
+
+      if (nextRuntimeMode === 'desktop-local') {
+        setNeedsSetup(false);
+        const userResponse = await api.auth.user();
+        if (!userResponse.ok) {
+          setUser(null);
+          setLocalBootstrapReady(false);
+          setError(AUTH_ERROR_MESSAGES.localSessionUnavailable);
+          return;
+        }
+        const userPayload = await parseJsonSafely<AuthUserPayload>(userResponse);
+        if (!userPayload?.user) {
+          setUser(null);
+          setLocalBootstrapReady(false);
+          setError(AUTH_ERROR_MESSAGES.localSessionUnavailable);
+          return;
+        }
+        invalidateProviderAuthStatusCache();
+        setUser(userPayload.user);
+        setToken(null);
+        clearStoredToken();
+        setHasCompletedOnboarding(true);
+        setLocalBootstrapReady(true);
+        return;
+      }
+
+      setLocalBootstrapReady(false);
 
       if (statusPayload?.needsSetup) {
         setNeedsSetup(true);
@@ -142,10 +192,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
       }
 
       setNeedsSetup(false);
-
-      if (!token) {
-        return;
-      }
 
       const userResponse = await api.auth.user();
       if (!userResponse.ok) {
@@ -167,11 +213,13 @@ export function AuthProvider({ children }: AuthProviderProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [checkOnboardingStatus, clearSession, token]);
+  }, [checkOnboardingStatus, clearSession]);
 
   useEffect(() => {
     if (IS_PLATFORM) {
       setUser({ username: 'platform-user' });
+      setRuntimeMode('platform');
+      setAuthRuntimeMode('platform');
       setNeedsSetup(false);
       void checkOnboardingStatus().finally(() => {
         setIsLoading(false);
@@ -268,11 +316,25 @@ export function AuthProvider({ children }: AuthProviderProps) {
     [checkOnboardingStatus, setSession],
   );
 
-  const logout = useCallback(() => {
-    // JWT logout is client-side: the server endpoint does not maintain a
-    // revocation list, so clearing the session is the complete operation.
-    clearSession();
+  const logout = useCallback<AuthContextValue['logout']>(async () => {
+    try {
+      const response = await api.auth.logout();
+      if (!response.ok && !response.headers.get('X-Auth-Error')) {
+        setError('Logout failed. Please try again.');
+        return { success: false, error: 'Logout failed. Please try again.' };
+      }
+      clearSession();
+      return { success: true };
+    } catch (caughtError) {
+      console.warn('[Auth] Logout failed:', caughtError);
+      setError(AUTH_ERROR_MESSAGES.networkError);
+      return { success: false, error: AUTH_ERROR_MESSAGES.networkError };
+    }
   }, [clearSession]);
+
+  const retryLocalBootstrap = useCallback(async () => {
+    await checkAuthStatus();
+  }, [checkAuthStatus]);
 
   const contextValue = useMemo<AuthContextValue>(
     () => ({
@@ -282,20 +344,26 @@ export function AuthProvider({ children }: AuthProviderProps) {
       needsSetup,
       hasCompletedOnboarding,
       error,
+      runtimeMode,
+      localBootstrapReady,
       login,
       register,
       logout,
       refreshOnboardingStatus,
+      retryLocalBootstrap,
     }),
     [
       error,
       hasCompletedOnboarding,
       isLoading,
       login,
+      localBootstrapReady,
       logout,
       needsSetup,
       refreshOnboardingStatus,
+      retryLocalBootstrap,
       register,
+      runtimeMode,
       token,
       user,
     ],

@@ -5,13 +5,13 @@ import { ViewHost } from './viewHost.js';
 
 const TITLEBAR_HEIGHT = 44;
 const AUTH_TOKEN_STORAGE_KEY = 'auth-token';
-function isAllowedPermissionOrigin(sourceUrl, controlPlaneUrl) {
+function isAllowedPermissionOrigin(sourceUrl, controlPlaneUrl, cloudEnabled) {
   try {
     const source = new URL(sourceUrl);
     if ((source.hostname === '127.0.0.1' || source.hostname === 'localhost') && source.protocol === 'http:') {
       return true;
     }
-    if (source.protocol !== 'https:') {
+    if (!cloudEnabled || source.protocol !== 'https:') {
       return false;
     }
     const controlPlane = new URL(controlPlaneUrl);
@@ -102,9 +102,9 @@ export class DesktopWindowManager {
     await this.viewHost.showTabPlaceholder(tabId, target, message);
   }
 
-  async showLocalStartupTarget(target, logs) {
+  async showLocalStartupTarget(target, logs, stage) {
     const tabId = this.tabs.getTabIdForTarget(target);
-    await this.viewHost.showLocalStartupTarget(tabId, target, logs);
+    await this.viewHost.showLocalStartupTarget(tabId, target, logs, stage);
   }
 
   async showContentTarget(target) {
@@ -394,6 +394,7 @@ export class DesktopWindowManager {
 
   buildTrayEnvironmentSection() {
     const cloudState = this.getCloudState();
+    if (!cloudState.enabled) return [];
     if (!cloudState.account?.apiKey) {
       return [
         {
@@ -498,11 +499,11 @@ export class DesktopWindowManager {
               .catch((error) => this.actions.showError('Could not update desktop setting', error)),
           },
           {
-            label: 'Allow LAN Access to Local Server',
-            type: 'checkbox',
-            checked: localState.desktopSettings.exposeLocalServerOnNetwork,
-            click: (menuItem) => void this.actions.updateDesktopSetting('exposeLocalServerOnNetwork', menuItem.checked)
-              .catch((error) => this.actions.showError('Could not update desktop setting', error)),
+            label: localState.desktopSettings.exposeLocalServerOnNetwork
+              ? 'Review LAN Access...'
+              : 'Set Up LAN Access...',
+            click: () => void this.actions.showLocalSettings()
+              .catch((error) => this.actions.showError('Could not open LAN settings', error)),
           },
         ],
       },
@@ -596,7 +597,18 @@ export class DesktopWindowManager {
       },
     ];
 
-    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+    const visibleTemplate = cloudState.enabled
+      ? template
+      : template
+        .filter((section) => section.label !== 'Cloud')
+        .map((section) => ({
+          ...section,
+          submenu: Array.isArray(section.submenu)
+            ? section.submenu.filter((item) => !['Switch Environment', 'Open cloudcli.ai'].includes(item.label))
+            : section.submenu,
+        }));
+
+    Menu.setApplicationMenu(Menu.buildFromTemplate(visibleTemplate));
     this.buildTrayMenu();
   }
 
@@ -644,8 +656,12 @@ export class DesktopWindowManager {
       },
     ];
 
+    const visibleTemplate = cloudState.enabled
+      ? template
+      : template.filter((item) => !['Cloud Environments', 'Login', 'Logout CloudCLI Account'].includes(item.label));
+
     this.tray.setToolTip(`${this.appName}${this.actions.getActiveTarget()?.name ? ` - ${this.actions.getActiveTarget().name}` : ''}`);
-    this.tray.setContextMenu(Menu.buildFromTemplate(template));
+    this.tray.setContextMenu(Menu.buildFromTemplate(visibleTemplate));
   }
 
   async showDesktopSettings() {
@@ -687,7 +703,8 @@ export class DesktopWindowManager {
     const isAllowedPermission = (webContents, permission) => {
       const sourceUrl = webContents.getURL();
       const allowedPermissions = new Set(['clipboard-read', 'media', 'notifications']);
-      return isAllowedPermissionOrigin(sourceUrl, this.getCloudState().controlPlaneUrl) && allowedPermissions.has(permission);
+      const cloudState = this.getCloudState();
+      return isAllowedPermissionOrigin(sourceUrl, cloudState.controlPlaneUrl, cloudState.enabled) && allowedPermissions.has(permission);
     };
 
     session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {

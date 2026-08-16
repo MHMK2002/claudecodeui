@@ -6,7 +6,7 @@ import path from 'node:path';
 import spawn from 'cross-spawn';
 
 import type { CliApplication, CliPackageMetadata } from '@/shared/types.js';
-import { findApplicationRoot, getModuleDirectory } from '@/shared/utils.js';
+import { findApplicationRoot, getModuleDirectory, PRODUCT_CONFIG } from '@/shared/utils.js';
 
 import { createCliService } from './cli.service.js';
 import { createSandboxCommandService } from './sandbox.service.js';
@@ -23,9 +23,10 @@ export function createCliApplication(): CliApplication {
     fs.readFileSync(path.join(applicationRoot, 'package.json'), 'utf8'),
   ) as { version: string; homepage?: string; bugs?: { url?: string } };
   const packageMetadata: CliPackageMetadata = {
+    productName: PRODUCT_CONFIG.productName,
     version: packageMetadataJson.version,
-    homepage: packageMetadataJson.homepage,
-    bugsUrl: packageMetadataJson.bugs?.url,
+    homepage: PRODUCT_CONFIG.documentationUrl,
+    bugsUrl: PRODUCT_CONFIG.issueTrackerUrl ?? undefined,
   };
   const fileSystem = {
     readTextFile: (filePath: string) => fs.readFileSync(filePath, 'utf8'),

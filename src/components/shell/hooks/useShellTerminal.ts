@@ -87,7 +87,7 @@ export function useShellTerminal({
   const [isInitialized, setIsInitialized] = useState(false);
   const resizeTimeoutRef = useRef<number | null>(null);
   const mobileSelectionRef = useRef<MobileTerminalSelectionManager | null>(null);
-  const selectedProjectKey = selectedProject?.fullPath || selectedProject?.path || '';
+  const selectedProjectKey = selectedProject?.projectId || '';
   const hasSelectedProject = Boolean(selectedProject);
 
   useEffect(() => {

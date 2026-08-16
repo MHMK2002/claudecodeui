@@ -12,7 +12,6 @@ import type {
   CreateScheduledRunInput,
   ScheduledRun,
   ScheduledRunHistory,
-  ScheduleProvider,
   UpdateScheduledRunInput,
 } from '../types/scheduledRuns';
 
@@ -30,7 +29,8 @@ interface ScheduledRunsContextValue {
   loadHistory: (scheduleId: number, options?: { force?: boolean }) => Promise<void>;
   create: (input: CreateScheduledRunInput) => Promise<ScheduledRun>;
   update: (id: number, patch: UpdateScheduledRunInputForWire) => Promise<ScheduledRun>;
-  remove: (id: number) => Promise<void>;
+  stageRemove: (id: number) => ScheduledRun | null;
+  undoRemove: (id: number) => boolean;
   setEnabled: (id: number, enabled: boolean) => Promise<ScheduledRun>;
   runNow: (id: number) => Promise<{ runId: number }>;
 }
@@ -58,6 +58,7 @@ export function ScheduledRunsProvider({ children }: { children: React.ReactNode 
   const [lastFetchedAt, setLastFetchedAt] = useState<number | null>(null);
   const [historiesBySchedule, setHistoriesBySchedule] = useState<Record<number, ScheduledRunHistory[]>>({});
   const loadingHistoryRef = useRef<Set<number>>(new Set());
+  const pendingRemovalsRef = useRef(new Map<number, { schedule: ScheduledRun; timer: number }>());
 
   const refresh = useCallback(async () => {
     setLoadingList(true);
@@ -67,7 +68,8 @@ export function ScheduledRunsProvider({ children }: { children: React.ReactNode 
         throw new Error(await readErrorMessage(response, 'Failed to load schedules.'));
       }
       const body = (await response.json()) as { schedules: ScheduledRun[] };
-      setSchedules(body.schedules ?? []);
+      const pendingIds = new Set(pendingRemovalsRef.current.keys());
+      setSchedules((body.schedules ?? []).filter((schedule) => !pendingIds.has(schedule.id)));
       setLastFetchedAt(Date.now());
       setError(null);
     } catch (cause) {
@@ -116,13 +118,50 @@ export function ScheduledRunsProvider({ children }: { children: React.ReactNode 
     return body.schedule;
   }, [refresh]);
 
-  const remove = useCallback(async (id: number) => {
-    const response = await api.scheduledRuns.remove(id);
-    if (!response.ok) {
-      throw new Error(await readErrorMessage(response, 'Failed to delete schedule.'));
-    }
-    await refresh();
-  }, [refresh]);
+  const stageRemove = useCallback((id: number): ScheduledRun | null => {
+    const schedule = schedules.find((candidate) => candidate.id === id) ?? null;
+    if (!schedule || pendingRemovalsRef.current.has(id)) return schedule;
+    const timer = window.setTimeout(() => {
+      const pending = pendingRemovalsRef.current.get(id);
+      if (!pending) return;
+      pendingRemovalsRef.current.delete(id);
+      void (async () => {
+        const response = await api.scheduledRuns.remove(id);
+        if (!response.ok) {
+          const message = await readErrorMessage(response, 'Failed to delete schedule.');
+          setError(message);
+          setSchedules((current) => current.some((candidate) => candidate.id === id)
+            ? current
+            : [...current, pending.schedule]);
+          return;
+        }
+        setHistoriesBySchedule((current) => {
+          const next = { ...current };
+          delete next[id];
+          return next;
+        });
+      })();
+    }, 8_000);
+    pendingRemovalsRef.current.set(id, { schedule, timer });
+    setSchedules((current) => current.filter((candidate) => candidate.id !== id));
+    return schedule;
+  }, [schedules]);
+
+  const undoRemove = useCallback((id: number): boolean => {
+    const pending = pendingRemovalsRef.current.get(id);
+    if (!pending) return false;
+    window.clearTimeout(pending.timer);
+    pendingRemovalsRef.current.delete(id);
+    setSchedules((current) => current.some((candidate) => candidate.id === id)
+      ? current
+      : [...current, pending.schedule]);
+    return true;
+  }, []);
+
+  useEffect(() => () => {
+    pendingRemovalsRef.current.forEach(({ timer }) => window.clearTimeout(timer));
+    pendingRemovalsRef.current.clear();
+  }, []);
 
   const setEnabled = useCallback(async (id: number, enabled: boolean) => {
     const response = enabled
@@ -181,7 +220,8 @@ export function ScheduledRunsProvider({ children }: { children: React.ReactNode 
       loadHistory,
       create,
       update,
-      remove,
+      stageRemove,
+      undoRemove,
       setEnabled,
       runNow,
     }),
@@ -195,7 +235,8 @@ export function ScheduledRunsProvider({ children }: { children: React.ReactNode 
       loadHistory,
       create,
       update,
-      remove,
+      stageRemove,
+      undoRemove,
       setEnabled,
       runNow,
     ],

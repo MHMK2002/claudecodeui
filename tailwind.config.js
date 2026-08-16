@@ -28,6 +28,10 @@ export default {
           DEFAULT: "hsl(var(--primary))",
           foreground: "hsl(var(--primary-foreground))",
         },
+        "message-user": {
+          DEFAULT: "hsl(var(--message-user))",
+          foreground: "hsl(var(--message-user-foreground))",
+        },
         secondary: {
           DEFAULT: "hsl(var(--secondary))",
           foreground: "hsl(var(--secondary-foreground))",

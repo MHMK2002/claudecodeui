@@ -19,6 +19,8 @@ import type { ScheduledRun } from '../../../types/scheduledRuns';
 type ScheduledRunCardProps = {
   schedule: ScheduledRun;
   onEdit: (schedule: ScheduledRun) => void;
+  onDelete: (schedule: ScheduledRun) => void;
+  onOpenAgentSettings: () => void;
 };
 
 const STATUS_PILL_CLASSES: Record<string, string> = {
@@ -53,13 +55,14 @@ function statusKey(schedule: ScheduledRun): 'enabled' | 'disabled' | 'running' {
   return schedule.isEnabled ? 'enabled' : 'disabled';
 }
 
-export function ScheduledRunCard({ schedule, onEdit }: ScheduledRunCardProps) {
-  const { loadHistory, historiesBySchedule, setEnabled, remove, runNow } = useScheduledRuns();
+export function ScheduledRunCard({ schedule, onEdit, onDelete, onOpenAgentSettings }: ScheduledRunCardProps) {
+  const { loadHistory, historiesBySchedule, setEnabled, runNow } = useScheduledRuns();
   const [expanded, setExpanded] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [failedAction, setFailedAction] = useState<'run' | 'toggle' | null>(null);
 
   const history = historiesBySchedule[schedule.id] ?? [];
 
@@ -72,10 +75,12 @@ export function ScheduledRunCard({ schedule, onEdit }: ScheduledRunCardProps) {
   const handleToggleEnabled = useCallback(async () => {
     setBusy(true);
     setActionError(null);
+    setFailedAction(null);
     try {
       await setEnabled(schedule.id, !schedule.isEnabled);
     } catch (cause) {
       setActionError(cause instanceof Error ? cause.message : String(cause));
+      setFailedAction('toggle');
     } finally {
       setBusy(false);
       setMenuOpen(false);
@@ -85,31 +90,27 @@ export function ScheduledRunCard({ schedule, onEdit }: ScheduledRunCardProps) {
   const handleRunNow = useCallback(async () => {
     setBusy(true);
     setActionError(null);
+    setFailedAction(null);
     try {
       await runNow(schedule.id);
     } catch (cause) {
       setActionError(extractRunNowError(cause));
+      setFailedAction('run');
     } finally {
       setBusy(false);
       setMenuOpen(false);
     }
   }, [schedule.id, runNow]);
 
-  const handleDelete = useCallback(async () => {
+  const handleDelete = useCallback(() => {
     if (!confirmDelete) {
       setConfirmDelete(true);
+      setExpanded(true);
       setMenuOpen(false);
       return;
     }
-    setBusy(true);
-    setActionError(null);
-    try {
-      await remove(schedule.id);
-    } catch (cause) {
-      setActionError(cause instanceof Error ? cause.message : String(cause));
-      setBusy(false);
-    }
-  }, [confirmDelete, schedule.id, remove]);
+    onDelete(schedule);
+  }, [confirmDelete, onDelete, schedule]);
 
   const pill = statusKey(schedule);
   const description = describeCron(schedule.cronExpression, schedule.timezone);
@@ -121,11 +122,13 @@ export function ScheduledRunCard({ schedule, onEdit }: ScheduledRunCardProps) {
         'transition-colors hover:border-border',
       )}
     >
-      <header
-        className="flex cursor-pointer items-center justify-between gap-2 px-3 py-2.5"
-        onClick={() => setExpanded((previous) => !previous)}
-      >
-        <div className="flex min-w-0 items-center gap-2">
+      <header className="flex items-center justify-between gap-2 px-2 py-1.5">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((previous) => !previous)}
+          className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-md px-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
           <ChevronDown
             className={cn(
               'h-4 w-4 shrink-0 text-muted-foreground transition-transform',
@@ -133,7 +136,7 @@ export function ScheduledRunCard({ schedule, onEdit }: ScheduledRunCardProps) {
             )}
           />
           <span className="truncate text-sm font-medium text-foreground">{schedule.title}</span>
-        </div>
+        </button>
         <div className="flex items-center gap-1.5">
           <span
             className={cn(
@@ -151,7 +154,7 @@ export function ScheduledRunCard({ schedule, onEdit }: ScheduledRunCardProps) {
               setMenuOpen((previous) => !previous);
             }}
             aria-label="Schedule actions"
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+            className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <MoreHorizontal className="h-4 w-4" />
           </button>
@@ -233,10 +236,11 @@ export function ScheduledRunCard({ schedule, onEdit }: ScheduledRunCardProps) {
                       <span
                         className={cn(
                           'inline-block h-1.5 w-1.5 rounded-full',
-                          row.status === 'succeeded' && 'bg-emerald-500',
-                          row.status === 'failed' && 'bg-red-500',
-                          row.status === 'running' && 'bg-sky-500',
+                          row.status === 'succeeded' && 'bg-primary',
+                          row.status === 'failed' && 'bg-destructive',
+                          row.status === 'running' && 'bg-primary',
                           row.status === 'skipped' && 'bg-muted-foreground',
+                          row.status === 'missed' && 'bg-muted-foreground',
                         )}
                       />
                       <span className="text-foreground">{row.status}</span>
@@ -252,20 +256,20 @@ export function ScheduledRunCard({ schedule, onEdit }: ScheduledRunCardProps) {
           </div>
 
           {confirmDelete && (
-            <div className="mt-3 rounded border border-red-500/40 bg-red-500/5 p-2 text-[11px] text-red-500">
-              Delete this schedule? This cannot be undone.
+            <div className="mt-3 rounded border border-destructive/40 bg-destructive/10 p-2 text-[11px] text-destructive">
+              Delete this schedule? You can Undo for 8 seconds after confirming.
               <div className="mt-2 flex justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setConfirmDelete(false)}
-                  className="rounded border border-border px-2 py-0.5 text-muted-foreground"
+                  className="min-h-11 rounded border border-border px-3 py-2 text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={handleDelete}
-                  className="rounded bg-red-500 px-2 py-0.5 text-white disabled:opacity-50"
+                  className="min-h-11 rounded bg-destructive px-3 py-2 text-destructive-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                   disabled={busy}
                 >
                   Delete
@@ -275,7 +279,23 @@ export function ScheduledRunCard({ schedule, onEdit }: ScheduledRunCardProps) {
           )}
 
           {actionError && (
-            <p className="mt-2 text-[11px] text-red-500">{actionError}</p>
+            <div className="mt-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-[11px] text-destructive" role="alert">
+              <p>{actionError}</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {failedAction && (
+                  <button
+                    type="button"
+                    onClick={() => void (failedAction === 'run' ? handleRunNow() : handleToggleEnabled())}
+                    className="min-h-11 rounded-lg bg-primary px-3 py-2 font-medium text-primary-foreground"
+                  >
+                    Retry
+                  </button>
+                )}
+                <button type="button" onClick={onOpenAgentSettings} className="min-h-11 rounded-lg border border-border bg-background px-3 py-2 font-medium text-foreground hover:bg-accent">
+                  Open Settings
+                </button>
+              </div>
+            </div>
           )}
         </div>
       )}
@@ -298,9 +318,9 @@ function MenuItem({ icon, label, onClick, destructive, disabled }: MenuItemProps
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors',
+        'flex min-h-11 w-full items-center gap-2 rounded px-3 py-2 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         destructive
-          ? 'text-red-500 hover:bg-red-500/10'
+          ? 'text-destructive hover:bg-destructive/10'
           : 'text-foreground hover:bg-accent/40',
         disabled && 'pointer-events-none opacity-50',
       )}

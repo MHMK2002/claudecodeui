@@ -3,18 +3,24 @@ import path from 'path';
 
 import express from 'express';
 
-import type { ProviderRunFunction } from '@/shared/types.js';
-import { AppError } from '@/shared/utils.js';
+import type { LLMProvider } from '@/shared/types.js';
+import { AppError, readAuthenticatedUserId } from '@/shared/utils.js';
 
 // cross-spawn: drop-in spawn with Windows .cmd/PATHEXT resolution.
 import { parseGitLogWithStats, parseGitStatusOutput } from './git-parsing.service.js';
+import { classifyGitFailure } from './git-error.service.js';
+import {
+  type createGitCommitMessageService,
+  GitCommitMessageError,
+} from './git-commit-message.service.js';
+import { createGitRepositoryStateService } from './git-repository-state.service.js';
+import { createGitUndoService } from './git-undo.service.js';
 
 type GitRouterDependencies = {
   fileSystem: typeof import('node:fs/promises');
   spawnProcess: typeof import('cross-spawn').default;
   resolveProjectPathById(projectId: string): string | null;
-  queryClaude: ProviderRunFunction;
-  queryCursor: ProviderRunFunction;
+  commitMessageService: ReturnType<typeof createGitCommitMessageService>;
 };
 
 /** Creates Git routes around explicit repository, filesystem, subprocess, and AI adapters. */
@@ -22,8 +28,7 @@ export function createGitRouter(dependencies: GitRouterDependencies): express.Ro
 const fs = dependencies.fileSystem;
 const spawn = dependencies.spawnProcess;
 const projectsDb = { getProjectPathById: dependencies.resolveProjectPathById };
-const queryClaudeSDK = dependencies.queryClaude;
-const spawnCursor = dependencies.queryCursor;
+const commitMessageService = dependencies.commitMessageService;
 const router = express.Router();
 const COMMIT_DIFF_CHARACTER_LIMIT = 500_000;
 
@@ -63,6 +68,18 @@ function spawnAsync(command, args, options = {}) {
     });
   });
 }
+
+const repositoryStateService = createGitRepositoryStateService({
+  runGit: spawnAsync,
+  access: (filePath) => fs.access(filePath),
+});
+const gitUndoService = createGitUndoService({
+  stat: (filePath) => fs.stat(filePath),
+  readFile: (filePath) => fs.readFile(filePath),
+  writeFile: (filePath, content) => fs.writeFile(filePath, content),
+  mkdir: (directoryPath, options) => fs.mkdir(directoryPath, options),
+  rm: (filePath, options) => fs.rm(filePath, options),
+});
 
 // Input validation helpers (defense-in-depth)
 function validateCommitRef(commit) {
@@ -343,30 +360,40 @@ router.get('/status', async (req, res) => {
 
     const branch = await getCurrentBranchName(projectPath);
     const hasCommits = await repositoryHasCommits(projectPath);
+    const repositoryRootPath = await getRepositoryRootPath(projectPath);
 
-    const { stdout: statusOutput } = await spawnAsync('git', ['status', '--porcelain=v1', '-z'], { cwd: projectPath });
+    // Run status at the repository root so every path sent to the browser is
+    // canonical repository-relative input for staged snapshot validation.
+    const { stdout: statusOutput } = await spawnAsync('git', ['status', '--porcelain=v1', '-z'], { cwd: repositoryRootPath });
     const { modified, added, deleted, untracked, staged } = parseGitStatusOutput(statusOutput);
+    const repositoryState = await repositoryStateService.inspect(repositoryRootPath);
 
     res.json({
       branch,
+      detachedHead: branch === 'HEAD',
       hasCommits,
       modified,
       added,
       deleted,
       untracked,
-      staged
+      staged,
+      conflicts: repositoryState.conflicts,
+      operation: repositoryState.operation,
     });
   } catch (error) {
     // Case-insensitive so "Not a git repository..." from validateGitRepository
     // matches; `notGitRepository` lets the UI offer a one-click `git init`.
-    const isNotGitRepository = error instanceof AppError && error.code === 'NOT_A_GIT_REPOSITORY';
+    const issue = classifyGitFailure(error, 'status');
+    const isNotGitRepository = issue.code === 'NOT_A_GIT_REPOSITORY';
     // A project without a repository is an expected state, not a failure.
     if (!isNotGitRepository) {
       console.error('Git status error:', error);
     }
     res.json({
-      error: isNotGitRepository ? 'Not a git repository' : 'Git operation failed',
-      details: isNotGitRepository ? error.message : `Failed to get git status: ${error.message}`,
+      error: issue.error,
+      details: issue.details,
+      code: issue.code,
+      action: issue.action,
       notGitRepository: isNotGitRepository
     });
   }
@@ -402,7 +429,8 @@ router.post('/init', async (req, res) => {
     res.json({ success: true, output: stdout.trim() || stderr.trim() });
   } catch (error) {
     console.error('Git init error:', error);
-    res.json({ success: false, error: error.stderr?.trim() || error.message });
+    const issue = classifyGitFailure(error, 'write');
+    res.status(issue.statusCode).json({ success: false, ...issue });
   }
 });
 
@@ -615,32 +643,46 @@ router.post('/initial-commit', async (req, res) => {
 
 // Commit changes
 router.post('/commit', async (req, res) => {
-  const { project, message, files } = req.body;
+  const { project, message, files, expectedSnapshotId } = req.body;
   
-  if (!project || !message || !files || files.length === 0) {
-    return res.status(400).json({ error: 'Project name, commit message, and files are required' });
+  if (
+    typeof project !== 'string'
+    || !project.trim()
+    || typeof message !== 'string'
+    || !message.trim()
+    || !Array.isArray(files)
+    || files.length === 0
+    || (expectedSnapshotId !== undefined && typeof expectedSnapshotId !== 'string')
+  ) {
+    return res.status(400).json({
+      success: false,
+      error: 'Project id, commit message, and staged files are required',
+    });
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
-    
-    // Validate git repository
-    await validateGitRepository(projectPath);
-    const repositoryRootPath = await getRepositoryRootPath(projectPath);
-    
-    // Stage selected files
-    for (const file of files) {
-      const { repositoryRelativeFilePath } = await resolveRepositoryFilePath(projectPath, file);
-      await spawnAsync('git', ['add', '--', repositoryRelativeFilePath], { cwd: repositoryRootPath });
-    }
-
-    // Commit with message
-    const { stdout } = await spawnAsync('git', ['commit', '-m', message], { cwd: repositoryRootPath });
-    
-    res.json({ success: true, output: stdout });
+    // The service validates the reviewed index and commits it without
+    // restaging working-tree content.
+    const { output } = await commitMessageService.commitReviewedSnapshot({
+      projectId: project,
+      expectedFiles: files,
+      expectedSnapshotId,
+      message,
+    });
+    res.json({ success: true, output });
   } catch (error) {
+    if (error instanceof GitCommitMessageError) {
+      return res.status(error.statusCode).json({
+        success: false,
+        code: error.code,
+        error: error.message,
+        details: error.details,
+        action: error.action,
+      });
+    }
     console.error('Git commit error:', error);
-    res.status(500).json({ error: error.message });
+    const issue = classifyGitFailure(error, 'write');
+    res.status(issue.statusCode).json({ success: false, ...issue });
   }
 });
 
@@ -666,7 +708,8 @@ router.post('/stage', async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('Git stage error:', error);
-    res.status(500).json({ error: error.message });
+    const issue = classifyGitFailure(error, 'write');
+    res.status(issue.statusCode).json({ success: false, ...issue });
   }
 });
 
@@ -698,7 +741,8 @@ router.post('/unstage', async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('Git unstage error:', error);
-    res.status(500).json({ error: error.message });
+    const issue = classifyGitFailure(error, 'write');
+    res.status(issue.statusCode).json({ success: false, ...issue });
   }
 });
 
@@ -811,7 +855,8 @@ router.post('/checkout', async (req, res) => {
     res.json({ success: true, output: stdout });
   } catch (error) {
     console.error('Git checkout error:', error);
-    res.status(500).json({ error: error.message });
+    const issue = classifyGitFailure(error, 'checkout');
+    res.status(issue.statusCode).json({ success: false, ...issue });
   }
 });
 
@@ -833,7 +878,8 @@ router.post('/create-branch', async (req, res) => {
     res.json({ success: true, output: stdout });
   } catch (error) {
     console.error('Git create branch error:', error);
-    res.status(500).json({ error: error.message });
+    const issue = classifyGitFailure(error, 'checkout');
+    res.status(issue.statusCode).json({ success: false, ...issue });
   }
 });
 
@@ -859,7 +905,8 @@ router.post('/delete-branch', async (req, res) => {
     res.json({ success: true, output: stdout });
   } catch (error) {
     console.error('Git delete branch error:', error);
-    res.status(500).json({ error: error.message });
+    const issue = classifyGitFailure(error, 'write');
+    res.status(issue.statusCode).json({ success: false, ...issue });
   }
 });
 
@@ -944,208 +991,79 @@ router.get('/commit-diff', async (req, res) => {
 
 // Generate commit message based on staged changes using AI
 router.post('/generate-commit-message', async (req, res) => {
-  const { project, files, provider = 'claude' } = req.body;
+  res.setHeader('Cache-Control', 'no-store');
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const selection = body.selection && typeof body.selection === 'object'
+    ? body.selection
+    : null;
+  const provider = selection?.provider;
+  const providerProfileId = selection?.providerProfileId;
+  const model = selection?.model;
+  const filesAreValid = Array.isArray(body.files)
+    && body.files.length > 0
+    && body.files.every((file) => typeof file === 'string' && file.length > 0)
+    && new Set(body.files).size === body.files.length;
+  const selectionIsValid = (['claude', 'codex', 'cursor', 'opencode'] as LLMProvider[]).includes(provider)
+    && (providerProfileId === null || (Number.isInteger(providerProfileId) && providerProfileId > 0))
+    && typeof model === 'string'
+    && Boolean(model.trim());
 
-  if (!project || !files || files.length === 0) {
-    return res.status(400).json({ error: 'Project id and files are required' });
+  if (typeof body.project !== 'string' || !body.project.trim() || !filesAreValid || !selectionIsValid) {
+    return res.status(400).json({
+      success: false,
+      code: 'INVALID_GENERATION_REQUEST',
+      error: 'Commit-message generation request is invalid.',
+      details: 'Refresh Source Control and try again.',
+      action: 'REVIEW_STAGED_CHANGES',
+    });
   }
 
-  // Validate provider
-  if (!['claude', 'cursor'].includes(provider)) {
-    return res.status(400).json({ error: 'provider must be "claude" or "cursor"' });
-  }
+  const controller = new AbortController();
+  const abortOnRequest = () => controller.abort();
+  const abortOnClose = () => {
+    if (!res.writableEnded) controller.abort();
+  };
+  req.once('aborted', abortOnRequest);
+  res.once('close', abortOnClose);
 
   try {
-    const projectPath = await getActualProjectPath(project);
-    await validateGitRepository(projectPath);
-    const repositoryRootPath = await getRepositoryRootPath(projectPath);
-
-    // Get diff for selected files
-    let diffContext = '';
-    for (const file of files) {
-      try {
-        const { repositoryRelativeFilePath } = await resolveRepositoryFilePath(projectPath, file);
-        const { stdout } = await spawnAsync(
-          'git', ['diff', 'HEAD', '--', repositoryRelativeFilePath],
-          { cwd: repositoryRootPath }
-        );
-        if (stdout) {
-          diffContext += `\n--- ${repositoryRelativeFilePath} ---\n${stdout}`;
-        }
-      } catch (error) {
-        console.error(`Error getting diff for ${file}:`, error);
-      }
+    const result = await commitMessageService.generate({
+      projectId: body.project,
+      expectedFiles: body.files,
+      selection: {
+        provider,
+        providerProfileId,
+        model: model.trim(),
+      },
+      userId: readAuthenticatedUserId(req),
+      signal: controller.signal,
+    });
+    if (!controller.signal.aborted && !res.headersSent) {
+      res.json({ success: true, ...result });
     }
-
-    // If no diff found, might be untracked files
-    if (!diffContext.trim()) {
-      // Try to get content of untracked files
-      for (const file of files) {
-        try {
-          const { repositoryRelativeFilePath } = await resolveRepositoryFilePath(projectPath, file);
-          const filePath = path.join(repositoryRootPath, repositoryRelativeFilePath);
-          const stats = await fs.stat(filePath);
-
-          if (!stats.isDirectory()) {
-            const content = await fs.readFile(filePath, 'utf-8');
-            diffContext += `\n--- ${repositoryRelativeFilePath} (new file) ---\n${content.substring(0, 1000)}\n`;
-          } else {
-            diffContext += `\n--- ${repositoryRelativeFilePath} (new directory) ---\n`;
-          }
-        } catch (error) {
-          console.error(`Error reading file ${file}:`, error);
-        }
-      }
-    }
-
-    // Generate commit message using AI
-    const message = await generateCommitMessageWithAI(files, diffContext, provider, projectPath);
-
-    res.json({ message });
   } catch (error) {
-    console.error('Generate commit message error:', error);
-    res.status(500).json({ error: error.message });
+    if (controller.signal.aborted || res.headersSent) return;
+    if (error instanceof GitCommitMessageError) {
+      return res.status(error.statusCode).json({
+        success: false,
+        code: error.code,
+        error: error.message,
+        details: error.details,
+        action: error.action,
+      });
+    }
+    res.status(502).json({
+      success: false,
+      code: 'GENERATION_FAILED',
+      error: 'Commit-message generation failed.',
+      details: 'Try generating the suggestion again.',
+      action: 'RETRY',
+    });
+  } finally {
+    req.off('aborted', abortOnRequest);
+    res.off('close', abortOnClose);
   }
 });
-
-/**
- * Generates a commit message using AI (Claude SDK or Cursor CLI)
- * @param {Array<string>} files - List of changed files
- * @param {string} diffContext - Git diff content
- * @param {string} provider - 'claude' or 'cursor'
- * @param {string} projectPath - Project directory path
- * @returns {Promise<string>} Generated commit message
- */
-async function generateCommitMessageWithAI(files, diffContext, provider, projectPath) {
-  // Create the prompt
-  const prompt = `Generate a conventional commit message for these changes.
-
-REQUIREMENTS:
-- Format: type(scope): subject
-- Include body explaining what changed and why
-- Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore
-- Subject under 50 chars, body wrapped at 72 chars
-- Focus on user-facing changes, not implementation details
-- Consider what's being added AND removed
-- Return ONLY the commit message (no markdown, explanations, or code blocks)
-
-FILES CHANGED:
-${files.map(f => `- ${f}`).join('\n')}
-
-DIFFS:
-${diffContext.substring(0, 4000)}
-
-Generate the commit message:`;
-
-  try {
-    // Create a simple writer that collects the response
-    let responseText = '';
-    const writer = {
-      send: (data) => {
-        try {
-          const parsed = typeof data === 'string' ? JSON.parse(data) : data;
-          console.log('🔍 Writer received message type:', parsed.type);
-
-          // Handle different message formats from Claude SDK and Cursor CLI
-          // Claude SDK sends: {type: 'claude-response', data: {message: {content: [...]}}}
-          if (parsed.type === 'claude-response' && parsed.data) {
-            const message = parsed.data.message || parsed.data;
-            console.log('📦 Claude response message:', JSON.stringify(message, null, 2).substring(0, 500));
-            if (message.content && Array.isArray(message.content)) {
-              // Extract text from content array
-              for (const item of message.content) {
-                if (item.type === 'text' && item.text) {
-                  console.log('✅ Extracted text chunk:', item.text.substring(0, 100));
-                  responseText += item.text;
-                }
-              }
-            }
-          }
-          // Cursor CLI sends: {type: 'cursor-output', output: '...'}
-          else if (parsed.type === 'cursor-output' && parsed.output) {
-            console.log('✅ Cursor output:', parsed.output.substring(0, 100));
-            responseText += parsed.output;
-          }
-          // Also handle direct text messages
-          else if (parsed.type === 'text' && parsed.text) {
-            console.log('✅ Direct text:', parsed.text.substring(0, 100));
-            responseText += parsed.text;
-          }
-        } catch (e) {
-          // Ignore parse errors
-          console.error('Error parsing writer data:', e);
-        }
-      },
-      setSessionId: () => {}, // No-op for this use case
-    };
-
-    console.log('🚀 Calling AI agent with provider:', provider);
-    console.log('📝 Prompt length:', prompt.length);
-
-    // Call the appropriate agent
-    if (provider === 'claude') {
-      await queryClaudeSDK(prompt, {
-        cwd: projectPath,
-        permissionMode: 'bypassPermissions',
-        model: 'sonnet'
-      }, writer);
-    } else if (provider === 'cursor') {
-      await spawnCursor(prompt, {
-        cwd: projectPath,
-        skipPermissions: true
-      }, writer);
-    }
-
-    console.log('📊 Total response text collected:', responseText.length, 'characters');
-    console.log('📄 Response preview:', responseText.substring(0, 200));
-
-    // Clean up the response
-    const cleanedMessage = cleanCommitMessage(responseText);
-    console.log('🧹 Cleaned message:', cleanedMessage.substring(0, 200));
-
-    return cleanedMessage || 'chore: update files';
-  } catch (error) {
-    console.error('Error generating commit message with AI:', error);
-    // Fallback to simple message
-    return `chore: update ${files.length} file${files.length !== 1 ? 's' : ''}`;
-  }
-}
-
-/**
- * Cleans the AI-generated commit message by removing markdown, code blocks, and extra formatting
- * @param {string} text - Raw AI response
- * @returns {string} Clean commit message
- */
-function cleanCommitMessage(text) {
-  if (!text || !text.trim()) {
-    return '';
-  }
-
-  let cleaned = text.trim();
-
-  // Remove markdown code blocks
-  cleaned = cleaned.replace(/```[a-z]*\n/g, '');
-  cleaned = cleaned.replace(/```/g, '');
-
-  // Remove markdown headers
-  cleaned = cleaned.replace(/^#+\s*/gm, '');
-
-  // Remove leading/trailing quotes
-  cleaned = cleaned.replace(/^["']|["']$/g, '');
-
-  // If there are multiple lines, take everything (subject + body)
-  // Just clean up extra blank lines
-  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
-
-  // Remove any explanatory text before the actual commit message
-  // Look for conventional commit pattern and start from there
-  const conventionalCommitMatch = cleaned.match(/(feat|fix|docs|style|refactor|perf|test|build|ci|chore)(\(.+?\))?:.+/s);
-  if (conventionalCommitMatch) {
-    cleaned = cleaned.substring(cleaned.indexOf(conventionalCommitMatch[0]));
-  }
-
-  return cleaned.trim();
-}
 
 // Get remote status (ahead/behind commits with smart remote detection)
 router.get('/remote-status', async (req, res) => {
@@ -1221,7 +1139,8 @@ router.get('/remote-status', async (req, res) => {
     });
   } catch (error) {
     console.error('Git remote status error:', error);
-    res.json({ error: error.message });
+    const issue = classifyGitFailure(error, 'fetch');
+    res.status(issue.statusCode).json(issue);
   }
 });
 
@@ -1255,14 +1174,8 @@ router.post('/fetch', async (req, res) => {
     res.json({ success: true, output: stdout || 'Fetch completed successfully', remoteName });
   } catch (error) {
     console.error('Git fetch error:', error);
-    res.status(500).json({ 
-      error: 'Fetch failed', 
-      details: error.message.includes('Could not resolve hostname') 
-        ? 'Unable to connect to remote repository. Check your internet connection.'
-        : error.message.includes('fatal: \'origin\' does not appear to be a git repository')
-        ? 'No remote repository configured. Add a remote with: git remote add origin <url>'
-        : error.message
-    });
+    const issue = classifyGitFailure(error, 'fetch');
+    res.status(issue.statusCode).json({ success: false, ...issue });
   }
 });
 
@@ -1305,32 +1218,8 @@ router.post('/pull', async (req, res) => {
     });
   } catch (error) {
     console.error('Git pull error:', error);
-
-    // Enhanced error handling for common pull scenarios
-    let errorMessage = 'Pull failed';
-    let details = error.message;
-    
-    if (error.message.includes('CONFLICT')) {
-      errorMessage = 'Merge conflicts detected';
-      details = 'Pull created merge conflicts. Please resolve conflicts manually in the editor, then commit the changes.';
-    } else if (error.message.includes('Please commit your changes or stash them')) {
-      errorMessage = 'Uncommitted changes detected';  
-      details = 'Please commit or stash your local changes before pulling.';
-    } else if (error.message.includes('Could not resolve hostname')) {
-      errorMessage = 'Network error';
-      details = 'Unable to connect to remote repository. Check your internet connection.';
-    } else if (error.message.includes('fatal: \'origin\' does not appear to be a git repository')) {
-      errorMessage = 'Remote not configured';
-      details = 'No remote repository configured. Add a remote with: git remote add origin <url>';
-    } else if (error.message.includes('diverged')) {
-      errorMessage = 'Branches have diverged';
-      details = 'Your local branch and remote branch have diverged. Consider fetching first to review changes.';
-    }
-    
-    res.status(500).json({ 
-      error: errorMessage, 
-      details: details
-    });
+    const issue = classifyGitFailure(error, 'pull');
+    res.status(issue.statusCode).json({ success: false, ...issue });
   }
 });
 
@@ -1373,35 +1262,8 @@ router.post('/push', async (req, res) => {
     });
   } catch (error) {
     console.error('Git push error:', error);
-    
-    // Enhanced error handling for common push scenarios
-    let errorMessage = 'Push failed';
-    let details = error.message;
-    
-    if (error.message.includes('rejected')) {
-      errorMessage = 'Push rejected';
-      details = 'The remote has newer commits. Pull first to merge changes before pushing.';
-    } else if (error.message.includes('non-fast-forward')) {
-      errorMessage = 'Non-fast-forward push';
-      details = 'Your branch is behind the remote. Pull the latest changes first.';
-    } else if (error.message.includes('Could not resolve hostname')) {
-      errorMessage = 'Network error';
-      details = 'Unable to connect to remote repository. Check your internet connection.';
-    } else if (error.message.includes('fatal: \'origin\' does not appear to be a git repository')) {
-      errorMessage = 'Remote not configured';
-      details = 'No remote repository configured. Add a remote with: git remote add origin <url>';
-    } else if (error.message.includes('Permission denied')) {
-      errorMessage = 'Authentication failed';
-      details = 'Permission denied. Check your credentials or SSH keys.';
-    } else if (error.message.includes('no upstream branch')) {
-      errorMessage = 'No upstream branch';
-      details = 'No upstream branch configured. Use: git push --set-upstream origin <branch>';
-    }
-    
-    res.status(500).json({ 
-      error: errorMessage, 
-      details: details
-    });
+    const issue = classifyGitFailure(error, 'push');
+    res.status(issue.statusCode).json({ success: false, ...issue });
   }
 });
 
@@ -1436,13 +1298,21 @@ router.post('/publish', async (req, res) => {
       const remotes = stdout.trim().split('\n').filter(r => r.trim());
       if (remotes.length === 0) {
         return res.status(400).json({
-          error: 'No remote repository configured. Add a remote with: git remote add origin <url>'
+          success: false,
+          code: 'NO_REMOTE',
+          error: 'No usable remote is configured',
+          details: 'Add or repair a remote in Git settings.',
+          action: 'OPEN_GIT_SETTINGS',
         });
       }
       remoteName = remotes.includes('origin') ? 'origin' : remotes[0];
     } catch (error) {
       return res.status(400).json({
-        error: 'No remote repository configured. Add a remote with: git remote add origin <url>'
+        success: false,
+        code: 'NO_REMOTE',
+        error: 'No usable remote is configured',
+        details: 'Add or repair a remote in Git settings.',
+        action: 'OPEN_GIT_SETTINGS',
       });
     }
 
@@ -1458,29 +1328,42 @@ router.post('/publish', async (req, res) => {
     });
   } catch (error) {
     console.error('Git publish error:', error);
-    
-    // Enhanced error handling for common publish scenarios
-    let errorMessage = 'Publish failed';
-    let details = error.message;
-    
-    if (error.message.includes('rejected')) {
-      errorMessage = 'Publish rejected';
-      details = 'The remote branch already exists and has different commits. Use push instead.';
-    } else if (error.message.includes('Could not resolve hostname')) {
-      errorMessage = 'Network error';
-      details = 'Unable to connect to remote repository. Check your internet connection.';
-    } else if (error.message.includes('Permission denied')) {
-      errorMessage = 'Authentication failed';
-      details = 'Permission denied. Check your credentials or SSH keys.';
-    } else if (error.message.includes('fatal:') && error.message.includes('does not appear to be a git repository')) {
-      errorMessage = 'Remote not configured';
-      details = 'Remote repository not properly configured. Check your remote URL.';
-    }
-    
-    res.status(500).json({ 
-      error: errorMessage, 
-      details: details
-    });
+    const issue = classifyGitFailure(error, 'publish');
+    res.status(issue.statusCode).json({ success: false, ...issue });
+  }
+});
+
+router.post('/continue-operation', async (req, res) => {
+  const { project, operation } = req.body;
+  if (!project || (operation !== 'merge' && operation !== 'rebase')) {
+    return res.status(400).json({ error: 'Project id and merge/rebase operation are required' });
+  }
+
+  try {
+    const projectPath = await getActualProjectPath(project);
+    await validateGitRepository(projectPath);
+    const result = await repositoryStateService.continueOperation(projectPath, operation);
+    res.json({ success: true, output: result.stdout || result.stderr });
+  } catch (error) {
+    const issue = classifyGitFailure(error, 'continue');
+    res.status(issue.statusCode).json({ success: false, ...issue });
+  }
+});
+
+router.post('/abort-operation', async (req, res) => {
+  const { project, operation } = req.body;
+  if (!project || (operation !== 'merge' && operation !== 'rebase')) {
+    return res.status(400).json({ error: 'Project id and merge/rebase operation are required' });
+  }
+
+  try {
+    const projectPath = await getActualProjectPath(project);
+    await validateGitRepository(projectPath);
+    const result = await repositoryStateService.abortOperation(projectPath, operation);
+    res.json({ success: true, output: result.stdout || result.stderr });
+  } catch (error) {
+    const issue = classifyGitFailure(error, 'continue');
+    res.status(issue.statusCode).json({ success: false, ...issue });
   }
 });
 
@@ -1512,6 +1395,9 @@ router.post('/discard', async (req, res) => {
     }
 
     const status = statusOutput.substring(0, 2);
+    const indexStatus = status[0];
+    const worktreeStatus = status[1];
+    let undoToken = null;
 
     if (status === '??') {
       // Untracked file or directory - delete it
@@ -1521,20 +1407,45 @@ router.post('/discard', async (req, res) => {
       if (stats.isDirectory()) {
         await fs.rm(filePath, { recursive: true, force: true });
       } else {
+        undoToken = await gitUndoService.capture({
+          projectId: project,
+          repositoryRoot: repositoryRootPath,
+          relativePath: repositoryRelativeFilePath,
+        });
         await fs.unlink(filePath);
       }
     } else if (status.includes('M') || status.includes('D')) {
-      // Modified or deleted file - restore from HEAD
-      await spawnAsync('git', ['restore', '--', repositoryRelativeFilePath], { cwd: repositoryRootPath });
+      // A pure worktree change has an exact file-level undo snapshot. Mixed or
+      // staged state is restored safely but does not claim an incomplete Undo.
+      if (indexStatus === ' ' && (worktreeStatus === 'M' || worktreeStatus === 'D')) {
+        undoToken = await gitUndoService.capture({
+          projectId: project,
+          repositoryRoot: repositoryRootPath,
+          relativePath: repositoryRelativeFilePath,
+          currentlyMissing: worktreeStatus === 'D',
+        });
+        await spawnAsync('git', ['restore', '--worktree', '--', repositoryRelativeFilePath], { cwd: repositoryRootPath });
+      } else {
+        await spawnAsync(
+          'git',
+          ['restore', '--source=HEAD', '--staged', '--worktree', '--', repositoryRelativeFilePath],
+          { cwd: repositoryRootPath },
+        );
+      }
     } else if (status.includes('A')) {
       // Added file - unstage it
       await spawnAsync('git', ['reset', 'HEAD', '--', repositoryRelativeFilePath], { cwd: repositoryRootPath });
     }
     
-    res.json({ success: true, message: `Changes discarded for ${repositoryRelativeFilePath}` });
+    res.json({
+      success: true,
+      message: `Changes discarded for ${repositoryRelativeFilePath}`,
+      undoToken,
+    });
   } catch (error) {
     console.error('Git discard error:', error);
-    res.status(500).json({ error: error.message });
+    const issue = classifyGitFailure(error, 'write');
+    res.status(issue.statusCode).json({ success: false, ...issue });
   }
 });
 
@@ -1580,12 +1491,46 @@ router.post('/delete-untracked', async (req, res) => {
       await fs.rm(filePath, { recursive: true, force: true });
       res.json({ success: true, message: `Untracked directory ${repositoryRelativeFilePath} deleted successfully` });
     } else {
+      const undoToken = await gitUndoService.capture({
+        projectId: project,
+        repositoryRoot: repositoryRootPath,
+        relativePath: repositoryRelativeFilePath,
+      });
       await fs.unlink(filePath);
-      res.json({ success: true, message: `Untracked file ${repositoryRelativeFilePath} deleted successfully` });
+      res.json({
+        success: true,
+        message: `Untracked file ${repositoryRelativeFilePath} deleted successfully`,
+        undoToken,
+      });
     }
   } catch (error) {
     console.error('Git delete untracked error:', error);
-    res.status(500).json({ error: error.message });
+    const issue = classifyGitFailure(error, 'write');
+    res.status(issue.statusCode).json({ success: false, ...issue });
+  }
+});
+
+router.post('/undo-discard', async (req, res) => {
+  const { project, undoToken } = req.body;
+  if (!project || typeof undoToken !== 'string' || !undoToken.trim()) {
+    return res.status(400).json({ error: 'Project id and undo token are required' });
+  }
+
+  try {
+    const result = await gitUndoService.restore(project, undoToken);
+    if (result !== 'restored') {
+      return res.status(result === 'expired' ? 410 : 404).json({
+        success: false,
+        code: 'UNDO_UNAVAILABLE',
+        error: result === 'expired' ? 'Undo expired' : 'Undo is unavailable',
+        details: 'Refresh source control to see the current file state.',
+        action: 'RETRY',
+      });
+    }
+    res.json({ success: true });
+  } catch (error) {
+    const issue = classifyGitFailure(error, 'write');
+    res.status(issue.statusCode).json({ success: false, ...issue });
   }
 });
 

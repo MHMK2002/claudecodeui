@@ -9,6 +9,7 @@ type AuthDependencies = Parameters<typeof createAuthService>[0];
 
 function createDependencies(overrides: Partial<AuthDependencies> = {}): AuthDependencies {
   return {
+    runtimeMode: 'standalone-web',
     users: {
       hasUsers: () => false,
       createUser: (username, passwordHash) => ({ id: 1, username, password_hash: passwordHash }),
@@ -92,4 +93,21 @@ test('refreshSession issues a replacement token for the authenticated user', () 
 
   assert.deepEqual(result, { token: 'replacement-token' });
   assert.deepEqual(tokenUser, { id: 7, username: 'alice' });
+});
+
+test('desktop-local status suppresses setup and credential authentication', async () => {
+  const service = createAuthService(createDependencies({
+    runtimeMode: 'desktop-local',
+  }));
+
+  assert.deepEqual(service.getStatus(), {
+    runtimeMode: 'desktop-local',
+    needsSetup: false,
+    isAuthenticated: false,
+  });
+  await assert.rejects(
+    service.login('alice', 'password'),
+    (error: unknown) => error instanceof AppError
+      && error.code === 'AUTH_CREDENTIAL_LOGIN_UNAVAILABLE',
+  );
 });

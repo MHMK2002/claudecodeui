@@ -4,6 +4,10 @@ import { providerProfilesDb } from '@/modules/database/index.js';
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
 import type { LLMProvider, NormalizedMessage } from '@/shared/types.js';
 
+type ForkContextServiceDependencies = {
+  query?: typeof query;
+};
+
 /**
  * Forked-session context summarizer.
  *
@@ -179,8 +183,9 @@ async function summarizeWithClaude(
   transcript: string,
   env: NodeJS.ProcessEnv,
   cwd: string | undefined,
+  queryFn: typeof query,
 ): Promise<string> {
-  const queryInstance = query({
+  const queryInstance = queryFn({
     prompt: transcript,
     options: {
       model: SUMMARY_MODEL,
@@ -190,6 +195,7 @@ async function summarizeWithClaude(
       permissionMode: 'bypassPermissions',
       systemPrompt: SUMMARY_SYSTEM_PROMPT,
       settingSources: [],
+      persistSession: false,
       env,
       pathToClaudeCodeExecutable: resolveClaudeCodeExecutablePath(process.env.CLAUDE_CLI_PATH),
       ...(cwd ? { cwd } : {}),
@@ -237,38 +243,50 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): 
   });
 }
 
-export const forkContextService = {
-  /**
-   * Builds the carried-over context for a forked session. Returns a summary
-   * string (preferred), a rendered transcript fallback, or null when there is
-   * nothing usable. Never throws — fork callers can await this unconditionally.
-   */
-  async buildForkContext(input: BuildForkContextInput): Promise<string | null> {
-    const transcript = renderTranscript(input.messages);
-    if (!transcript.trim()) {
-      return null;
-    }
+/**
+ * Creates the context handoff service consumed by sessions.service. Provider
+ * tests inject the Claude query dependency to verify SDK options without
+ * credentials, network access, or filesystem persistence.
+ */
+export function createForkContextService(dependencies: ForkContextServiceDependencies = {}) {
+  const queryFn = dependencies.query ?? query;
 
-    const truncatedTranscript = truncateFromEnd(transcript, SUMMARY_INPUT_CHAR_CAP);
-    const credential = resolveClaudeCredential(input);
-    const env = buildClaudeEnvFromCredential(credential);
-    const cwd = input.projectPath ?? undefined;
+  return {
+    /**
+     * Builds the carried-over context for a forked session. Returns a summary
+     * string (preferred), a rendered transcript fallback, or null when there is
+     * nothing usable. Never throws — fork callers can await this unconditionally.
+     */
+    async buildForkContext(input: BuildForkContextInput): Promise<string | null> {
+      const transcript = renderTranscript(input.messages);
+      if (!transcript.trim()) {
+        return null;
+      }
 
-    try {
-      const summary = await withTimeout(
-        summarizeWithClaude(truncatedTranscript, env, cwd),
-        SUMMARY_TIMEOUT_MS,
-        'fork-context summary',
-      );
-      return summary;
-    } catch (error) {
-      // Any failure (no/bad credential, SDK error, timeout) degrades to the raw
-      // transcript so the fork still carries context, just unsummarized.
-      console.warn(
-        '[fork-context] Claude summary failed; falling back to rendered transcript:',
-        error instanceof Error ? error.message : error,
-      );
-      return truncateFromEnd(transcript, TRANSCRIPT_CHAR_CAP);
-    }
-  },
-};
+      const truncatedTranscript = truncateFromEnd(transcript, SUMMARY_INPUT_CHAR_CAP);
+      const credential = resolveClaudeCredential(input);
+      const env = buildClaudeEnvFromCredential(credential);
+      const cwd = input.projectPath ?? undefined;
+
+      try {
+        const summary = await withTimeout(
+          summarizeWithClaude(truncatedTranscript, env, cwd, queryFn),
+          SUMMARY_TIMEOUT_MS,
+          'fork-context summary',
+        );
+        return summary;
+      } catch (error) {
+        // Any failure (no/bad credential, SDK error, timeout) degrades to the raw
+        // transcript so the fork still carries context, just unsummarized.
+        console.warn(
+          '[fork-context] Claude summary failed; falling back to rendered transcript:',
+          error instanceof Error ? error.message : error,
+        );
+        return truncateFromEnd(transcript, TRANSCRIPT_CHAR_CAP);
+      }
+    },
+  };
+}
+
+/** Singleton consumed by sessions.service when a fork carries source context. */
+export const forkContextService = createForkContextService();

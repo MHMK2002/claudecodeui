@@ -100,7 +100,7 @@ export type ResolvedProviderSelection = {
   model: string;
 };
 
-export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'browser' | `plugin:${string}`;
+export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'schedules' | 'browser' | `plugin:${string}`;
 
 export interface ProjectSession {
   id: string;

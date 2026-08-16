@@ -1,13 +1,22 @@
-import { useTranslation } from 'react-i18next';
+import { useEffect, useRef } from 'react';
+
 import { Input } from '../../../shared/view/ui';
-import { shouldShowGithubAuthentication } from '../utils/pathUtils';
-import type { GithubTokenCredential, TokenMode } from '../types';
+import { buildCloneDestination } from '../utils/projectCreationWorkflow';
+import type {
+  GithubTokenCredential,
+  ProjectCreationField,
+  ProjectCreationMode,
+  TokenMode,
+} from '../types';
 import GithubAuthenticationCard from './GithubAuthenticationCard';
 import WorkspacePathField from './WorkspacePathField';
 
 type StepConfigurationProps = {
-  workspacePath: string;
-  githubUrl: string;
+  mode: ProjectCreationMode;
+  folderPath: string;
+  repositoryUrl: string;
+  destinationRoot: string;
+  credentialRequired: boolean;
   tokenMode: TokenMode;
   selectedGithubToken: string;
   newGithubToken: string;
@@ -15,17 +24,22 @@ type StepConfigurationProps = {
   loadingTokens: boolean;
   tokenLoadError: string | null;
   isCreating: boolean;
-  onWorkspacePathChange: (workspacePath: string) => void;
-  onGithubUrlChange: (githubUrl: string) => void;
+  focusField: ProjectCreationField | null;
+  browseRequestKey: number;
+  onFolderPathChange: (path: string) => void;
+  onRepositoryUrlChange: (url: string) => void;
+  onDestinationRootChange: (path: string) => void;
   onTokenModeChange: (tokenMode: TokenMode) => void;
   onSelectedGithubTokenChange: (tokenId: string) => void;
   onNewGithubTokenChange: (tokenValue: string) => void;
-  onAdvanceToConfirm: () => void;
 };
 
 export default function StepConfiguration({
-  workspacePath,
-  githubUrl,
+  mode,
+  folderPath,
+  repositoryUrl,
+  destinationRoot,
+  credentialRequired,
   tokenMode,
   selectedGithubToken,
   newGithubToken,
@@ -33,53 +47,88 @@ export default function StepConfiguration({
   loadingTokens,
   tokenLoadError,
   isCreating,
-  onWorkspacePathChange,
-  onGithubUrlChange,
+  focusField,
+  browseRequestKey,
+  onFolderPathChange,
+  onRepositoryUrlChange,
+  onDestinationRootChange,
   onTokenModeChange,
   onSelectedGithubTokenChange,
   onNewGithubTokenChange,
-  onAdvanceToConfirm,
 }: StepConfigurationProps) {
-  const { t } = useTranslation();
-  const showGithubAuth = shouldShowGithubAuthentication(githubUrl);
+  const folderButtonRef = useRef<HTMLButtonElement>(null);
+  const destinationButtonRef = useRef<HTMLButtonElement>(null);
+  const repositoryUrlRef = useRef<HTMLInputElement>(null);
+  const credentialRef = useRef<HTMLDivElement>(null);
+  const exactDestination = buildCloneDestination(destinationRoot, repositoryUrl);
+
+  useEffect(() => {
+    if (focusField === 'folder') folderButtonRef.current?.focus();
+    if (focusField === 'destination') destinationButtonRef.current?.focus();
+    if (focusField === 'repositoryUrl') repositoryUrlRef.current?.focus();
+    if (focusField === 'credential') credentialRef.current?.focus();
+  }, [focusField, credentialRequired]);
+
+  if (mode === 'local') {
+    return (
+      <div>
+        <label className="mb-2 block text-sm font-medium text-foreground">Existing folder</label>
+        <WorkspacePathField
+          value={folderPath}
+          label="Existing folder"
+          buttonRef={folderButtonRef}
+          browseRequestKey={focusField === 'folder' ? browseRequestKey : 0}
+          disabled={isCreating}
+          onChange={onFolderPathChange}
+        />
+        <p className="mt-2 text-sm text-muted-foreground">
+          The folder must already exist and be writable. No files will be created during registration.
+        </p>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <div>
-        <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
-          {t('projectWizard.step2.newPath')}
-        </label>
-
-        <WorkspacePathField
-          value={workspacePath}
-          disabled={isCreating}
-          onChange={onWorkspacePathChange}
-          onAdvanceToConfirm={onAdvanceToConfirm}
-        />
-
-        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-          {t('projectWizard.step2.newHelp')}
-        </p>
-      </div>
-
-      <div>
-        <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
-          {t('projectWizard.step2.githubUrl')}
+        <label htmlFor="repository-url" className="mb-2 block text-sm font-medium text-foreground">
+          Repository URL
         </label>
         <Input
+          ref={repositoryUrlRef}
+          id="repository-url"
           type="text"
-          value={githubUrl}
-          onChange={(event) => onGithubUrlChange(event.target.value)}
-          placeholder="https://github.com/username/repository"
-          className="w-full"
+          inputMode="url"
+          autoCapitalize="none"
+          autoCorrect="off"
+          value={repositoryUrl}
+          onChange={(event) => onRepositoryUrlChange(event.target.value)}
+          placeholder="https://github.com/owner/repository.git"
+          className="h-11"
           disabled={isCreating}
         />
-        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-          {t('projectWizard.step2.githubHelp')}
-        </p>
+        <p className="mt-2 text-sm text-muted-foreground">HTTPS and SSH repository URLs are supported.</p>
       </div>
 
-      {showGithubAuth && (
+      <div>
+        <label className="mb-2 block text-sm font-medium text-foreground">Destination</label>
+        <WorkspacePathField
+          value={destinationRoot}
+          label="Destination"
+          allowCreateFolder
+          buttonRef={destinationButtonRef}
+          browseRequestKey={focusField === 'destination' ? browseRequestKey : 0}
+          disabled={isCreating}
+          onChange={onDestinationRootChange}
+        />
+        {exactDestination && (
+          <p className="mt-2 break-all text-sm text-muted-foreground">
+            Exact clone destination: <code className="text-foreground">{exactDestination}</code>
+          </p>
+        )}
+      </div>
+
+      {credentialRequired && (
         <GithubAuthenticationCard
           tokenMode={tokenMode}
           selectedGithubToken={selectedGithubToken}
@@ -87,6 +136,7 @@ export default function StepConfiguration({
           availableTokens={availableTokens}
           loadingTokens={loadingTokens}
           tokenLoadError={tokenLoadError}
+          focusRef={credentialRef}
           onTokenModeChange={onTokenModeChange}
           onSelectedGithubTokenChange={onSelectedGithubTokenChange}
           onNewGithubTokenChange={onNewGithubTokenChange}

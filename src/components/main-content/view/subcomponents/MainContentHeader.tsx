@@ -5,6 +5,7 @@ import MainContentTabSwitcher from './MainContentTabSwitcher';
 import MainContentTitle from './MainContentTitle';
 
 export default function MainContentHeader({
+  sessionStore,
   activeTab,
   setActiveTab,
   selectedProject,
@@ -42,6 +43,7 @@ export default function MainContentHeader({
         <div className="flex min-w-0 flex-1 items-center gap-2">
           {isMobile && <MobileMenuButton onMenuClick={onMenuClick} />}
           <MainContentTitle
+            sessionStore={sessionStore}
             activeTab={activeTab}
             selectedProject={selectedProject}
             selectedSession={selectedSession}

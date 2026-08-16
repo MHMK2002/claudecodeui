@@ -1,52 +1,160 @@
-import { GitBranch, GitCommit, RefreshCw } from 'lucide-react';
+import { ArrowRight, GitCommit, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ConfirmationRequest, FileStatusCode, GitDiffMap, GitStatusResponse } from '../../types/types';
+
+import type {
+  ConfirmationRequest,
+  FileStatusCode,
+  GitCommitResult,
+  GitDiffMap,
+  GitRemoteStatus,
+  GitStatusResponse,
+} from '../../types/types';
 import { getAllChangedFiles, hasChangedFiles } from '../../utils/gitPanelUtils';
+import { useCommitMessageSuggestion } from '../../hooks/useCommitMessageSuggestion';
+
 import CommitComposer from './CommitComposer';
 import FileChangeList from './FileChangeList';
 import FileStatusLegend from './FileStatusLegend';
 
 type ChangesViewProps = {
   isMobile: boolean;
-  projectPath: string;
+  projectId: string;
   gitStatus: GitStatusResponse | null;
   gitDiff: GitDiffMap;
+  remoteStatus: GitRemoteStatus | null;
   isLoading: boolean;
   wrapText: boolean;
-  isCreatingInitialCommit: boolean;
+  isRecoveryActive: boolean;
   onWrapTextChange: (wrapText: boolean) => void;
-  onCreateInitialCommit: () => Promise<boolean>;
   onOpenFile: (filePath: string) => Promise<void>;
   onDiscardFile: (filePath: string) => Promise<void>;
   onDeleteFile: (filePath: string) => Promise<void>;
   onStageFiles: (files: string[]) => Promise<boolean>;
   onUnstageFiles: (files: string[]) => Promise<boolean>;
-  onCommitChanges: (message: string, files: string[]) => Promise<boolean>;
+  onCommitChanges: (
+    message: string,
+    files: string[],
+    expectedSnapshotId?: string,
+  ) => Promise<GitCommitResult>;
+  onOpenAgentSettings: () => void;
+  onReviewStagedChanges: () => void;
   onRequestConfirmation: (request: ConfirmationRequest) => void;
   onExpandedFilesChange: (hasExpandedFiles: boolean) => void;
 };
 
+function pluralize(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function RepositorySummary({
+  gitStatus,
+  remoteStatus,
+  changedFileCount,
+  stagedFileCount,
+}: {
+  gitStatus: GitStatusResponse;
+  remoteStatus: GitRemoteStatus | null;
+  changedFileCount: number;
+  stagedFileCount: number;
+}) {
+  const unstagedFileCount = Math.max(0, changedFileCount - stagedFileCount);
+  const breakdown = [
+    [gitStatus.modified?.length ?? 0, 'modified'],
+    [gitStatus.added?.length ?? 0, 'added'],
+    [gitStatus.deleted?.length ?? 0, 'deleted'],
+    [gitStatus.untracked?.length ?? 0, 'untracked'],
+  ] as const;
+  const breakdownLabel = breakdown
+    .filter(([count]) => count > 0)
+    .map(([count, label]) => `${count} ${label}`)
+    .join(' · ') || 'No file changes';
+  const remoteLabel = remoteStatus?.hasRemote
+    ? remoteStatus.remoteBranch ?? `${remoteStatus.remoteName ?? 'remote'}/${gitStatus.branch ?? 'current'}`
+    : 'No remote';
+  const ahead = remoteStatus?.ahead ?? 0;
+  const behind = remoteStatus?.behind ?? 0;
+  const syncLabel = remoteStatus?.hasRemote
+    ? ahead === 0 && behind === 0
+      ? 'Up to date'
+      : `${pluralize(ahead, 'commit')} ahead · ${pluralize(behind, 'commit')} behind`
+    : 'Publish this branch to connect a remote';
+  const nextStep = changedFileCount === 0
+    ? 'Working tree clean. There is nothing to commit.'
+    : stagedFileCount === 0
+      ? 'Next: review a diff, then stage the files you want to commit.'
+      : `Next: add a commit message for ${pluralize(stagedFileCount, 'staged file')} and commit.`;
+
+  return (
+    <section
+      aria-labelledby="repository-summary-heading"
+      className="border-b border-border bg-muted/20 px-4 py-4"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h3 id="repository-summary-heading" className="text-sm font-semibold text-foreground">
+            Repository summary
+          </h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {pluralize(changedFileCount, 'changed file')} · {breakdownLabel}
+          </p>
+        </div>
+        <span className="rounded-full border border-border bg-background px-2.5 py-1 text-xs font-medium text-foreground">
+          {gitStatus.branch || 'Unknown branch'}
+        </span>
+      </div>
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+        <div className="rounded-lg border border-border bg-background p-3">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Ready to commit</p>
+          <p className="mt-1 text-sm font-semibold text-foreground">{pluralize(stagedFileCount, 'staged file')}</p>
+        </div>
+        <div className="rounded-lg border border-border bg-background p-3">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Needs review</p>
+          <p className="mt-1 text-sm font-semibold text-foreground">{pluralize(unstagedFileCount, 'unstaged file')}</p>
+        </div>
+        <div className="rounded-lg border border-border bg-background p-3">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Remote</p>
+          <p className="mt-1 truncate text-sm font-semibold text-foreground" title={remoteLabel}>{remoteLabel}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">{syncLabel}</p>
+        </div>
+      </div>
+
+      <p className="mt-3 flex items-start gap-2 rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground">
+        <ArrowRight className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+        <span>{nextStep}</span>
+      </p>
+    </section>
+  );
+}
+
 export default function ChangesView({
   isMobile,
-  projectPath,
+  projectId,
   gitStatus,
   gitDiff,
+  remoteStatus,
   isLoading,
   wrapText,
-  isCreatingInitialCommit,
+  isRecoveryActive,
   onWrapTextChange,
-  onCreateInitialCommit,
   onOpenFile,
   onDiscardFile,
   onDeleteFile,
   onStageFiles,
   onUnstageFiles,
   onCommitChanges,
+  onOpenAgentSettings,
+  onReviewStagedChanges,
   onRequestConfirmation,
   onExpandedFilesChange,
 }: ChangesViewProps) {
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
-  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
+  // Internal Git-tab navigation remounts this view while the controller still
+  // owns a current status snapshot. Seed from it so cached generated
+  // provenance is not compared against a synthetic empty staged set.
+  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(
+    () => new Set(gitStatus?.staged ?? []),
+  );
   // Stage/unstage calls in flight or queued. While > 0, status refreshes must
   // not overwrite the optimistic selection with a snapshot that predates the
   // later clicks.
@@ -57,6 +165,15 @@ export default function ChangesView({
 
   const changedFiles = useMemo(() => getAllChangedFiles(gitStatus), [gitStatus]);
   const hasExpandedFiles = expandedFiles.size > 0;
+  const stagedFiles = useMemo(
+    () => Array.from(selectedFiles).sort((left, right) => left.localeCompare(right)),
+    [selectedFiles],
+  );
+  const commitMessageSuggestion = useCommitMessageSuggestion({
+    projectId,
+    stagedFiles,
+    hasPendingStageOperations: pendingStageOps > 0,
+  });
 
   const enqueueStageOp = useCallback((operation: () => Promise<unknown>) => {
     setPendingStageOps((count) => count + 1);
@@ -129,7 +246,7 @@ export default function ChangesView({
       if (status === 'U') {
         onRequestConfirmation({
           type: 'delete',
-          message: `Delete untracked file "${filePath}"? This action cannot be undone.`,
+          message: `Delete untracked file "${filePath}"? Undo will be offered when a safe file snapshot can be created.`,
           onConfirm: async () => {
             await onDeleteFile(filePath);
           },
@@ -139,7 +256,7 @@ export default function ChangesView({
 
       onRequestConfirmation({
         type: 'discard',
-        message: `Discard all changes to "${filePath}"? This action cannot be undone.`,
+        message: `Discard all changes to "${filePath}"? Undo will be offered when a safe file snapshot can be created.`,
         onConfirm: async () => {
           await onDiscardFile(filePath);
         },
@@ -149,10 +266,10 @@ export default function ChangesView({
   );
 
   const commitSelectedFiles = useCallback(
-    (message: string) => {
-      return onCommitChanges(message, Array.from(selectedFiles));
+    (message: string, expectedSnapshotId?: string) => {
+      return onCommitChanges(message, stagedFiles, expectedSnapshotId);
     },
-    [onCommitChanges, selectedFiles],
+    [onCommitChanges, stagedFiles],
   );
 
   const unstagedFiles = useMemo(
@@ -161,49 +278,41 @@ export default function ChangesView({
   );
 
   return (
-    <>
-      <CommitComposer
-        isMobile={isMobile}
-        projectPath={projectPath}
-        selectedFileCount={selectedFiles.size}
-        isHidden={hasExpandedFiles}
-        onCommit={commitSelectedFiles}
-        onRequestConfirmation={onRequestConfirmation}
-      />
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      {!isLoading && gitStatus && !gitStatus.error && (
+        <RepositorySummary
+          gitStatus={gitStatus}
+          remoteStatus={remoteStatus}
+          changedFileCount={changedFiles.length}
+          stagedFileCount={selectedFiles.size}
+        />
+      )}
+
+      {!isRecoveryActive && (
+        <CommitComposer
+          isMobile={isMobile}
+          selectedFileCount={selectedFiles.size}
+          hasPendingStageOperations={pendingStageOps > 0}
+          isHidden={hasExpandedFiles}
+          suggestion={commitMessageSuggestion}
+          onCommit={commitSelectedFiles}
+          onOpenAgentSettings={onOpenAgentSettings}
+          onReviewStagedChanges={onReviewStagedChanges}
+          onRequestConfirmation={onRequestConfirmation}
+        />
+      )}
 
       {!gitStatus?.error && <FileStatusLegend isMobile={isMobile} />}
+      {!gitStatus?.error && !isLoading && changedFiles.length > 0 && (
+        <p className="border-b border-border bg-background px-4 py-3 text-sm text-muted-foreground">
+          Review a file’s diff here or open it in the editor. Use its checkbox to move it into or out of the next commit.
+        </p>
+      )}
 
-      <div className="flex-1 overflow-y-auto">
+      <div>
         {isLoading ? (
           <div className="flex h-32 items-center justify-center">
             <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" />
-          </div>
-        ) : gitStatus?.hasCommits === false && hasChangedFiles(gitStatus) ? (
-          <div className="flex flex-col items-center justify-center p-8 text-center">
-            <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-muted/50">
-              <GitBranch className="h-7 w-7 text-muted-foreground/50" />
-            </div>
-            <h3 className="mb-2 text-lg font-medium text-foreground">No commits yet</h3>
-            <p className="mb-6 max-w-md text-sm text-muted-foreground">
-              This repository doesn&apos;t have any commits yet. Create your first commit to start tracking changes.
-            </p>
-            <button
-              onClick={() => void onCreateInitialCommit()}
-              disabled={isCreatingInitialCommit}
-              className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {isCreatingInitialCommit ? (
-                <>
-                  <RefreshCw className="h-4 w-4 animate-spin" />
-                  <span>Creating Initial Commit...</span>
-                </>
-              ) : (
-                <>
-                  <GitCommit className="h-4 w-4" />
-                  <span>Create Initial Commit</span>
-                </>
-              )}
-            </button>
           </div>
         ) : !gitStatus || !hasChangedFiles(gitStatus) ? (
           <div className="flex h-32 flex-col items-center justify-center text-muted-foreground">
@@ -213,25 +322,28 @@ export default function ChangesView({
         ) : (
           <div className={isMobile ? 'pb-4' : ''}>
             {/* STAGED section */}
-            <div className="flex items-center justify-between border-b border-border/60 bg-muted/30 px-3 py-1.5">
-              <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Staged ({selectedFiles.size})
+            <div className="flex min-h-12 items-center justify-between gap-3 border-b border-border bg-muted/30 px-4 py-2">
+              <span className="text-sm font-semibold text-foreground">
+                Staged for commit <span className="font-normal text-muted-foreground">({selectedFiles.size})</span>
               </span>
               {selectedFiles.size > 0 && (
                 <button
+                  type="button"
                   onClick={() => {
                     const filesToUnstage = Array.from(selectedFiles);
                     setSelectedFiles(new Set());
                     enqueueStageOp(() => onUnstageFiles(filesToUnstage));
                   }}
-                  className="text-xs text-primary transition-colors hover:text-primary/80"
+                  className="min-h-11 rounded-lg border border-border bg-background px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  Unstage All
+                  Unstage all {pluralize(selectedFiles.size, 'file')}
                 </button>
               )}
             </div>
             {selectedFiles.size === 0 ? (
-              <div className="px-3 py-2 text-xs text-muted-foreground italic">No staged files</div>
+              <div className="px-4 py-3 text-sm text-muted-foreground">
+                No files are staged yet. Stage reviewed files below to prepare the commit.
+              </div>
             ) : (
               <FileChangeList
                 gitStatus={gitStatus}
@@ -250,25 +362,26 @@ export default function ChangesView({
             )}
 
             {/* CHANGES section */}
-            <div className="flex items-center justify-between border-b border-border/60 bg-muted/30 px-3 py-1.5">
-              <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Changes ({unstagedFiles.size})
+            <div className="flex min-h-12 items-center justify-between gap-3 border-y border-border bg-muted/30 px-4 py-2">
+              <span className="text-sm font-semibold text-foreground">
+                Unstaged changes <span className="font-normal text-muted-foreground">({unstagedFiles.size})</span>
               </span>
               {unstagedFiles.size > 0 && (
                 <button
+                  type="button"
                   onClick={() => {
                     const filesToStage = Array.from(unstagedFiles);
                     setSelectedFiles(new Set(changedFiles));
                     enqueueStageOp(() => onStageFiles(filesToStage));
                   }}
-                  className="text-xs text-primary transition-colors hover:text-primary/80"
+                  className="min-h-11 rounded-lg border border-border bg-background px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  Stage All
+                  Stage all {pluralize(unstagedFiles.size, 'file')}
                 </button>
               )}
             </div>
             {unstagedFiles.size === 0 ? (
-              <div className="px-3 py-2 text-xs text-muted-foreground italic">All changes staged</div>
+              <div className="px-4 py-3 text-sm text-muted-foreground">All reviewed changes are staged.</div>
             ) : (
               <FileChangeList
                 gitStatus={gitStatus}
@@ -288,6 +401,6 @@ export default function ChangesView({
           </div>
         )}
       </div>
-    </>
+    </div>
   );
 }

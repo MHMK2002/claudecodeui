@@ -11,7 +11,8 @@
   },
   "github": {
     "release": true,
-    "releaseName": "CloudCLI UI v${version}"
+    "releaseName": "CloudCLI UI v${version}",
+    "draft": true
   },
   "hooks": {
     "before:init": ["npm run build"]

@@ -5,7 +5,6 @@ import {
   voiceConfigHeaders,
   type VoiceConfig,
 } from '../hooks/useVoiceConfig';
-import { IS_PLATFORM } from '../constants/config';
 import {
   CLEANUP_TEXT_MAX_CHARS,
   normalizeCleanupInstructions,
@@ -32,24 +31,12 @@ function directUrl(baseUrl: string, path: string): string {
 
 /**
  * URL for the real-time Soniox STT relay (server/modules/websocket/services/
- * voice-stream-proxy.service.ts). Mirrors getShellWebSocketUrl's auth handling:
- * platform mode needs no token, otherwise the JWT rides along as a query param
- * (a native WebSocket can't set an Authorization header).
+ * voice-stream-proxy.service.ts). The shared HttpOnly session cookie is sent
+ * automatically by the browser during the same-origin WebSocket upgrade.
  */
-export function getVoiceStreamWebSocketUrl(): string | null {
+export function getVoiceStreamWebSocketUrl(): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-
-  if (IS_PLATFORM) {
-    return `${protocol}//${window.location.host}/voice-stream`;
-  }
-
-  const token = localStorage.getItem('auth-token');
-  if (!token) {
-    console.error('No authentication token found for voice stream WebSocket connection');
-    return null;
-  }
-
-  return `${protocol}//${window.location.host}/voice-stream?token=${encodeURIComponent(token)}`;
+  return `${protocol}//${window.location.host}/voice-stream`;
 }
 
 export function voiceConfigSignature(): string {

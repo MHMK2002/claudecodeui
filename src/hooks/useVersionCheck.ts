@@ -1,37 +1,83 @@
-import { useState, useEffect } from 'react';
-import { version } from '../../package.json';
-import { ReleaseInfo } from '../types/sharedTypes';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
-/**
- * Compare two semantic version strings
- * Works only with numeric versions separated by dots (e.g. "1.2.3")
- * @param {string} v1 
- * @param {string} v2
- * @returns positive if v1 > v2, negative if v1 < v2, 0 if equal
- */
-const compareVersions = (v1: string, v2: string) => {
-  const parts1 = v1.split('.').map(Number);
-  const parts2 = v2.split('.').map(Number);
-  
-  for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
-    const p1 = parts1[i] || 0;
-    const p2 = parts2[i] || 0;
-    if (p1 !== p2) return p1 - p2;
+import { PRODUCT_CONFIG } from '../constants/config';
+import type { ReleaseInfo } from '../types/sharedTypes';
+
+const CLIENT_VERSION = globalThis.__CLOUDCLI_VERSION__;
+const CLIENT_BUILD_ID = globalThis.__CLOUDCLI_BUILD_ID__;
+const DESKTOP_UPDATE_PHASES = new Set<DesktopUpdaterPhase>([
+  'available',
+  'downloading',
+  'ready',
+  'installing',
+  'error',
+]);
+
+/** Compare release versions that use numeric dot-separated components. */
+export const compareVersions = (firstVersion: string, secondVersion: string) => {
+  const firstParts = firstVersion.split('.').map(Number);
+  const secondParts = secondVersion.split('.').map(Number);
+
+  for (let index = 0; index < Math.max(firstParts.length, secondParts.length); index += 1) {
+    const firstPart = Number.isFinite(firstParts[index]) ? firstParts[index] : 0;
+    const secondPart = Number.isFinite(secondParts[index]) ? secondParts[index] : 0;
+    if (firstPart !== secondPart) return firstPart - secondPart;
   }
   return 0;
 };
 
 export type InstallMode = 'git' | 'npm';
 
-export const useVersionCheck = (owner: string, repo: string) => {
-  const [updateAvailable, setUpdateAvailable] = useState(false);
-  const [latestVersion, setLatestVersion] = useState<string | null>(null);
-  const [releaseInfo, setReleaseInfo] = useState<ReleaseInfo | null>(null);
+function getDesktopUpdaterBridge() {
+  if (typeof window === 'undefined') return undefined;
+  return window.cloudcliDesktopUpdater;
+}
+
+function mapDesktopRelease(state: DesktopUpdaterState | null): ReleaseInfo | null {
+  if (!state?.release) return null;
+  return {
+    title: state.release.title,
+    body: state.release.notes,
+    htmlUrl: state.release.releaseUrl,
+    publishedAt: state.release.publishedAt || '',
+  };
+}
+
+export const useVersionCheck = () => {
+  const isDesktopUpdater = Boolean(getDesktopUpdaterBridge());
+  const [webUpdateAvailable, setWebUpdateAvailable] = useState(false);
+  const [webLatestVersion, setWebLatestVersion] = useState<string | null>(null);
+  const [webReleaseInfo, setWebReleaseInfo] = useState<ReleaseInfo | null>(null);
   const [installMode, setInstallMode] = useState<InstallMode>('git');
   const [runningVersion, setRunningVersion] = useState<string | null>(null);
   const [restartRequired, setRestartRequired] = useState(false);
+  const [desktopUpdaterState, setDesktopUpdaterState] = useState<DesktopUpdaterState | null>(null);
 
   useEffect(() => {
+    const bridge = getDesktopUpdaterBridge();
+    if (!bridge) return undefined;
+
+    let active = true;
+    const unsubscribe = bridge.onStateChanged((state) => {
+      if (active) setDesktopUpdaterState(state);
+    });
+    void bridge.getState()
+      .then((state) => {
+        if (active) setDesktopUpdaterState(state);
+      })
+      .catch((error) => {
+        console.error('Desktop updater state failed:', error);
+      });
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isDesktopUpdater) return undefined;
+
     const fetchHealth = async () => {
       try {
         const response = await fetch('/health');
@@ -39,61 +85,97 @@ export const useVersionCheck = (owner: string, repo: string) => {
         if (data.installMode === 'npm' || data.installMode === 'git') {
           setInstallMode(data.installMode);
         }
-        // `data.version` is the version the server process is actually running.
-        // This module's `version` is baked into the frontend bundle at build
-        // time, so it reflects the installed (on-disk) package. If they differ,
-        // the package was updated but the server process was not restarted, and
-        // DB-backed actions may silently fail until it is.
         if (typeof data.version === 'string' && data.version.length > 0) {
           setRunningVersion(data.version);
-          setRestartRequired(data.version !== version);
+          // A buildId difference alone can be a development or packaging
+          // mismatch; it does not prove that an update was installed.
+          setRestartRequired(data.version !== CLIENT_VERSION);
         }
       } catch {
-        // Default to git / no restart hint on error
+        // Keep the non-destructive defaults when health is unavailable.
       }
     };
-    fetchHealth();
-  }, []);
+    void fetchHealth();
+    return undefined;
+  }, [isDesktopUpdater]);
 
   useEffect(() => {
+    if (isDesktopUpdater) return undefined;
+
     const checkVersion = async () => {
       try {
-        const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases/latest`);
-        const data = await response.json();
-
-        // Handle the case where there might not be any releases
-        if (data.tag_name) {
-          const latest = data.tag_name.replace(/^v/, '');
-          setLatestVersion(latest);
-          // Only show update if latest version is actually newer
-          setUpdateAvailable(compareVersions(latest, version) > 0);
-
-          // Store release information
-          setReleaseInfo({
-            title: data.name || data.tag_name,
-            body: data.body || '',
-            htmlUrl: data.html_url || `https://github.com/${owner}/${repo}/releases/latest`,
-            publishedAt: data.published_at
-          });
-        } else {
-          // No releases found, don't show update notification
-          setUpdateAvailable(false);
-          setLatestVersion(null);
-          setReleaseInfo(null);
+        const response = await fetch(PRODUCT_CONFIG.updateFeedUrl);
+        if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) {
+          throw new Error(`Update feed returned ${response.status}.`);
         }
+        const data = await response.json();
+        if (!data.tag_name) {
+          setWebUpdateAvailable(false);
+          setWebLatestVersion(null);
+          setWebReleaseInfo(null);
+          return;
+        }
+
+        const latest = String(data.tag_name).replace(/^v/, '');
+        setWebLatestVersion(latest);
+        setWebUpdateAvailable(compareVersions(latest, CLIENT_VERSION) > 0);
+        setWebReleaseInfo({
+          title: data.name || data.tag_name,
+          body: data.body || '',
+          htmlUrl: data.html_url || `${PRODUCT_CONFIG.repositoryUrl}/releases/latest`,
+          publishedAt: data.published_at || '',
+        });
       } catch (error) {
         console.error('Version check failed:', error);
-        // On error, don't show update notification
-        setUpdateAvailable(false);
-        setLatestVersion(null);
-        setReleaseInfo(null);
+        setWebUpdateAvailable(false);
+        setWebLatestVersion(null);
+        setWebReleaseInfo(null);
       }
     };
 
-    checkVersion();
-    const interval = setInterval(checkVersion, 5 * 60 * 1000); // Check every 5 minutes
-    return () => clearInterval(interval);
-  }, [owner, repo]);
+    void checkVersion();
+    const interval = window.setInterval(checkVersion, 5 * 60 * 1_000);
+    return () => window.clearInterval(interval);
+  }, [isDesktopUpdater]);
 
-  return { updateAvailable, latestVersion, currentVersion: version, releaseInfo, installMode, runningVersion, restartRequired };
-}; 
+  const checkForUpdates = useCallback(async () => {
+    const bridge = getDesktopUpdaterBridge();
+    if (!bridge) return null;
+    const state = await bridge.check();
+    setDesktopUpdaterState(state);
+    return state;
+  }, []);
+
+  const restartAndInstall = useCallback(async () => {
+    const bridge = getDesktopUpdaterBridge();
+    if (!bridge) throw new Error('Automatic desktop updates are unavailable in this build.');
+    const state = await bridge.restartAndInstall();
+    setDesktopUpdaterState(state);
+    return state;
+  }, []);
+
+  const desktopReleaseInfo = useMemo(
+    () => mapDesktopRelease(desktopUpdaterState),
+    [desktopUpdaterState],
+  );
+  const desktopUpdateAvailable = Boolean(
+    desktopUpdaterState?.release && DESKTOP_UPDATE_PHASES.has(desktopUpdaterState.phase),
+  );
+
+  return {
+    updateAvailable: isDesktopUpdater ? desktopUpdateAvailable : webUpdateAvailable,
+    latestVersion: isDesktopUpdater
+      ? desktopUpdaterState?.release?.version || null
+      : webLatestVersion,
+    currentVersion: desktopUpdaterState?.currentVersion || CLIENT_VERSION,
+    buildId: desktopUpdaterState?.buildId || CLIENT_BUILD_ID,
+    releaseInfo: isDesktopUpdater ? desktopReleaseInfo : webReleaseInfo,
+    installMode,
+    runningVersion,
+    restartRequired: isDesktopUpdater ? false : restartRequired,
+    isDesktopUpdater,
+    desktopUpdaterState,
+    checkForUpdates,
+    restartAndInstall,
+  };
+};

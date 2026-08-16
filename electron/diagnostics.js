@@ -4,12 +4,15 @@ import path from 'node:path';
 const DEFAULT_MAX_BYTES = 512 * 1024;
 const DEFAULT_MAX_FILES = 3;
 const MAX_STRING_LENGTH = 16 * 1024;
-const SENSITIVE_KEY = /(?:authorization|cookie|credential|nonce|password|secret|token|api[_-]?key)/i;
+const SENSITIVE_KEY = /(?:authorization|cookie|credential|nonce|password|secret|token|api[_-]?key|email|activeTarget|project(?:Name|Path)?|(?:app|userData|diagnostics|cloudAccount)Path|local(?:Server|Web)?(?:Url|Port)|shareableWebUrl)/i;
 const SENSITIVE_QUERY_KEY = /^(?:access_token|api_key|auth|authorization|code|credential|key|nonce|password|refresh_token|secret|token)$/i;
 
 function redactUrl(value) {
   try {
     const url = new URL(value);
+    if (['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname)) {
+      return '[REDACTED_LOCAL_URL]';
+    }
     let changed = false;
     for (const key of url.searchParams.keys()) {
       if (!SENSITIVE_QUERY_KEY.test(key)) continue;
@@ -28,9 +31,15 @@ export function redactDiagnosticValue(value, seen = new WeakSet()) {
       ? `${value.slice(0, MAX_STRING_LENGTH)}…[TRUNCATED]`
       : value;
     return redactUrl(shortened)
+      .replace(/\bhttps?:\/\/(?:localhost|127\.0\.0\.1|\[?::1\]?)(?::[0-9]+)?[^\s"'`)]*/gi, '[REDACTED_LOCAL_URL]')
       .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
       .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[REDACTED_JWT]')
-      .replace(/((?:authorization|cookie|password|secret|token|api[_-]?key)\s*[:=]\s*)[^\s,;]+/gi, '$1[REDACTED]');
+      .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[REDACTED_EMAIL]')
+      .replace(/\bfile:\/\/\/[^\s)]+/gi, '[REDACTED_PATH]')
+      .replace(/(?:^|[\s"'`(])\/(?:Users|home)\/[^\s"'`),]+/gm, (match) => `${match[0]}[REDACTED_PATH]`)
+      .replace(/(^|[\s"'`(=:])\/(?!\/)[^\s"'`),;]+/gm, '$1[REDACTED_PATH]')
+      .replace(/\b[A-Za-z]:\\[^\s"'`),;]+/g, '[REDACTED_PATH]')
+      .replace(/((?:authorization|cookie|password|secret|token|api[_-]?key|email|project(?:[-_ ]?name)?|local[-_ ]?url|path)\s*[:=]\s*)[^\s,;]+/gi, '$1[REDACTED]');
   }
   if (value === null || typeof value !== 'object') return value;
   if (value instanceof Error) {

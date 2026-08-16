@@ -2,11 +2,8 @@ import { useCallback, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 
-import type { LLMProvider } from '../../../../types/app';
-import {
-  isProfileProvider,
-  useProviderSelectionCatalog,
-} from '../../../../shared/hooks/useProviderSelectionCatalog';
+import type { LLMProvider, ProviderSelectionCatalog } from '../../../../types/app';
+import { isProfileProvider } from '../../../../shared/hooks/useProviderSelectionCatalog';
 import { useComposerMenuAnchor } from '../../hooks/useComposerMenuAnchor';
 
 import {
@@ -20,6 +17,9 @@ interface ComposerProviderMenuProps {
   onSelectProvider: (provider: LLMProvider, profileId: number | null) => void;
   /** Disables the trigger while a provider-switch fork is in flight. */
   disabled?: boolean;
+  catalog: ProviderSelectionCatalog | null;
+  loading: boolean;
+  error: string | null;
 }
 
 const PROVIDER_LABELS: Record<LLMProvider, string> = {
@@ -34,13 +34,15 @@ export default function ComposerProviderMenu({
   currentProfileId,
   onSelectProvider,
   disabled = false,
+  catalog,
+  loading,
+  error,
 }: ComposerProviderMenuProps) {
   const { t } = useTranslation('chat');
   const [isOpen, setIsOpen] = useState(false);
   const close = useCallback(() => setIsOpen(false), []);
   const { triggerRef, menuRef, anchor, updateAnchor } = useComposerMenuAnchor(isOpen, close);
-  const { catalog, loading, error, listAvailable } = useProviderSelectionCatalog();
-  const availableEntries = listAvailable();
+  const availableEntries = (catalog?.providers ?? []).filter((entry) => entry.available);
   const currentEntry = useMemo(
     () => catalog?.providers.find((entry) => entry.provider === currentProvider) ?? null,
     [catalog, currentProvider],
@@ -65,25 +67,25 @@ export default function ComposerProviderMenu({
     [availableEntries],
   );
 
-  if (loading) {
+  if (loading && !catalog) {
     return (
       <button
         type="button"
         disabled
-        className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-border/60 bg-muted/40 px-2 text-xs font-medium text-muted-foreground"
+        className="flex h-11 shrink-0 items-center gap-1 bg-transparent px-2 text-sm font-medium text-muted-foreground"
       >
         {t('composer.providerMenuLoading', { defaultValue: 'Loading providers…' })}
       </button>
     );
   }
 
-  if (error) {
+  if (error && !catalog) {
     return (
       <button
         type="button"
         disabled
         title={error}
-        className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-border/60 bg-muted/40 px-2 text-xs font-medium text-muted-foreground"
+        className="flex h-11 shrink-0 items-center gap-1 bg-transparent px-2 text-sm font-medium text-muted-foreground"
       >
         {t('composer.providerMenuError', { defaultValue: 'Providers unavailable' })}
       </button>
@@ -117,7 +119,7 @@ export default function ComposerProviderMenu({
           updateAnchor();
           setIsOpen((current) => !current);
         }}
-        className="flex h-8 max-w-32 shrink-0 items-center gap-1 rounded-lg border border-border/60 bg-muted/40 px-2 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50 sm:max-w-56"
+        className="flex h-11 max-w-24 shrink-0 items-center gap-1 bg-transparent px-2 text-sm font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-50 sm:max-w-56"
         aria-haspopup="menu"
         aria-expanded={isOpen}
         aria-label={ariaLabel}

@@ -1,5 +1,6 @@
 import { FILE_STATUS_GROUPS } from '../../constants/constants';
 import type { FileStatusCode, GitDiffMap, GitStatusResponse } from '../../types/types';
+
 import FileChangeItem from './FileChangeItem';
 
 type FileChangeListProps = {
@@ -31,6 +32,8 @@ export default function FileChangeList({
   onToggleWrapText,
   onRequestFileAction,
 }: FileChangeListProps) {
+  const conflictPaths = new Set(gitStatus.conflicts ?? []);
+
   return (
     <>
       {FILE_STATUS_GROUPS.map(({ key, status }) =>
@@ -40,7 +43,7 @@ export default function FileChangeList({
             <FileChangeItem
               key={filePath}
               filePath={filePath}
-              status={status}
+              status={conflictPaths.has(filePath) ? 'C' : status}
               isMobile={isMobile}
               isExpanded={expandedFiles.has(filePath)}
               isSelected={selectedFiles.has(filePath)}

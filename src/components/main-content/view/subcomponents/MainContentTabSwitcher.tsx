@@ -1,8 +1,8 @@
-import { MessageSquare, Terminal, Folder, GitBranch, ClipboardCheck, MonitorPlay, type LucideIcon } from 'lucide-react';
+import { MessageSquare, Terminal, Folder, GitBranch, ClipboardCheck, MonitorPlay, MoreHorizontal, type LucideIcon } from 'lucide-react';
 import type { Dispatch, SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { Tooltip, PillBar, Pill } from '../../../../shared/view/ui';
+import { ActionMenu, Tooltip, PillBar, Pill, type ActionMenuItem } from '../../../../shared/view/ui';
 import type { AppTab } from '../../../../types/app';
 import { usePlugins } from '../../../../contexts/PluginsContext';
 import PluginIcon from '../../../plugins/view/PluginIcon';
@@ -30,6 +30,9 @@ type PluginTab = {
 };
 
 type TabDefinition = BuiltInTab | PluginTab;
+
+const MAX_UNGROUPED_TABS = 7;
+const VISIBLE_TABS_WITH_OVERFLOW = MAX_UNGROUPED_TABS - 1;
 
 const BASE_TABS: BuiltInTab[] = [
   { kind: 'builtin', id: 'chat',  labelKey: 'tabs.chat',  icon: MessageSquare },
@@ -78,10 +81,27 @@ export default function MainContentTabSwitcher({
     }));
 
   const tabs: TabDefinition[] = [...builtInTabs, ...pluginTabs];
+  const shouldGroupOverflow = tabs.length > MAX_UNGROUPED_TABS;
+  const visibleTabs = shouldGroupOverflow
+    ? tabs.slice(0, VISIBLE_TABS_WITH_OVERFLOW)
+    : tabs;
+  const overflowTabs = shouldGroupOverflow
+    ? tabs.slice(VISIBLE_TABS_WITH_OVERFLOW)
+    : [];
+  const overflowIsActive = overflowTabs.some((tab) => tab.id === activeTab);
+  const overflowItems: ActionMenuItem[] = overflowTabs.map((tab) => ({
+    key: tab.id,
+    label: tab.kind === 'builtin' ? t(tab.labelKey) : tab.label,
+    description: tab.id === activeTab
+      ? t('tabs.currentView', { defaultValue: 'Current view' })
+      : undefined,
+    icon: tab.kind === 'builtin' ? tab.icon : undefined,
+    onSelect: () => setActiveTab(tab.id),
+  }));
 
   return (
-    <PillBar>
-      {tabs.map((tab) => {
+    <PillBar className="max-w-full overflow-x-auto">
+      {visibleTabs.map((tab) => {
         const isActive = tab.id === activeTab;
         const displayLabel = tab.kind === 'builtin' ? t(tab.labelKey) : tab.label;
 
@@ -90,7 +110,8 @@ export default function MainContentTabSwitcher({
             <Pill
               isActive={isActive}
               onClick={() => setActiveTab(tab.id)}
-              className="px-2.5 py-[5px]"
+              ariaLabel={displayLabel}
+              className="min-h-11 min-w-11 px-2.5 py-[5px]"
             >
               {tab.kind === 'builtin' ? (
                 <tab.icon className="h-3.5 w-3.5" strokeWidth={isActive ? 2.2 : 1.8} />
@@ -106,6 +127,18 @@ export default function MainContentTabSwitcher({
           </Tooltip>
         );
       })}
+      {overflowItems.length > 0 && (
+        <ActionMenu
+          label={t('tabs.more', { defaultValue: 'More' })}
+          ariaLabel={t('tabs.moreWorkspaceTools', { defaultValue: 'More workspace tools' })}
+          items={overflowItems}
+          icon={MoreHorizontal}
+          align="right"
+          variant={overflowIsActive ? 'secondary' : 'ghost'}
+          size="sm"
+          triggerClassName="h-auto min-h-11 min-w-11 px-2.5 py-[5px]"
+        />
+      )}
     </PillBar>
   );
 }

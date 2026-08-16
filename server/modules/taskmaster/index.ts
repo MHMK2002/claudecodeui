@@ -1,8 +1,6 @@
 // taskmasterRoutes: used by the server entrypoint to mount protected Taskmaster endpoints.
 export { taskmasterRoutes } from './taskmaster.module.js';
-// Workflow/initializer services back the task drawer and the chat gateway's
-// workflow dispatch. They are still JavaScript, which allowJs re-exports fine.
-export { taskmasterInitializerService } from './taskmaster-initializer.service.js';
+// Workflow service backs the chat gateway's Taskmaster dispatch.
 export { taskmasterWorkflowService } from './taskmaster-workflow.service.js';
 // Provider policy helpers: used by the Codex and Cursor runtimes to constrain a
 // run that Taskmaster launched (read-only plan mode, permission args).

@@ -2,6 +2,30 @@ import { IS_PLATFORM } from "../constants/config";
 
 export const AUTH_TOKEN_REFRESHED_EVENT = 'auth-token-refreshed';
 export const AUTH_SESSION_EXPIRED_EVENT = 'auth-session-expired';
+export const AUTH_LOCAL_SESSION_UNAVAILABLE_EVENT = 'auth-local-session-unavailable';
+
+let authRuntimeMode = IS_PLATFORM
+  ? 'platform'
+  : typeof window !== 'undefined' && window.cloudcliDesktopLocalSession
+    ? 'desktop-local'
+    : null;
+
+export const setAuthRuntimeMode = (runtimeMode) => {
+  authRuntimeMode = runtimeMode;
+};
+
+// Returns null outside Electron, where a system-browser handoff owns the cookie
+// lifecycle instead. Electron renewal returns only success/failure, never a JWT.
+export const renewDesktopLocalSession = async () => {
+  if (!window.cloudcliDesktopLocalSession) return null;
+  try {
+    const result = await window.cloudcliDesktopLocalSession.renew();
+    return result?.success === true;
+  } catch (error) {
+    console.warn('[Auth] Desktop local session renewal failed:', error);
+    return false;
+  }
+};
 
 // Only accept a refreshed token that has this app's issued JWT shape
 // (three base64url segments). An attacker-injected/malformed header value
@@ -92,9 +116,7 @@ export const storeAuthToken = (token) => {
 };
 
 // Utility function for authenticated API calls
-export const authenticatedFetch = (url, options = {}) => {
-  const token = getStoredAuthToken();
-
+export const authenticatedFetch = async (url, options = {}) => {
   const defaultHeaders = {};
 
   // Only set Content-Type for non-FormData requests
@@ -102,40 +124,63 @@ export const authenticatedFetch = (url, options = {}) => {
     defaultHeaders['Content-Type'] = 'application/json';
   }
 
-  if (!IS_PLATFORM && token) {
-    defaultHeaders['Authorization'] = `Bearer ${token}`;
-  }
-
-  return fetch(url, {
-    ...options,
-    headers: {
+  const performRequest = () => {
+    const token = authRuntimeMode === 'desktop-local' ? null : getStoredAuthToken();
+    const headers = {
       ...defaultHeaders,
+      ...(!IS_PLATFORM && token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers,
-    },
-  }).then((response) => {
+    };
+    return fetch(url, {
+      ...options,
+      credentials: 'same-origin',
+      headers,
+    });
+  };
+
+  const processSuccessfulHeaders = (response) => {
     const refreshedToken = response.headers.get('X-Refreshed-Token');
-    if (refreshedToken) {
+    if (authRuntimeMode !== 'desktop-local' && refreshedToken) {
       storeAuthToken(refreshedToken);
     }
-    if (response.headers.get('X-Auth-Error')) {
-      expireAuthSession();
-    }
     return response;
-  });
+  };
+
+  let response = await performRequest();
+  if (!response.headers.get('X-Auth-Error')) {
+    return processSuccessfulHeaders(response);
+  }
+
+  if (authRuntimeMode === 'desktop-local') {
+    const renewed = await renewDesktopLocalSession();
+    if (renewed === true) {
+      response = await performRequest();
+      if (!response.headers.get('X-Auth-Error')) {
+        return processSuccessfulHeaders(response);
+      }
+    }
+    window.dispatchEvent(new Event(AUTH_LOCAL_SESSION_UNAVAILABLE_EVENT));
+    return response;
+  }
+
+  expireAuthSession();
+  return response;
 };
 
 // API endpoints
 export const api = {
   // Auth endpoints (no token required)
   auth: {
-    status: () => fetch('/api/auth/status'),
+    status: () => fetch('/api/auth/status', { credentials: 'same-origin' }),
     login: (username, password) => fetch('/api/auth/login', {
       method: 'POST',
+      credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
     }),
     register: (username, password) => fetch('/api/auth/register', {
       method: 'POST',
+      credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
     }),
@@ -231,10 +276,12 @@ export const api = {
    *
    * @param {string} sessionId
    * @param {'zip' | 'md'} [format]
+   * @param {string} expectedDigest
    */
-  exportSession: (sessionId, format = 'zip') => {
+  exportSession: (sessionId, format = 'zip', expectedDigest = '') => {
     const params = new URLSearchParams();
     params.set('format', format);
+    params.set('expectedDigest', expectedDigest);
     return authenticatedFetch(
       `/api/providers/sessions/${encodeURIComponent(sessionId)}/export?${params.toString()}`,
     );
@@ -276,20 +323,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ messageId, mode }),
     }),
-  /**
-   * Edit a user message and resubmit. Adopts a provider-native branch before
-   * the targeted prompt; the client follows with a fresh `chat.send` carrying
-   * the new content.
-   *
-   * @param {string} sessionId
-   * @param {string} messageId
-   * @param {{ content: string; images?: unknown[] }} payload
-   */
-  editUserMessage: (sessionId, messageId, { content, images = [] } = /** @type {{ content: string; images?: unknown[] }} */ ({})) =>
-    authenticatedFetch(`/api/providers/sessions/${sessionId}/messages/${messageId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ content, images }),
-    }),
   // `hardDelete` => server `?force=true` (remove DB row + Claude *.jsonl + sessions rows for path).
   deleteProject: (projectId, hardDelete = false) => {
     const params = new URLSearchParams();
@@ -300,9 +333,7 @@ export const api = {
     });
   },
   searchConversationsUrl: (query, limit = 50) => {
-    const token = getStoredAuthToken();
     const params = new URLSearchParams({ q: query, limit: String(limit) });
-    if (token) params.set('token', token);
     return `/api/providers/search/sessions?${params.toString()}`;
   },
   createProject: (projectData) =>
@@ -361,12 +392,6 @@ export const api = {
 
   // TaskMaster endpoints — all addressed by DB projectId post-migration.
   taskmaster: {
-    // Initialize TaskMaster in a project
-    init: (projectId) =>
-      authenticatedFetch(`/api/taskmaster/init/${projectId}`, {
-        method: 'POST',
-      }),
-
     // Add a new task
     addTask: (projectId, { prompt, title, description, priority, dependencies }) =>
       authenticatedFetch(`/api/taskmaster/add-task/${projectId}`, {
@@ -433,8 +458,9 @@ export const api = {
   get: (endpoint) => authenticatedFetch(`/api${endpoint}`),
 
   // Generic POST method for any endpoint
-  post: (endpoint, body) => authenticatedFetch(`/api${endpoint}`, {
+  post: (endpoint, body, options = {}) => authenticatedFetch(`/api${endpoint}`, {
     method: 'POST',
+    ...options,
     ...(body instanceof FormData ? { body } : { body: JSON.stringify(body) }),
   }),
 

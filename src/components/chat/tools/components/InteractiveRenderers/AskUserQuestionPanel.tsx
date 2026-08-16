@@ -12,6 +12,7 @@ import { getTextDirection } from '../../../../../utils/textDirection';
 export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
   request,
   onDecision,
+  deliveryDisabled = false,
 }) => {
   const input = request.input as { questions?: Question[] } | undefined;
   const questions: Question[] = input?.questions || [];
@@ -123,6 +124,7 @@ export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
     // Enter to advance / submit
     if (e.key === 'Enter') {
       e.preventDefault();
+      if (deliveryDisabled) return;
       const isLast = currentStep === questions.length - 1;
       if (isLast) handleSubmit();
       else setCurrentStep(s => s + 1);
@@ -132,10 +134,11 @@ export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
     // Escape to skip
     if (e.key === 'Escape') {
       e.preventDefault();
+      if (deliveryDisabled) return;
       handleSkip();
       return;
     }
-  }, [currentStep, questions, toggleOption, toggleOther, handleSubmit, handleSkip]);
+  }, [currentStep, questions, toggleOption, toggleOther, handleSubmit, handleSkip, deliveryDisabled]);
 
   // Voice dictation into the "Other" text field. Hooks must run before the
   // early-return below, so we always mount the recorder; `voiceToggle` and
@@ -375,6 +378,7 @@ export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
                           e.preventDefault();
+                          if (deliveryDisabled) return;
                           if (isLast) handleSubmit();
                           else setCurrentStep(s => s + 1);
                         }
@@ -406,7 +410,8 @@ export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
           <button
             type="button"
             onClick={handleSkip}
-            className="text-[11px] text-gray-400 transition-colors hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
+            disabled={deliveryDisabled}
+            className="min-h-11 rounded-lg px-2 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isSingle ? 'Skip' : 'Skip all'}
             <span className="ml-1 text-[9px] text-gray-300 dark:text-gray-600">Esc</span>
@@ -430,8 +435,8 @@ export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
               <button
                 type="button"
                 onClick={handleSubmit}
-                disabled={!hasCurrentSelection && !Object.keys(buildAnswers()).length}
-                className="inline-flex items-center gap-1 rounded-lg bg-gradient-to-r from-blue-600 to-blue-500 px-3.5 py-1.5 text-[11px] font-semibold text-white shadow-sm transition-all duration-200 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-30 disabled:shadow-none dark:from-blue-500 dark:to-blue-600"
+                disabled={deliveryDisabled || (!hasCurrentSelection && !Object.keys(buildAnswers()).length)}
+                className="inline-flex min-h-11 items-center gap-1 rounded-lg border border-border bg-background px-3.5 py-2 text-[11px] font-semibold text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
               >
                 Submit
                 <span className="ml-0.5 font-mono text-[9px] opacity-70">Enter</span>
@@ -440,7 +445,8 @@ export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
               <button
                 type="button"
                 onClick={() => setCurrentStep(s => s + 1)}
-                className="inline-flex items-center gap-1 rounded-lg bg-gradient-to-r from-blue-600 to-blue-500 px-3.5 py-1.5 text-[11px] font-semibold text-white shadow-sm transition-all duration-200 hover:shadow-md dark:from-blue-500 dark:to-blue-600"
+                disabled={deliveryDisabled}
+                className="inline-flex min-h-11 items-center gap-1 rounded-lg border border-border bg-background px-3.5 py-2 text-[11px] font-semibold text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
               >
                 Next
                 <span className="ml-0.5 font-mono text-[9px] opacity-70">Enter</span>

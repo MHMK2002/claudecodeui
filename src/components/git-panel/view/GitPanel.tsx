@@ -1,7 +1,8 @@
 import { useCallback, useState } from 'react';
-import { useGitPanelController } from '../hooks/useGitPanelController';
+
+import { normalizeGitIssue, useGitPanelController } from '../hooks/useGitPanelController';
 import { useRevertLocalCommit } from '../hooks/useRevertLocalCommit';
-import type { ConfirmationRequest, GitPanelProps, GitPanelView } from '../types/types';
+import type { ConfirmationRequest, GitPanelProps, GitPanelView, GitRecoveryAction } from '../types/types';
 import { getChangedFileCount } from '../utils/gitPanelUtils';
 import ChangesView from '../view/changes/ChangesView';
 import HistoryView from '../view/history/HistoryView';
@@ -9,6 +10,7 @@ import BranchesView from '../view/branches/BranchesView';
 import WorktreesView from '../view/worktrees/WorktreesView';
 import GitPanelHeader from '../view/GitPanelHeader';
 import GitRepositoryErrorState from '../view/GitRepositoryErrorState';
+import GitRecoveryBanner from '../view/GitRecoveryBanner';
 import GitViewTabs from '../view/GitViewTabs';
 import ConfirmActionModal from '../view/modals/ConfirmActionModal';
 
@@ -18,6 +20,7 @@ export default function GitPanel({
   onFileOpen,
   onProjectSelect,
   onProjectsRefresh,
+  onShowSettings,
 }: GitPanelProps) {
   const [activeView, setActiveView] = useState<GitPanelView>('changes');
   const [wrapText, setWrapText] = useState(true);
@@ -41,9 +44,12 @@ export default function GitPanel({
     isPulling,
     isPushing,
     isPublishing,
-    isCreatingInitialCommit,
     isInitializingRepository,
+    isContinuingOperation,
+    isAbortingOperation,
+    isUndoingFileAction,
     operationError,
+    undoState,
     clearOperationError,
     refreshAll,
     switchBranch,
@@ -53,13 +59,15 @@ export default function GitPanel({
     handlePull,
     handlePush,
     handlePublish,
+    continueGitOperation,
+    abortGitOperation,
     discardChanges,
     deleteUntrackedFile,
+    undoLastFileAction,
     stageFiles,
     unstageFiles,
     fetchCommitDiff,
     commitChanges,
-    createInitialCommit,
     initRepository,
     openFile,
   } = useGitPanelController({
@@ -90,6 +98,52 @@ export default function GitPanel({
   // Without a repository the branch/fetch/refresh header controls are all
   // meaningless — hide the whole header and let the init state own the panel.
   const isMissingRepository = Boolean(gitStatus?.notGitRepository);
+  const repositoryIssue = gitStatus?.error
+    ? normalizeGitIssue(gitStatus, 'Source control is unavailable')
+    : null;
+  const detachedHeadIssue = gitStatus?.detachedHead
+    ? {
+        code: 'DETACHED_HEAD' as const,
+        error: 'Detached HEAD',
+        details: 'Create or switch to a branch before publishing changes.',
+        action: 'CREATE_BRANCH' as const,
+      }
+    : null;
+  const visibleIssue = operationError ?? repositoryIssue ?? detachedHeadIssue;
+  const activeOperation = gitStatus?.operation ?? null;
+  const conflicts = gitStatus?.conflicts ?? [];
+
+  const resolveConflicts = () => {
+    setActiveView('changes');
+    const firstConflict = conflicts[0];
+    if (firstConflict) void openFile(firstConflict);
+  };
+
+  const recoverFromIssue = (action: GitRecoveryAction) => {
+    if (action === 'OPEN_GIT_SETTINGS') {
+      onShowSettings?.('git');
+      return;
+    }
+    if (action === 'REVIEW_CHANGES') {
+      setActiveView('changes');
+      return;
+    }
+    if (action === 'RESOLVE_CONFLICTS') {
+      resolveConflicts();
+      return;
+    }
+    if (action === 'CREATE_BRANCH') {
+      setActiveView('branches');
+      return;
+    }
+    if (action === 'INITIALIZE_REPOSITORY') {
+      clearOperationError();
+      void initRepository();
+      return;
+    }
+    clearOperationError();
+    refreshAll();
+  };
 
   if (!selectedProject) {
     return (
@@ -101,7 +155,7 @@ export default function GitPanel({
 
   return (
     <div className="flex h-full flex-col bg-background">
-      {!isMissingRepository && (
+      {!gitStatus?.error && (
         <GitPanelHeader
           isMobile={isMobile}
           currentBranch={currentBranch}
@@ -114,7 +168,6 @@ export default function GitPanel({
           isPushing={isPushing}
           isPublishing={isPublishing}
           isRevertingLocalCommit={isRevertingLocalCommit}
-          operationError={operationError}
           onRefresh={refreshAll}
           onRevertLocalCommit={revertLatestLocalCommit}
           onSwitchBranch={switchBranch}
@@ -123,23 +176,55 @@ export default function GitPanel({
           onPull={handlePull}
           onPush={handlePush}
           onPublish={handlePublish}
-          onClearError={clearOperationError}
+          onOpenGitSettings={onShowSettings ? () => onShowSettings('git') : undefined}
           onRequestConfirmation={setConfirmAction}
         />
       )}
 
-      {gitStatus?.error ? (
-        <GitRepositoryErrorState
-          error={gitStatus.error}
-          details={gitStatus.details}
-          canInitRepository={isMissingRepository}
-          isInitializingRepository={isInitializingRepository}
-          initError={isMissingRepository ? operationError : null}
-          onInitRepository={() => {
-            clearOperationError();
-            void initRepository();
+      {!isMissingRepository && (
+        <GitRecoveryBanner
+          issue={visibleIssue}
+          operation={activeOperation}
+          conflicts={conflicts}
+          undoState={undoState}
+          isContinuingOperation={isContinuingOperation}
+          isAbortingOperation={isAbortingOperation}
+          isUndoingFileAction={isUndoingFileAction}
+          onRecover={recoverFromIssue}
+          onResolveConflicts={resolveConflicts}
+          onContinueOperation={(operation) => { void continueGitOperation(operation); }}
+          onRequestAbort={(operation) => {
+            setConfirmAction({
+              type: 'abortGitOperation',
+              message: `Abort the active ${operation}? Changes made by the ${operation} may be rolled back.`,
+              onConfirm: async () => {
+                await abortGitOperation(operation);
+              },
+            });
           }}
+          onUndo={() => { void undoLastFileAction(); }}
+          onDismissIssue={operationError ? clearOperationError : undefined}
         />
+      )}
+
+      {gitStatus?.error ? (
+        isMissingRepository ? (
+          <GitRepositoryErrorState
+            error={gitStatus.error}
+            details={gitStatus.details}
+            canInitRepository
+            isInitializingRepository={isInitializingRepository}
+            initError={operationError
+              ? `${operationError.error}: ${operationError.details}`
+              : null}
+            onInitRepository={() => {
+              clearOperationError();
+              void initRepository();
+            }}
+          />
+        ) : (
+          <div className="flex-1" aria-hidden="true" />
+        )
       ) : (
         <>
           <GitViewTabs
@@ -153,20 +238,22 @@ export default function GitPanel({
             <ChangesView
               key={selectedProject.fullPath}
               isMobile={isMobile}
-              projectPath={selectedProject.fullPath}
+              projectId={selectedProject.projectId}
               gitStatus={gitStatus}
               gitDiff={gitDiff}
+              remoteStatus={remoteStatus}
               isLoading={isLoading}
               wrapText={wrapText}
-              isCreatingInitialCommit={isCreatingInitialCommit}
+              isRecoveryActive={Boolean(activeOperation || visibleIssue)}
               onWrapTextChange={setWrapText}
-              onCreateInitialCommit={createInitialCommit}
               onOpenFile={openFile}
               onDiscardFile={discardChanges}
               onDeleteFile={deleteUntrackedFile}
               onStageFiles={stageFiles}
               onUnstageFiles={unstageFiles}
               onCommitChanges={commitChanges}
+              onOpenAgentSettings={() => onShowSettings?.('agents')}
+              onReviewStagedChanges={refreshAll}
               onRequestConfirmation={setConfirmAction}
               onExpandedFilesChange={setHasExpandedFiles}
             />

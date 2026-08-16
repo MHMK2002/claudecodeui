@@ -1,5 +1,7 @@
 import { Volume2, Loader2, Square } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+
+import { useUiPreferences } from '../../../../hooks/useUiPreferences';
 import { useTts } from '../../hooks/useTts';
 import { useVoiceAvailable } from '../../hooks/useVoiceAvailable';
 
@@ -8,9 +10,10 @@ import { useVoiceAvailable } from '../../hooks/useVoiceAvailable';
 const MessageSpeakControl = ({ content }: { content: string }) => {
   const { t } = useTranslation('chat');
   const available = useVoiceAvailable();
+  const { preferences } = useUiPreferences();
   const { state, toggle, error } = useTts(() => content);
 
-  if (!available) return null;
+  if (!available || !preferences.voiceReadAloud) return null;
 
   const title =
     state === 'playing' ? t('voice.stopSpeaking') : state === 'loading' ? t('voice.loading') : t('voice.speak');
@@ -27,7 +30,7 @@ const MessageSpeakControl = ({ content }: { content: string }) => {
         onClick={toggle}
         title={title}
         aria-label={title}
-        className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-gray-400 transition-colors hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
+        className="inline-flex min-h-11 min-w-11 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {state === 'playing' ? (
           <Square className="h-3.5 w-3.5" />

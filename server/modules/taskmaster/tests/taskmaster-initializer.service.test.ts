@@ -15,8 +15,19 @@ async function withDirectories(runTest: (root: string, reference: string, projec
   try {
     await runTest(root, reference, project);
   } finally {
+    taskmasterInitializerService._test.resetAttempts();
     await rm(root, { recursive: true, force: true });
   }
+}
+
+async function writeReferenceProject(reference: string): Promise<void> {
+  await mkdir(path.join(reference, '.taskmaster', 'tasks'), { recursive: true });
+  await mkdir(path.join(reference, '.claude', 'commands', 'tm'), { recursive: true });
+  await writeFile(path.join(reference, '.taskmaster', 'config.json'), JSON.stringify({ models: { main: 'generated-default' } }));
+  await writeFile(path.join(reference, '.taskmaster', 'state.json'), '{}');
+  await writeFile(path.join(reference, '.taskmaster', 'tasks', 'tasks.json'), JSON.stringify({ master: { tasks: [] } }));
+  await writeFile(path.join(reference, '.taskmaster', 'CLAUDE.md'), '# TaskMaster rules');
+  await writeFile(path.join(reference, '.claude', 'commands', 'tm', 'next.md'), '# next task');
 }
 
 test('validity matrix distinguishes missing, partial, invalid, and valid state', async () => {
@@ -105,3 +116,87 @@ test('Claude instruction merge preserves existing content and adds one import', 
   });
 });
 
+test('previewed setup backs up, applies once, streams stages, and preserves existing configuration', async () => {
+  await withDirectories(async (_root, reference, project) => {
+    await writeReferenceProject(reference);
+    await writeFile(path.join(project, 'CLAUDE.md'), '# Existing\n\nKeep me.\n');
+    await writeFile(path.join(project, '.mcp.json'), JSON.stringify({
+      custom: { keep: true },
+      mcpServers: {},
+    }));
+
+    const plan = taskmasterInitializerService._test.registerAttemptFromReference(project, reference);
+    assert.equal(plan.changesExistingModelDefaults, false);
+    assert.deepEqual(plan.modelDefaults, { main: 'generated-default' });
+    assert.ok(plan.operations.some((entry) => entry.path === '.taskmaster/config.json'));
+
+    const stages: string[] = [];
+    const first = await taskmasterInitializerService.apply(project, plan.attemptId, {
+      onProgress: (progress) => stages.push(progress.stage),
+    });
+    const second = await taskmasterInitializerService.apply(project, plan.attemptId);
+
+    assert.equal(first.after.status, 'valid');
+    assert.deepEqual(second, first);
+    assert.equal(stages[0], 'backup');
+    assert.equal(stages.at(-1), 'success');
+    assert.match(await readFile(path.join(project, 'CLAUDE.md'), 'utf8'), /Keep me\./);
+    const mcp = JSON.parse(await readFile(path.join(project, '.mcp.json'), 'utf8')) as {
+      custom?: { keep?: boolean };
+      mcpServers?: Record<string, unknown>;
+    };
+    assert.equal(mcp.custom?.keep, true);
+    assert.ok(mcp.mcpServers?.['task-master-ai']);
+  });
+});
+
+test('failed confirmed setup restores the exact pre-write project state', async () => {
+  await withDirectories(async (_root, reference, project) => {
+    await writeReferenceProject(reference);
+    await writeFile(path.join(project, 'CLAUDE.md'), '# Original instructions\n');
+    const plan = taskmasterInitializerService._test.registerAttemptFromReference(project, reference);
+    taskmasterInitializerService._test.forceFailureAt('taskmaster');
+
+    await assert.rejects(
+      taskmasterInitializerService.apply(project, plan.attemptId),
+      (error: unknown) => (error as { recovery?: string }).recovery === 'REPAIR',
+    );
+    assert.equal(taskmasterInitializerService.classify(project).status, 'missing');
+    assert.equal(await readFile(path.join(project, 'CLAUDE.md'), 'utf8'), '# Original instructions\n');
+    await assert.rejects(readFile(path.join(project, '.mcp.json'), 'utf8'));
+  });
+});
+
+test('cancelled preview performs no writes and cannot be applied later', async () => {
+  await withDirectories(async (_root, reference, project) => {
+    await writeReferenceProject(reference);
+    const plan = taskmasterInitializerService._test.registerAttemptFromReference(project, reference);
+    assert.deepEqual(taskmasterInitializerService.cancel(project, plan.attemptId), { cancelled: true });
+    await assert.rejects(
+      taskmasterInitializerService.apply(project, plan.attemptId),
+      (error: unknown) => (error as { code?: string }).code === 'TASKMASTER_ATTEMPT_NOT_FOUND',
+    );
+    assert.equal(taskmasterInitializerService.classify(project).status, 'missing');
+  });
+});
+
+test('cancelling a confirmed setup between progress stages rolls back partial writes', async () => {
+  await withDirectories(async (_root, reference, project) => {
+    await writeReferenceProject(reference);
+    await writeFile(path.join(project, 'CLAUDE.md'), '# Before cancel\n');
+    const plan = taskmasterInitializerService._test.registerAttemptFromReference(project, reference);
+
+    await assert.rejects(
+      taskmasterInitializerService.apply(project, plan.attemptId, {
+        onProgress: (progress) => {
+          if (progress.stage === 'taskmaster') {
+            taskmasterInitializerService.cancel(project, plan.attemptId);
+          }
+        },
+      }),
+      (error: unknown) => (error as { code?: string }).code === 'TASKMASTER_INIT_CANCELLED',
+    );
+    assert.equal(taskmasterInitializerService.classify(project).status, 'missing');
+    assert.equal(await readFile(path.join(project, 'CLAUDE.md'), 'utf8'), '# Before cancel\n');
+  });
+});

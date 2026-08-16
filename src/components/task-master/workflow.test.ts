@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import type { Project } from '../../types/app';
 
-import { startTaskIntake } from './workflow';
+import { startTaskImplementation, startTaskIntake } from './workflow';
 
 type CapturedRequest = {
   url: string;
@@ -65,7 +65,10 @@ test('task intake uses the same explicit model for allocation and its first send
       project,
       brief: 'Build a reliable task modal',
       selection: { provider: 'codex', providerProfileId: 42, model: 'gpt-test' },
-      sendMessage: (message) => sent.push(message),
+      sendMessage: (message) => {
+        sent.push(message);
+        return { ok: true };
+      },
     });
 
     assert.deepEqual(result, { intakeId: 'intake-1', sessionId: 'session-1' });
@@ -115,7 +118,7 @@ test('task intake discards its unbound session when intake creation fails', asyn
         project,
         brief: 'Fail safely',
         selection: { provider: 'cursor', providerProfileId: null, model: 'cursor-test' },
-        sendMessage: () => undefined,
+        sendMessage: () => ({ ok: true }),
       }),
       /Intake creation failed/,
     );
@@ -126,3 +129,91 @@ test('task intake discards its unbound session when intake creation fails', asyn
     restoreStorage();
   }
 });
+
+for (const reason of ['not-connected', 'send-failed'] as const) {
+  test(`task intake preserves recovery state and never marks processing after ${reason}`, async () => {
+    const restoreStorage = installLocalStorage();
+    const originalFetch = globalThis.fetch;
+    const responses = [
+      jsonResponse({ success: true, data: { sessionId: 'session-intake' } }, 201),
+      jsonResponse({ success: true, data: { intake: { id: 'intake-retry' } } }, 201),
+      jsonResponse({
+        success: true,
+        data: { intake: { prompt: 'Clarify safely', contentHash: 'hash-retry' } },
+      }),
+    ];
+    globalThis.fetch = (async () => {
+      const response = responses.shift();
+      assert.ok(response, 'unexpected request');
+      return response;
+    }) as typeof fetch;
+    let processingCalls = 0;
+    let establishedCalls = 0;
+
+    try {
+      await assert.rejects(
+        startTaskIntake({
+          project,
+          brief: 'Retain this intake',
+          selection: { provider: 'codex', providerProfileId: 42, model: 'gpt-test' },
+          sendMessage: () => ({ ok: false, reason }),
+          onSessionProcessing: () => { processingCalls += 1; },
+          onSessionEstablished: () => { establishedCalls += 1; },
+        }),
+        /not delivered.*Reconnect and retry/i,
+      );
+      assert.equal(processingCalls, 0);
+      assert.equal(establishedCalls, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+      restoreStorage();
+    }
+  });
+}
+
+for (const reason of ['not-connected', 'send-failed'] as const) {
+  test(`task implementation retains its idempotency key after ${reason}`, async () => {
+    const restoreStorage = installLocalStorage();
+    const originalFetch = globalThis.fetch;
+    const requests: CapturedRequest[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      requests.push({ url: String(input), init });
+      return jsonResponse({
+        success: true,
+        data: {
+          attempt: {
+            id: 'attempt-1',
+            taskId: '7',
+            sessionId: 'session-task',
+            status: 'bound',
+            content: 'Implement task 7',
+            contentHash: 'task-hash',
+          },
+        },
+      });
+    }) as typeof fetch;
+    let processingCalls = 0;
+    let establishedCalls = 0;
+
+    try {
+      await assert.rejects(
+        startTaskImplementation({
+          project,
+          task: { id: 7, title: 'Reliable launch', status: 'pending' },
+          selection: { provider: 'codex', providerProfileId: 42, model: 'gpt-test' },
+          sendMessage: () => ({ ok: false, reason }),
+          onSessionProcessing: () => { processingCalls += 1; },
+          onSessionEstablished: () => { establishedCalls += 1; },
+        }),
+        /not delivered.*Reconnect and retry/i,
+      );
+      assert.equal(requests.length, 1);
+      assert.equal(processingCalls, 0);
+      assert.equal(establishedCalls, 0);
+      assert.match(localStorage.getItem('taskmaster-launch:project-1:7') ?? '', /^launch:/);
+    } finally {
+      globalThis.fetch = originalFetch;
+      restoreStorage();
+    }
+  });
+}

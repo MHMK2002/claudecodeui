@@ -198,8 +198,11 @@ test('Codex history renders Promise.all shell wrappers as Bash activity', { conc
       const toolResults = history.messages.filter((message) => message.kind === 'tool_result');
 
       assert.equal(toolUses.length, 1);
+      assert.equal(history.total, history.messages.length);
+      assert.equal(toolResults.length, 0);
       assert.equal(toolUses[0].toolName, 'Bash');
       assert.equal(toolUses[0].toolInput, JSON.stringify({ command: 'echo one\necho two' }));
+      assert.deepEqual(toolUses[0].toolResult, { content: 'done', isError: false });
       assert.equal(toolResults.some((message) => message.toolCallId === 'plan-1'), false);
     });
   } finally {

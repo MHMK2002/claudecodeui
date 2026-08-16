@@ -1,3 +1,4 @@
+import { constants as fsConstants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -16,7 +17,9 @@ type CreateProjectInput = {
 
 type CreateProjectDependencies = {
   validatePath: (projectPath: string) => Promise<WorkspacePathValidationResult>;
-  ensureWorkspaceDirectory: (projectPath: string) => Promise<void>;
+  inspectWorkspaceDirectory: (
+    projectPath: string,
+  ) => Promise<'ready' | 'missing' | 'not_directory' | 'unwritable'>;
   persistProjectPath: (projectPath: string, customName: string | null) => CreateProjectPathResult;
   getProjectByPath: (projectPath: string) => ProjectRepositoryRow | null;
 };
@@ -43,14 +46,21 @@ type CreateProjectServiceResult = {
 
 const defaultDependencies: CreateProjectDependencies = {
   validatePath: validateWorkspacePath,
-  ensureWorkspaceDirectory: async (projectPath: string): Promise<void> => {
-    await fs.mkdir(projectPath, { recursive: true });
-    const directoryStats = await fs.stat(projectPath);
-    if (!directoryStats.isDirectory()) {
-      throw new AppError('Path exists but is not a directory', {
-        code: 'PROJECT_PATH_NOT_DIRECTORY',
-        statusCode: 400,
-      });
+  inspectWorkspaceDirectory: async (projectPath) => {
+    try {
+      const directoryStats = await fs.stat(projectPath);
+      if (!directoryStats.isDirectory()) {
+        return 'not_directory';
+      }
+      await fs.access(projectPath, fsConstants.R_OK | fsConstants.W_OK);
+      return 'ready';
+    } catch (error) {
+      const errorCode = (error as NodeJS.ErrnoException).code;
+      if (errorCode === 'ENOENT') return 'missing';
+      if (errorCode === 'EACCES' || errorCode === 'EPERM' || errorCode === 'EROFS') {
+        return 'unwritable';
+      }
+      throw error;
     }
   },
   persistProjectPath: (projectPath: string, customName: string | null): CreateProjectPathResult =>
@@ -58,6 +68,22 @@ const defaultDependencies: CreateProjectDependencies = {
   getProjectByPath: (projectPath: string): ProjectRepositoryRow | null =>
     projectsDb.getProjectPath(projectPath),
 };
+
+/**
+ * Resolves an active registered project's stored directory for the WebSocket
+ * Shell module. The shell performs the final realpath/directory check at PTY
+ * creation time so moved or deleted projects become typed cwd failures.
+ */
+export function resolveActiveProjectDirectory(
+  projectId: string,
+  getProjectById: (id: string) => ProjectRepositoryRow | null = (id) => projectsDb.getProjectById(id),
+): string | null {
+  const project = getProjectById(projectId);
+  if (!project || project.isArchived) {
+    return null;
+  }
+  return normalizeProjectPath(project.project_path);
+}
 
 function resolveDisplayName(customName: string | null | undefined, projectPath: string): string {
   const trimmedCustomName = typeof customName === 'string' ? customName.trim() : '';
@@ -102,12 +128,35 @@ export async function createProject(
     throw new AppError('Invalid project path', {
       code: 'INVALID_PROJECT_PATH',
       statusCode: 400,
-      details: pathValidation.error ?? 'Path validation failed',
+      details: {
+        action: 'BROWSE',
+        field: 'folder',
+        reason: pathValidation.error ?? 'Path validation failed',
+      },
     });
   }
 
   const resolvedProjectPath = normalizeProjectPath(pathValidation.resolvedPath);
-  await dependencies.ensureWorkspaceDirectory(resolvedProjectPath);
+  const directoryState = await dependencies.inspectWorkspaceDirectory(resolvedProjectPath);
+  if (directoryState === 'missing' || directoryState === 'not_directory') {
+    throw new AppError(
+      directoryState === 'missing'
+        ? 'The selected project folder does not exist.'
+        : 'The selected project path is not a folder.',
+      {
+        code: 'INVALID_PROJECT_PATH',
+        statusCode: 400,
+        details: { action: 'BROWSE', field: 'folder' },
+      },
+    );
+  }
+  if (directoryState === 'unwritable') {
+    throw new AppError('The selected project folder is not writable.', {
+      code: 'PROJECT_PATH_NOT_WRITABLE',
+      statusCode: 403,
+      details: { action: 'CHOOSE_ANOTHER', field: 'folder' },
+    });
+  }
 
   const normalizedCustomName = resolveDisplayName(input.customName ?? null, resolvedProjectPath);
   const persistedProject = dependencies.persistProjectPath(resolvedProjectPath, normalizedCustomName);
@@ -116,7 +165,11 @@ export async function createProject(
     throw new AppError('Project path already exists and is active', {
       code: 'PROJECT_ALREADY_EXISTS',
       statusCode: 409,
-      details: `Project path already exists: ${resolvedProjectPath}`,
+      details: {
+        action: 'CHOOSE_ANOTHER',
+        field: 'folder',
+        projectPath: resolvedProjectPath,
+      },
     });
   }
 

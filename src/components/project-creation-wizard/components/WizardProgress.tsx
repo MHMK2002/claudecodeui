@@ -1,50 +1,46 @@
-import { Fragment } from 'react';
 import { Check } from 'lucide-react';
-import { useTranslation } from 'react-i18next';
+
+import { cn } from '../../../lib/utils';
 import type { WizardStep } from '../types';
 
-type WizardProgressProps = {
-  step: WizardStep;
-};
+type WizardProgressProps = { step: WizardStep };
+
+const steps: Array<{ step: WizardStep; label: string }> = [
+  { step: 1, label: 'Choose source' },
+  { step: 2, label: 'Configure' },
+  { step: 3, label: 'Review' },
+];
 
 export default function WizardProgress({ step }: WizardProgressProps) {
-  const { t } = useTranslation();
-  const steps: WizardStep[] = [1, 2];
-
   return (
-    <div className="px-6 pb-2 pt-4">
-      <div className="flex items-center justify-between">
-        {steps.map((currentStep) => (
-          <Fragment key={currentStep}>
-            <div className="flex items-center gap-2">
-              <div
-                className={`flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium ${
-                  currentStep < step
-                    ? 'bg-green-500 text-white'
-                    : currentStep === step
-                      ? 'bg-blue-500 text-white'
-                      : 'bg-gray-200 text-gray-500 dark:bg-gray-700'
-                }`}
-              >
-                {currentStep < step ? <Check className="h-4 w-4" /> : currentStep}
+    <nav className="border-b border-border px-4 py-3 sm:px-6" aria-label="Project creation progress">
+      <ol className="flex items-center">
+        {steps.map((item, index) => {
+          const complete = item.step < step;
+          const current = item.step === step;
+          return (
+            <li key={item.step} className={cn('flex items-center', index < steps.length - 1 && 'flex-1')}>
+              <div className="flex items-center gap-2" aria-current={current ? 'step' : undefined}>
+                <span
+                  className={cn(
+                    'flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-sm font-medium',
+                    complete && 'border-primary bg-primary text-primary-foreground',
+                    current && 'border-primary bg-primary text-primary-foreground',
+                    !complete && !current && 'border-border bg-muted text-muted-foreground',
+                  )}
+                >
+                  {complete ? <Check className="h-4 w-4" aria-hidden="true" /> : item.step}
+                </span>
+                <span className="hidden text-sm font-medium text-foreground sm:inline">{item.label}</span>
+                <span className="sr-only">{complete ? 'Complete' : current ? 'Current' : 'Upcoming'}</span>
               </div>
-              <span className="hidden text-sm font-medium text-gray-700 dark:text-gray-300 sm:inline">
-                {currentStep === 1
-                  ? t('projectWizard.steps.configure')
-                  : t('projectWizard.steps.confirm')}
-              </span>
-            </div>
-
-            {currentStep < 2 && (
-              <div
-                className={`mx-2 h-1 flex-1 rounded ${
-                  currentStep < step ? 'bg-green-500' : 'bg-gray-200 dark:bg-gray-700'
-                }`}
-              />
-            )}
-          </Fragment>
-        ))}
-      </div>
-    </div>
+              {index < steps.length - 1 && (
+                <span className={cn('mx-2 h-px flex-1', complete ? 'bg-primary' : 'bg-border')} aria-hidden="true" />
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </nav>
   );
 }

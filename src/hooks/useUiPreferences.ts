@@ -7,6 +7,7 @@ type UiPreferences = {
   sidebarVisible: boolean;
   voiceEnabled: boolean;
   voiceHoldToTalk: boolean;
+  voiceReadAloud: boolean;
   rightSidebarVisible: boolean;
   rightSidebarTabQuickSettings: boolean;
 };
@@ -41,6 +42,7 @@ const DEFAULTS: UiPreferences = {
   sidebarVisible: true,
   voiceEnabled: false,
   voiceHoldToTalk: false,
+  voiceReadAloud: true,
   rightSidebarVisible: false,
   rightSidebarTabQuickSettings: false,
 };

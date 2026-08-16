@@ -1,0 +1,116 @@
+name: CI
+
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('CI gate {0}', inputs.gate_id) || format('CI · {0} · {1}', github.event_name, github.ref_name) }}
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: "Exact commit SHA that this CI gate must validate"
+        required: true
+        type: string
+      gate_id:
+        description: "Unique release gate identifier"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  identity:
+    name: Verify dispatched commit identity
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the exact dispatched SHA and gate ID
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          GATE_ID: ${{ inputs.gate_id }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
+          [[ "$GATE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+
+  quality:
+    name: Type, lint, UX, and stories
+    needs: identity
+    if: always() && (needs.identity.result == 'success' || needs.identity.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: npm
+      - run: npm ci
+      - run: npm run ux:audit
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test:contrast
+      - run: npm run build-storybook
+
+  server:
+    name: Server tests
+    needs: identity
+    if: always() && (needs.identity.result == 'success' || needs.identity.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: npm
+      - run: npm ci
+      - run: npm run test:server
+
+  frontend:
+    name: Frontend tests and build
+    needs: identity
+    if: always() && (needs.identity.result == 'success' || needs.identity.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: npm
+      - run: npm ci
+      - run: npm run test:frontend
+      - run: npm run build
+
+  desktop:
+    name: Electron tests and package smoke
+    needs: identity
+    if: always() && (needs.identity.result == 'success' || needs.identity.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: npm
+      - run: npm ci
+      - run: npm run test:desktop
+      - run: npm run desktop:pack
+
+  e2e:
+    name: Desktop-local E2E and accessibility
+    needs: identity
+    if: always() && (needs.identity.result == 'success' || needs.identity.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - run: npm run test:a11y

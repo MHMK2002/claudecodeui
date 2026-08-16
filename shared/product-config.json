@@ -1,0 +1,13 @@
+{
+  "productName": "CloudCLI",
+  "homepageUrl": "https://cloudcli.ai",
+  "repositoryUrl": "https://github.com/MHMK2002/claudecodeui",
+  "issueTrackerUrl": null,
+  "documentationUrl": "https://cloudcli.ai/docs",
+  "updateFeedUrl": "https://api.github.com/repos/MHMK2002/claudecodeui/releases/latest",
+  "features": {
+    "cloud": false,
+    "hosted": false,
+    "pro": false
+  }
+}

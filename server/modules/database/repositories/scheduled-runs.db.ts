@@ -9,84 +9,16 @@
  */
 
 import { getConnection } from '@/modules/database/connection.js';
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export type ScheduleProvider = 'claude' | 'codex' | 'cursor' | 'opencode';
-export type HistoryStatus = 'running' | 'succeeded' | 'failed' | 'skipped';
-export type RunTrigger = 'tick' | 'manual';
-
-export interface ScheduledRun {
-  id: number;
-  userId: number;
-  title: string;
-  projectPath: string;
-  provider: ScheduleProvider;
-  model: string;
-  prompt: string;
-  cronExpression: string;
-  timezone: string;
-  notifyOnSuccess: boolean;
-  notifyOnFailure: boolean;
-  notifyChannels: string[] | null;
-  isEnabled: boolean;
-  lastRunAt: string | null;
-  nextRunAt: string;
-  inFlightRunId: number | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface ScheduledRunHistory {
-  id: number;
-  scheduleId: number;
-  userId: number;
-  status: HistoryStatus;
-  trigger: RunTrigger;
-  startedAt: string;
-  finishedAt: string | null;
-  durationMs: number | null;
-  outputSummary: string | null;
-  errorMessage: string | null;
-  notificationDispatched: boolean;
-}
-
-export interface CreateScheduledRunInput {
-  title: string;
-  projectPath: string;
-  provider: ScheduleProvider;
-  model: string;
-  prompt: string;
-  cronExpression: string;
-  timezone: string;
-  notifyOnSuccess: boolean;
-  notifyOnFailure: boolean;
-  notifyChannels?: string[] | null;
-  isEnabled: boolean;
-  nextRunAt: string;
-}
-
-export interface UpdateScheduledRunInput {
-  title?: string;
-  projectPath?: string;
-  provider?: ScheduleProvider;
-  model?: string;
-  prompt?: string;
-  cronExpression?: string;
-  timezone?: string;
-  notifyOnSuccess?: boolean;
-  notifyOnFailure?: boolean;
-  notifyChannels?: string[] | null;
-  isEnabled?: boolean;
-  nextRunAt?: string;
-}
-
-export interface ClaimResult {
-  run: ScheduledRunHistory;
-  schedule: ScheduledRun;
-}
+import type {
+  LLMProvider,
+  ScheduledRunClaim,
+  ScheduledRunHistoryRecord,
+  ScheduledRunHistoryStatus,
+  ScheduledRunPersistenceCreateInput,
+  ScheduledRunPersistenceUpdateInput,
+  ScheduledRunRecord,
+  ScheduledRunTrigger,
+} from '@/shared/types.js';
 
 // ---------------------------------------------------------------------------
 // Row shape (snake_case SQL columns)
@@ -96,8 +28,10 @@ interface ScheduledRunRow {
   id: number;
   user_id: number;
   title: string;
+  project_id: string | null;
   project_path: string;
   provider: string;
+  provider_profile_id: number | null;
   model: string;
   prompt: string;
   cron_expression: string;
@@ -128,7 +62,7 @@ interface HistoryRow {
 }
 
 const SCHEDULED_ROW_COLUMNS =
-  'id, user_id, title, project_path, provider, model, prompt, cron_expression, timezone, ' +
+  'id, user_id, title, project_id, project_path, provider, provider_profile_id, model, prompt, cron_expression, timezone, ' +
   'notify_on_success, notify_on_failure, notify_channels_json, is_enabled, last_run_at, ' +
   'next_run_at, in_flight_run_id, created_at, updated_at';
 
@@ -141,7 +75,7 @@ function toIsoDate(value: string | null): string | null {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
 }
 
-function normalizeSchedule(row: ScheduledRunRow): ScheduledRun {
+function normalizeSchedule(row: ScheduledRunRow): ScheduledRunRecord {
   let notifyChannels: string[] | null = null;
   if (row.notify_channels_json) {
     try {
@@ -155,8 +89,10 @@ function normalizeSchedule(row: ScheduledRunRow): ScheduledRun {
     id: row.id,
     userId: row.user_id,
     title: row.title,
+    projectId: row.project_id,
     projectPath: row.project_path,
-    provider: row.provider as ScheduleProvider,
+    provider: row.provider as LLMProvider,
+    providerProfileId: row.provider_profile_id,
     model: row.model,
     prompt: row.prompt,
     cronExpression: row.cron_expression,
@@ -173,13 +109,13 @@ function normalizeSchedule(row: ScheduledRunRow): ScheduledRun {
   };
 }
 
-function normalizeHistory(row: HistoryRow): ScheduledRunHistory {
+function normalizeHistory(row: HistoryRow): ScheduledRunHistoryRecord {
   return {
     id: row.id,
     scheduleId: row.schedule_id,
     userId: row.user_id,
-    status: row.status as HistoryStatus,
-    trigger: row.trigger as RunTrigger,
+    status: row.status as ScheduledRunHistoryStatus,
+    trigger: row.trigger as ScheduledRunTrigger,
     startedAt: toIsoDate(row.started_at) ?? row.started_at,
     finishedAt: toIsoDate(row.finished_at),
     durationMs: row.duration_ms,
@@ -194,7 +130,7 @@ function normalizeHistory(row: HistoryRow): ScheduledRunHistory {
 // ---------------------------------------------------------------------------
 
 export const scheduledRunsRepository = {
-  list(userId: number): ScheduledRun[] {
+  list(userId: number): ScheduledRunRecord[] {
     const db = getConnection();
     const rows = db
       .prepare(
@@ -207,7 +143,7 @@ export const scheduledRunsRepository = {
     return rows.map(normalizeSchedule);
   },
 
-  listAll(): ScheduledRun[] {
+  listAll(): ScheduledRunRecord[] {
     const db = getConnection();
     const rows = db
       .prepare(
@@ -219,7 +155,7 @@ export const scheduledRunsRepository = {
     return rows.map(normalizeSchedule);
   },
 
-  getById(userId: number, id: number): ScheduledRun | null {
+  getById(userId: number, id: number): ScheduledRunRecord | null {
     const db = getConnection();
     const row = db
       .prepare(
@@ -232,7 +168,7 @@ export const scheduledRunsRepository = {
     return row ? normalizeSchedule(row) : null;
   },
 
-  getByIdInternal(id: number): ScheduledRun | null {
+  getByIdInternal(id: number): ScheduledRunRecord | null {
     const db = getConnection();
     const row = db
       .prepare(
@@ -245,7 +181,7 @@ export const scheduledRunsRepository = {
     return row ? normalizeSchedule(row) : null;
   },
 
-  create(userId: number, input: CreateScheduledRunInput): ScheduledRun {
+  create(userId: number, input: ScheduledRunPersistenceCreateInput): ScheduledRunRecord {
     const db = getConnection();
     const notifyChannelsJson = input.notifyChannels
       ? JSON.stringify(input.notifyChannels)
@@ -253,16 +189,18 @@ export const scheduledRunsRepository = {
     const result = db
       .prepare(
         `INSERT INTO scheduled_runs (
-           user_id, title, project_path, provider, model, prompt, cron_expression, timezone,
+           user_id, title, project_id, project_path, provider, provider_profile_id, model, prompt, cron_expression, timezone,
            notify_on_success, notify_on_failure, notify_channels_json, is_enabled,
            next_run_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         userId,
         input.title,
+        input.projectId,
         input.projectPath,
         input.provider,
+        input.providerProfileId,
         input.model,
         input.prompt,
         input.cronExpression,
@@ -280,15 +218,19 @@ export const scheduledRunsRepository = {
     return created;
   },
 
-  update(userId: number, id: number, patch: UpdateScheduledRunInput): ScheduledRun | null {
+  update(userId: number, id: number, patch: ScheduledRunPersistenceUpdateInput): ScheduledRunRecord | null {
     const db = getConnection();
     const existing = this.getById(userId, id);
     if (!existing) return null;
 
-    const next: CreateScheduledRunInput = {
+    const next: ScheduledRunPersistenceCreateInput = {
       title: patch.title ?? existing.title,
+      projectId: patch.projectId ?? existing.projectId ?? '',
       projectPath: patch.projectPath ?? existing.projectPath,
       provider: patch.provider ?? existing.provider,
+      providerProfileId: patch.providerProfileId === undefined
+        ? existing.providerProfileId
+        : patch.providerProfileId,
       model: patch.model ?? existing.model,
       prompt: patch.prompt ?? existing.prompt,
       cronExpression: patch.cronExpression ?? existing.cronExpression,
@@ -307,15 +249,17 @@ export const scheduledRunsRepository = {
 
     db.prepare(
       `UPDATE scheduled_runs SET
-         title = ?, project_path = ?, provider = ?, model = ?, prompt = ?,
+         title = ?, project_id = ?, project_path = ?, provider = ?, provider_profile_id = ?, model = ?, prompt = ?,
          cron_expression = ?, timezone = ?, notify_on_success = ?, notify_on_failure = ?,
          notify_channels_json = ?, is_enabled = ?, next_run_at = ?,
          updated_at = CURRENT_TIMESTAMP
        WHERE user_id = ? AND id = ?`,
     ).run(
       next.title,
+      next.projectId,
       next.projectPath,
       next.provider,
+      next.providerProfileId,
       next.model,
       next.prompt,
       next.cronExpression,
@@ -340,7 +284,7 @@ export const scheduledRunsRepository = {
     return result.changes > 0;
   },
 
-  setEnabled(userId: number, id: number, enabled: boolean): ScheduledRun | null {
+  setEnabled(userId: number, id: number, enabled: boolean): ScheduledRunRecord | null {
     const db = getConnection();
     db.prepare(
       `UPDATE scheduled_runs SET is_enabled = ?, updated_at = CURRENT_TIMESTAMP
@@ -353,7 +297,7 @@ export const scheduledRunsRepository = {
   // Scheduler-internal methods
   // -------------------------------------------------------------------------
 
-  listDue(now: Date): ScheduledRun[] {
+  listDue(now: Date): ScheduledRunRecord[] {
     const db = getConnection();
     const nowIso = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
     const rows = db
@@ -367,6 +311,16 @@ export const scheduledRunsRepository = {
     return rows.map(normalizeSchedule);
   },
 
+  /** Advances an interrupted due slot after restart without creating a second history row. */
+  advanceNextRun(scheduleId: number, nextRunAt: string): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE scheduled_runs
+       SET next_run_at = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+    ).run(nextRunAt, scheduleId);
+  },
+
   /**
    * Atomically claims the next run slot for a schedule.
    *
@@ -377,8 +331,8 @@ export const scheduledRunsRepository = {
    */
   claimNextRun(
     scheduleId: number,
-    trigger: RunTrigger = 'tick',
-  ): ClaimResult | null {
+    trigger: ScheduledRunTrigger = 'tick',
+  ): ScheduledRunClaim | null {
     const db = getConnection();
 
     const claim = db.transaction(() => {
@@ -442,12 +396,12 @@ export const scheduledRunsRepository = {
 
   finishRun(
     runId: number,
-    status: HistoryStatus,
+    status: ScheduledRunHistoryStatus,
     outputSummary: string | null,
     errorMessage: string | null,
     nextRunAtIso: string | null,
     notificationDispatched: boolean,
-  ): ScheduledRunHistory | null {
+  ): ScheduledRunHistoryRecord | null {
     const db = getConnection();
     const runRow = db
       .prepare(
@@ -507,7 +461,7 @@ export const scheduledRunsRepository = {
     return updated ? normalizeHistory(updated) : null;
   },
 
-  listHistory(scheduleId: number, limit: number = 50): ScheduledRunHistory[] {
+  listHistory(scheduleId: number, limit: number = 50): ScheduledRunHistoryRecord[] {
     const db = getConnection();
     const rows = db
       .prepare(
@@ -523,23 +477,18 @@ export const scheduledRunsRepository = {
   },
 
   /**
-   * On startup, any `running` history row older than 30 minutes is orphaned
-   * (the server crashed mid-run). Mark it failed and clear the in-flight
-   * pointer so the schedule can fire again.
+   * On startup every persisted `running` row is orphaned because no provider
+   * process from the previous server instance can still own it. Mark it failed
+   * and clear the in-flight pointer without replaying the interrupted run.
    */
   repairOrphanedRuns(): number {
     const db = getConnection();
-    const cutoff = new Date(Date.now() - 30 * 60_000)
-      .toISOString()
-      .replace('T', ' ')
-      .replace(/\.\d+Z$/, '');
-
     const orphans = db
       .prepare(
         `SELECT id, schedule_id FROM scheduled_run_history
-         WHERE status = 'running' AND started_at <= ?`,
+         WHERE status = 'running'`,
       )
-      .all(cutoff) as { id: number; schedule_id: number }[];
+      .all() as { id: number; schedule_id: number }[];
 
     if (orphans.length === 0) return 0;
 

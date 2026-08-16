@@ -1,10 +1,11 @@
 import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Download, GitFork } from 'lucide-react';
+import { Download, FileArchive, FileCode2, FileOutput, FileText, GitFork } from 'lucide-react';
 
 import { api } from '../../../../utils/api';
 import { useChatProviderState } from '../../../chat/hooks/useChatProviderState';
-import { useSessionStore } from '../../../../stores/useSessionStore';
+import type { SessionStore } from '../../../../stores/useSessionStore';
+import { useSessionStoreRevision } from '../../../../stores/useSessionStore';
 import ProviderModelPickerDialog, {
   type ProviderModelPickerSelection,
 } from '../../../../shared/view/ProviderModelPickerDialog';
@@ -17,8 +18,18 @@ import type {
   LLMProvider,
 } from '../../../../types/app';
 import { usePlugins } from '../../../../contexts/PluginsContext';
+import ActionMenu, { type ActionMenuItem } from '../../../../shared/view/ui/ActionMenu';
+import {
+  downloadHTML,
+  downloadMarkdown,
+  downloadPDF,
+  EXPORT_FORMATS,
+} from '../../../chat/utils/chatExport';
+import { hydrateSessionMessagesForExport } from '../../../chat/utils/sessionExport';
+import { downloadZipResponse } from '../../../chat/utils/zipExport';
 
 type MainContentTitleProps = {
+  sessionStore: SessionStore;
   activeTab: AppTab;
   selectedProject: Project;
   selectedSession: ProjectSession | null;
@@ -44,6 +55,10 @@ function getTabTitle(activeTab: AppTab, shouldShowTasksTab: boolean, t: (key: st
     return 'TaskMaster';
   }
 
+  if (activeTab === 'schedules') {
+    return 'Schedules';
+  }
+
   if (activeTab === 'browser') {
     return t('tabs.browser');
   }
@@ -60,16 +75,43 @@ function getSessionTitle(session: ProjectSession): string {
 }
 
 type SessionActionsProps = {
+  sessionStore: SessionStore;
   session: ProjectSession;
   onNavigateToSession?: (sessionId: string) => void;
   t: (key: string, options?: Record<string, unknown>) => string;
 };
 
-function SessionActions({ session, onNavigateToSession, t }: SessionActionsProps) {
-  const [isExporting, setIsExporting] = useState(false);
+type ChatExportFormat = (typeof EXPORT_FORMATS)[number]['id'];
+type ActionFeedback = {
+  flow: 'export' | 'fork';
+  tone: 'error' | 'info' | 'success';
+  message: string;
+  retryFormat?: ChatExportFormat;
+};
+
+const EXPORT_ICONS = {
+  markdown: FileText,
+  html: FileCode2,
+  pdf: FileOutput,
+  zip: FileArchive,
+} as const;
+
+function localExportFilename(title: string): string {
+  const slug = title
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60) || 'chat';
+  return `${slug}-${new Date().toISOString().slice(0, 10)}`;
+}
+
+function SessionActions({ sessionStore, session, onNavigateToSession, t }: SessionActionsProps) {
+  const [exportingFormat, setExportingFormat] = useState<ChatExportFormat | null>(null);
   const [isForking, setIsForking] = useState(false);
   const [forkDialogOpen, setForkDialogOpen] = useState(false);
-  const sessionStore = useSessionStore();
+  const [feedback, setFeedback] = useState<ActionFeedback | null>(null);
+  useSessionStoreRevision(sessionStore, session.id);
 
   // Sub-agent transcripts are read-only records of past runs; cloning or
   // exporting them as standalone chats would misrepresent the data.
@@ -93,36 +135,67 @@ function SessionActions({ session, onNavigateToSession, t }: SessionActionsProps
   // actually runs with) because the hook receives this session as selected.
   const sourceModel = currentProviderModel || null;
 
-  const handleExport = useCallback(async () => {
-    if (isExporting) return;
-    setIsExporting(true);
+  const handleExport = useCallback(async (format: ChatExportFormat) => {
+    if (exportingFormat) return;
+    setExportingFormat(format);
+    setFeedback(null);
     try {
-      const response = await api.exportSession(session.id);
-      if (!response.ok) {
-        throw new Error(`Export failed: ${response.status}`);
+      const title = getSessionTitle(session);
+      const filename = localExportFilename(title);
+      let successMessage = `${format.toUpperCase()} export downloaded.`;
+      // Every format is derived from this request-specific immutable history
+      // result. ZIP additionally proves the server archive contains this exact
+      // canonical transcript before any browser download begins.
+      const snapshot = await hydrateSessionMessagesForExport(
+        (sessionId, options) => sessionStore.fetchFromServer(sessionId, options),
+        session.id,
+        () => sessionStore.getRevision(session.id),
+      );
+      const { messages, transcriptDigest, snapshotRevision } = snapshot;
+      if (messages.length === 0) throw new Error('This conversation has no messages to export.');
+      if (format === 'zip') {
+        const response = await api.exportSession(session.id, 'zip', transcriptDigest);
+        await downloadZipResponse(response, `${filename}.zip`, {
+          sessionId: session.id,
+          messages,
+          transcriptDigest,
+        }, () => {
+          if (sessionStore.getRevision(session.id) !== snapshotRevision) {
+            throw new Error('Conversation changed while Export was being prepared. Try Export again.');
+          }
+        });
+      } else {
+        if (format === 'markdown') downloadMarkdown(messages, `${filename}.md`, title);
+        if (format === 'html') downloadHTML(messages, `${filename}.html`, title);
+        if (format === 'pdf') {
+          const outcome = await downloadPDF(messages, filename, title);
+          if (outcome.status === 'cancelled') {
+            setFeedback({ flow: 'export', tone: 'info', message: 'PDF export cancelled.' });
+            return;
+          }
+          successMessage = outcome.status === 'saved'
+            ? 'PDF export saved.'
+            : 'PDF print dialog opened.';
+        }
       }
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      const disposition = response.headers.get('Content-Disposition') ?? '';
-      const filenameMatch = /filename="([^"]+)"/.exec(disposition);
-      link.href = url;
-      link.download = filenameMatch?.[1] ?? `${session.id}.zip`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-    } catch {
-      window.alert(t('mainContent.exportSessionError'));
+      setFeedback({ flow: 'export', tone: 'success', message: successMessage });
+    } catch (error) {
+      setFeedback({
+        flow: 'export',
+        tone: 'error',
+        message: error instanceof Error ? error.message : t('mainContent.exportSessionError'),
+        retryFormat: format,
+      });
     } finally {
-      setIsExporting(false);
+      setExportingFormat(null);
     }
-  }, [session.id, isExporting, t]);
+  }, [exportingFormat, session, sessionStore, t]);
 
   const handleForkConfirm = useCallback(
     async (selection: ProviderModelPickerSelection) => {
       if (isForking || !onNavigateToSession) return;
       setIsForking(true);
+      setFeedback(null);
       try {
         // The complete target selection travels in the single fork request:
         // provider, profile, and model are validated and persisted by the
@@ -136,7 +209,11 @@ function SessionActions({ session, onNavigateToSession, t }: SessionActionsProps
         const payload = await response.json();
         const newSessionId = payload?.data?.sessionId;
         if (!response.ok || !newSessionId) {
-          throw new Error(payload?.message || payload?.error || 'The fork did not return a session id.');
+          throw new Error(
+            payload?.message
+            || (typeof payload?.error === 'string' ? payload.error : payload?.error?.message)
+            || 'The fork did not return a session id.',
+          );
         }
 
         // If the server carried over a handoff summary, flag the new session so
@@ -147,13 +224,13 @@ function SessionActions({ session, onNavigateToSession, t }: SessionActionsProps
 
         onNavigateToSession(newSessionId);
       } catch (forkError) {
-        // A failed fork leaves the user exactly where they were; the message
-        // is fork-specific, not the export error text.
-        window.alert(
-          forkError instanceof Error
+        setFeedback({
+          flow: 'fork',
+          tone: 'error',
+          message: forkError instanceof Error
             ? forkError.message
             : t('mainContent.forkSessionError', { defaultValue: 'Failed to fork this session.' }),
-        );
+        });
       } finally {
         setIsForking(false);
       }
@@ -166,27 +243,71 @@ function SessionActions({ session, onNavigateToSession, t }: SessionActionsProps
   }
 
   return (
-    <div className="flex flex-shrink-0 items-center gap-1">
+    <div className="relative flex w-[5.75rem] flex-shrink-0 items-center justify-end gap-1">
       <button
         type="button"
         onClick={() => setForkDialogOpen(true)}
-        disabled={!onNavigateToSession}
+        disabled={!onNavigateToSession || isForking}
         title={t('mainContent.forkSessionTitle')}
         aria-label={t('mainContent.forkSession')}
-        className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+        className="flex h-11 w-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
       >
-        <GitFork className="h-3.5 w-3.5" aria-hidden />
+        <GitFork className="h-4 w-4" aria-hidden />
       </button>
-      <button
-        type="button"
-        onClick={handleExport}
-        disabled={isExporting}
-        title={t('mainContent.exportSessionTitle')}
-        aria-label={t('mainContent.exportSession')}
-        className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-      >
-        <Download className="h-3.5 w-3.5" aria-hidden />
-      </button>
+      <ActionMenu
+        label="Export"
+        ariaLabel="Export chat"
+        icon={Download}
+        iconOnly
+        portal
+        disabled={Boolean(exportingFormat)}
+        triggerClassName="h-11 w-11 text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        items={EXPORT_FORMATS.map<ActionMenuItem>((format) => ({
+          key: format.id,
+          label: format.id === 'markdown' ? 'Markdown' : format.id.toUpperCase(),
+          description: format.label,
+          icon: EXPORT_ICONS[format.id],
+          loading: exportingFormat === format.id,
+          disabled: Boolean(exportingFormat && exportingFormat !== format.id),
+          onSelect: () => { void handleExport(format.id); },
+        }))}
+      />
+
+      {feedback && (
+        <div
+          role={feedback.tone === 'error' ? 'alert' : 'status'}
+          className="absolute right-0 top-full z-[65] mt-2 w-72 rounded-lg border border-border bg-popover p-3 text-sm text-popover-foreground shadow-lg"
+        >
+          <p>{feedback.message}</p>
+          <div className="mt-2 flex justify-end gap-2">
+            {feedback.tone === 'error' && feedback.flow === 'export' && feedback.retryFormat && (
+              <button
+                type="button"
+                onClick={() => { void handleExport(feedback.retryFormat!); }}
+                className="min-h-11 rounded-md border border-border px-3 py-2 font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                Retry
+              </button>
+            )}
+            {feedback.tone === 'error' && feedback.flow === 'fork' && (
+              <button
+                type="button"
+                onClick={() => setForkDialogOpen(true)}
+                className="min-h-11 rounded-md border border-border px-3 py-2 font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                Retry
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setFeedback(null)}
+              className="min-h-11 rounded-md px-3 py-2 text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
 
       <ProviderModelPickerDialog
         open={forkDialogOpen}
@@ -203,6 +324,7 @@ function SessionActions({ session, onNavigateToSession, t }: SessionActionsProps
 }
 
 export default function MainContentTitle({
+  sessionStore,
   activeTab,
   selectedProject,
   selectedSession,
@@ -224,14 +346,14 @@ export default function MainContentTitle({
     ?? (selectedSession ? getSessionTitle(selectedSession) : '');
 
   return (
-    <div className="scrollbar-hide flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
+    <div className="relative flex min-w-0 flex-1 items-center gap-2">
       {showSessionIcon && (
         <div className="flex h-5 w-5 flex-shrink-0 items-center justify-center">
           <SessionProviderLogo provider={displayedProvider} className="h-4 w-4" />
         </div>
       )}
 
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 overflow-hidden">
         {activeTab === 'chat' && selectedSession ? (
           <div className="min-w-0">
             <h2 title={displayedTitle} className="truncate text-sm font-semibold leading-tight text-foreground">
@@ -260,6 +382,8 @@ export default function MainContentTitle({
 
       {activeTab === 'chat' && selectedSession && !selectedSubagent && (
         <SessionActions
+          key={selectedSession.id}
+          sessionStore={sessionStore}
           session={selectedSession}
           onNavigateToSession={onNavigateToSession}
           t={t}

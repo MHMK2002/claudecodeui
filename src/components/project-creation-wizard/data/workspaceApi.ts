@@ -1,186 +1,308 @@
-import { api, getStoredAuthToken } from '../../../utils/api';
+import { api } from '../../../utils/api';
+import { getProjectErrorPresentation } from '../utils/projectCreationWorkflow';
 import type {
   BrowseFilesystemResponse,
+  CloneProgress,
   CloneProgressEvent,
   CreateFolderResponse,
   CreateProjectPayload,
   CreateProjectResponse,
   CredentialsResponse,
   FolderSuggestion,
+  ProjectCreationErrorPresentation,
+  ProjectCreationField,
+  ProjectCreationRecoveryAction,
   TokenMode,
 } from '../types';
 
 type CloneWorkspaceParams = {
-  workspacePath: string;
-  githubUrl: string;
+  attemptId: string;
+  destinationPath: string;
+  repositoryUrl: string;
   tokenMode: TokenMode;
   selectedGithubToken: string;
   newGithubToken: string;
+  signal?: AbortSignal;
 };
 
 type CloneProgressHandlers = {
-  onProgress: (message: string) => void;
+  onProgress: (progress: CloneProgress) => void;
 };
 
-const parseJson = async <T>(response: Response): Promise<T> => {
-  const data = (await response.json()) as T;
-  return data;
-};
+export type CloneCancellationResult = 'cancelled' | 'not_found' | 'too_late';
 
-const resolveCreateProjectErrorMessage = (responseData: CreateProjectResponse): string | null => {
-  if (typeof responseData.details === 'string' && responseData.details.trim().length > 0) {
-    return responseData.details;
+export class ProjectCreationRequestError extends Error {
+  readonly code: string;
+  readonly action: string;
+  readonly field: string;
+  readonly attemptId?: string;
+
+  constructor(presentation: ProjectCreationErrorPresentation) {
+    super(presentation.message);
+    this.name = 'ProjectCreationRequestError';
+    this.code = presentation.code;
+    this.action = presentation.action;
+    this.field = presentation.field;
+    this.attemptId = presentation.attemptId;
   }
+}
 
-  if (typeof responseData.error === 'string' && responseData.error.trim().length > 0) {
-    return responseData.error;
+async function parseJsonResponse<T>(response: Response): Promise<T | null> {
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.toLowerCase().includes('application/json')) return null;
+  try {
+    return await response.json() as T;
+  } catch {
+    return null;
   }
+}
 
-  if (responseData.error && typeof responseData.error === 'object') {
-    const errorObject = responseData.error as { message?: unknown; details?: unknown };
+const RECOVERY_ACTIONS = new Set<ProjectCreationRecoveryAction>([
+  'BROWSE',
+  'CHOOSE_ANOTHER',
+  'INSTALL_GIT',
+  'CHANGE_CREDENTIAL',
+  'CHANGE_REPOSITORY',
+  'OPEN_EXISTING',
+  'RETRY',
+]);
 
-    if (typeof errorObject.details === 'string' && errorObject.details.trim().length > 0) {
-      return errorObject.details;
-    }
+const RECOVERY_FIELDS = new Set<ProjectCreationField>([
+  'folder',
+  'repositoryUrl',
+  'destination',
+  'credential',
+]);
 
-    if (typeof errorObject.message === 'string' && errorObject.message.trim().length > 0) {
-      return errorObject.message;
-    }
+function readRecoveryAction(
+  value: unknown,
+  fallback: ProjectCreationRecoveryAction,
+): ProjectCreationRecoveryAction {
+  return typeof value === 'string' && RECOVERY_ACTIONS.has(value as ProjectCreationRecoveryAction)
+    ? value as ProjectCreationRecoveryAction
+    : fallback;
+}
 
-    if (
-      errorObject.details
-      && typeof errorObject.details === 'object'
-      && typeof (errorObject.details as { projectPath?: unknown }).projectPath === 'string'
-    ) {
-      return `Project path already exists: ${(errorObject.details as { projectPath: string }).projectPath}`;
-    }
-  }
+function readRecoveryField(
+  value: unknown,
+  fallback: ProjectCreationField,
+): ProjectCreationField {
+  return typeof value === 'string' && RECOVERY_FIELDS.has(value as ProjectCreationField)
+    ? value as ProjectCreationField
+    : fallback;
+}
 
-  if (typeof responseData.message === 'string' && responseData.message.trim().length > 0) {
-    return responseData.message;
-  }
-
-  return null;
-};
+function requestErrorFromResponse(
+  responseData: CreateProjectResponse | null,
+  fallbackMessage: string,
+): ProjectCreationRequestError {
+  const errorObject = responseData?.error && typeof responseData.error === 'object'
+    ? responseData.error
+    : null;
+  const details = errorObject?.details && typeof errorObject.details === 'object'
+    ? errorObject.details
+    : null;
+  const message = errorObject?.message
+    || (typeof responseData?.error === 'string' ? responseData.error : '')
+    || responseData?.details
+    || responseData?.message
+    || fallbackMessage;
+  const presentation = getProjectErrorPresentation(errorObject?.code || 'UNKNOWN', message);
+  return new ProjectCreationRequestError({
+    ...presentation,
+    action: readRecoveryAction(details?.action, presentation.action),
+    field: readRecoveryField(details?.field, presentation.field),
+  });
+}
 
 export const fetchGithubTokenCredentials = async () => {
   const response = await api.get('/settings/credentials?type=github_token');
-  const data = await parseJson<CredentialsResponse>(response);
-
-  if (!response.ok) {
-    throw new Error(data.error || 'Failed to load GitHub tokens');
-  }
-
-  return (data.credentials || []).filter((credential) => credential.is_active);
+  const data = await parseJsonResponse<CredentialsResponse>(response);
+  if (!response.ok) throw new Error(data?.error || 'Failed to load stored credentials');
+  return (data?.credentials || []).filter((credential) => credential.is_active);
 };
 
 export const browseFilesystemFolders = async (pathToBrowse: string) => {
   const endpoint = `/file-tree/browse-filesystem?path=${encodeURIComponent(pathToBrowse)}`;
   const response = await api.get(endpoint);
-  const data = await parseJson<BrowseFilesystemResponse>(response);
-
-  if (!response.ok) {
-    throw new Error(data.error || 'Failed to browse filesystem');
-  }
-
+  const data = await parseJsonResponse<BrowseFilesystemResponse>(response);
+  if (!response.ok) throw new Error(data?.error || 'Failed to browse filesystem');
   return {
-    path: data.path || pathToBrowse,
-    suggestions: (data.suggestions || []) as FolderSuggestion[],
+    path: data?.path || pathToBrowse,
+    suggestions: (data?.suggestions || []) as FolderSuggestion[],
   };
 };
 
 export const createFolderInFilesystem = async (folderPath: string) => {
   const response = await api.createFolder(folderPath);
-  const data = await parseJson<CreateFolderResponse>(response);
-
-  if (!response.ok) {
-    throw new Error(data.error || 'Failed to create folder');
-  }
-
-  return data.path || folderPath;
+  const data = await parseJsonResponse<CreateFolderResponse>(response);
+  if (!response.ok) throw new Error(data?.error || 'Failed to create folder');
+  return data?.path || folderPath;
 };
 
 export const createProjectRequest = async (payload: CreateProjectPayload) => {
   const response = await api.createProject(payload);
-  const data = await parseJson<CreateProjectResponse>(response);
-
-  if (!response.ok) {
-    throw new Error(resolveCreateProjectErrorMessage(data) || 'Failed to create project');
-  }
-
-  return data.project;
+  const data = await parseJsonResponse<CreateProjectResponse>(response);
+  if (!response.ok) throw requestErrorFromResponse(data, 'Failed to open project');
+  return data?.project;
 };
 
-const buildCloneProgressQuery = ({
-  workspacePath,
-  githubUrl,
-  tokenMode,
-  selectedGithubToken,
-  newGithubToken,
-}: CloneWorkspaceParams) => {
-  const query = new URLSearchParams({
-    path: workspacePath.trim(),
-    githubUrl: githubUrl.trim(),
+function buildCloneProgressBody(params: CloneWorkspaceParams) {
+  const body: Record<string, string> = {
+    attemptId: params.attemptId,
+    destinationPath: params.destinationPath.trim(),
+    repositoryUrl: params.repositoryUrl.trim(),
+  };
+  if (params.tokenMode === 'stored' && params.selectedGithubToken) {
+    body.githubTokenId = params.selectedGithubToken;
+  }
+  if (params.tokenMode === 'new' && params.newGithubToken.trim()) {
+    body.newGithubToken = params.newGithubToken.trim();
+  }
+  return body;
+}
+
+function errorFromCloneEvent(payload: CloneProgressEvent): ProjectCreationRequestError {
+  const presentation = getProjectErrorPresentation(payload.code || 'GIT_CLONE_FAILED', payload.message);
+  return new ProjectCreationRequestError({
+    ...presentation,
+    action: readRecoveryAction(payload.action, presentation.action),
+    field: readRecoveryField(payload.field, presentation.field),
+    attemptId: payload.attemptId,
   });
+}
 
-  if (tokenMode === 'stored' && selectedGithubToken) {
-    query.set('githubTokenId', selectedGithubToken);
+const CLONE_PROGRESS_PHASES = new Set<CloneProgress['phase']>([
+  'preparing',
+  'cloning',
+  'receiving',
+  'resolving',
+  'finalizing',
+  'registering',
+]);
+
+function invalidCloneStreamError(): ProjectCreationRequestError {
+  return new ProjectCreationRequestError(getProjectErrorPresentation(
+    'GIT_CLONE_FAILED',
+    'The clone stream returned invalid data.',
+  ));
+}
+
+function parseCloneProgressEvent(value: unknown): CloneProgressEvent {
+  if (typeof value !== 'object' || value === null) throw invalidCloneStreamError();
+  const payload = value as Record<string, unknown>;
+  if (payload.type === 'attempt') {
+    if (typeof payload.attemptId !== 'string') throw invalidCloneStreamError();
+  } else if (payload.type === 'progress') {
+    if (
+      typeof payload.phase !== 'string'
+      || !CLONE_PROGRESS_PHASES.has(payload.phase as CloneProgress['phase'])
+      || typeof payload.message !== 'string'
+      || (payload.percent !== null
+        && (typeof payload.percent !== 'number' || !Number.isFinite(payload.percent)))
+    ) {
+      throw invalidCloneStreamError();
+    }
+  } else if (payload.type === 'error') {
+    if (typeof payload.code !== 'string' || typeof payload.message !== 'string') {
+      throw invalidCloneStreamError();
+    }
+  } else if (payload.type === 'complete') {
+    if (
+      typeof payload.project !== 'object'
+      || payload.project === null
+      || Array.isArray(payload.project)
+    ) {
+      throw invalidCloneStreamError();
+    }
+    const project = payload.project as Record<string, unknown>;
+    if (
+      typeof project.projectId !== 'string'
+      || !project.projectId.trim()
+      || typeof project.path !== 'string'
+      || !project.path.trim()
+    ) throw invalidCloneStreamError();
+  } else {
+    throw invalidCloneStreamError();
   }
+  return payload as CloneProgressEvent;
+}
 
-  if (tokenMode === 'new' && newGithubToken.trim()) {
-    query.set('newGithubToken', newGithubToken.trim());
-  }
-
-  // EventSource cannot send custom headers, so the auth token is passed as query.
-  const authToken = getStoredAuthToken();
-  if (authToken) {
-    query.set('token', authToken);
-  }
-
-  return query.toString();
-};
-
-export const cloneWorkspaceWithProgress = (
+export const cloneWorkspaceWithProgress = async (
   params: CloneWorkspaceParams,
   handlers: CloneProgressHandlers,
-) =>
-  new Promise<Record<string, unknown> | undefined>((resolve, reject) => {
-    const query = buildCloneProgressQuery(params);
-    const eventSource = new EventSource(`/api/projects/clone-progress?${query}`);
-    let settled = false;
+) => {
+  const response = await api.post(
+    '/projects/clone-progress',
+    buildCloneProgressBody(params),
+    { signal: params.signal },
+  );
+  if (!response.ok || !response.body) {
+    const data = await parseJsonResponse<CreateProjectResponse>(response);
+    throw requestErrorFromResponse(data, `Failed to start clone (${response.status})`);
+  }
 
-    const settle = (callback: () => void) => {
-      if (settled) {
-        return;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  const handleEvent = (rawEvent: string): Record<string, unknown> | undefined => {
+    const eventData = rawEvent
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trimStart())
+      .join('\n');
+    if (!eventData) return undefined;
+    let parsedPayload: unknown;
+    try {
+      parsedPayload = JSON.parse(eventData) as unknown;
+    } catch {
+      throw invalidCloneStreamError();
+    }
+    const payload = parseCloneProgressEvent(parsedPayload);
+    if (payload.type === 'progress' && payload.message && payload.phase) {
+      handlers.onProgress({
+        phase: payload.phase,
+        percent: typeof payload.percent === 'number' ? payload.percent : null,
+        message: payload.message,
+      });
+      return undefined;
+    }
+    if (payload.type === 'error') throw errorFromCloneEvent(payload);
+    return payload.type === 'complete' ? payload.project : undefined;
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const events = buffer.split(/\r?\n\r?\n/);
+    buffer = events.pop() ?? '';
+    for (const rawEvent of events) {
+      const project = handleEvent(rawEvent);
+      if (project) {
+        await reader.cancel();
+        return project;
       }
-      settled = true;
-      eventSource.close();
-      callback();
-    };
+    }
+    if (done) break;
+  }
 
-    eventSource.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data) as CloneProgressEvent;
+  if (buffer.trim()) {
+    const project = handleEvent(buffer);
+    if (project) return project;
+  }
+  throw new ProjectCreationRequestError(getProjectErrorPresentation(
+    'NETWORK_OFFLINE',
+    'The clone connection ended before completion.',
+  ));
+};
 
-        if (payload.type === 'progress' && payload.message) {
-          handlers.onProgress(payload.message);
-          return;
-        }
+export async function cancelCloneAttempt(attemptId: string): Promise<CloneCancellationResult> {
+  const response = await api.delete(`/projects/clone-attempts/${encodeURIComponent(attemptId)}`);
+  if (response.ok) return 'cancelled';
+  if (response.status === 404) return 'not_found';
+  if (response.status === 409) return 'too_late';
 
-        if (payload.type === 'complete') {
-          settle(() => resolve(payload.project));
-          return;
-        }
-
-        if (payload.type === 'error') {
-          settle(() => reject(new Error(payload.message || 'Failed to clone repository')));
-        }
-      } catch (error) {
-        console.error('Error parsing clone progress event:', error);
-      }
-    };
-
-    eventSource.onerror = () => {
-      settle(() => reject(new Error('Connection lost during clone')));
-    };
-  });
+  const data = await parseJsonResponse<CreateProjectResponse>(response);
+  throw requestErrorFromResponse(data, 'Failed to cancel clone attempt');
+}

@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import '@xterm/xterm/css/xterm.css';
-import type { Project, ProjectSession } from '../../../types/app';
+import type { Project } from '../../../types/app';
 import {
   PROMPT_BUFFER_SCAN_LINES,
   PROMPT_DEBOUNCE_MS,
@@ -13,7 +13,6 @@ import {
 } from '../constants/constants';
 import { useShellRuntime } from '../hooks/useShellRuntime';
 import { sendSocketMessage } from '../utils/socket';
-import { getSessionDisplayName } from '../utils/auth';
 
 import ShellConnectionOverlay from './subcomponents/ShellConnectionOverlay';
 import ShellEmptyState from './subcomponents/ShellEmptyState';
@@ -25,9 +24,7 @@ type CliPromptOption = { number: string; label: string };
 
 type ShellProps = {
   selectedProject?: Project | null;
-  selectedSession?: ProjectSession | null;
   initialCommand?: string | null;
-  isPlainShell?: boolean;
   onProcessComplete?: ((exitCode: number) => void) | null;
   minimal?: boolean;
   autoConnect?: boolean;
@@ -36,9 +33,7 @@ type ShellProps = {
 
 export default function Shell({
   selectedProject = null,
-  selectedSession = null,
   initialCommand = null,
-  isPlainShell = false,
   onProcessComplete = null,
   minimal = false,
   autoConnect = false,
@@ -59,13 +54,12 @@ export default function Shell({
     isConnected,
     isInitialized,
     isConnecting,
+    connectionError,
     connectToShell,
     disconnectFromShell,
   } = useShellRuntime({
     selectedProject,
-    selectedSession,
-    initialCommand,
-    isPlainShell,
+    command: initialCommand,
     minimal,
     autoConnect,
     isRestarting,
@@ -180,16 +174,6 @@ export default function Shell({
     [wsRef],
   );
 
-  const sessionDisplayName = useMemo(() => getSessionDisplayName(selectedSession), [selectedSession]);
-  const sessionDisplayNameShort = useMemo(
-    () => (sessionDisplayName ? sessionDisplayName.slice(0, 30) : null),
-    [sessionDisplayName],
-  );
-  const sessionDisplayNameLong = useMemo(
-    () => (sessionDisplayName ? sessionDisplayName.slice(0, 50) : null),
-    [sessionDisplayName],
-  );
-
   const handleRestartShell = useCallback(() => {
     restartAfterInitRef.current = true;
     setIsRestarting(true);
@@ -250,24 +234,45 @@ export default function Shell({
     );
   }
 
-  const readyDescription = isPlainShell
+  const isCommandTerminal = Boolean(initialCommand?.trim());
+  const readyDescription = isCommandTerminal
     ? t('shell.runCommand', {
         command: initialCommand || t('shell.defaultCommand'),
         projectName: selectedProject.displayName,
       })
-    : selectedSession
-      ? t('shell.resumeSession', { displayName: sessionDisplayNameLong })
-      : t('shell.startSession');
+    : t('shell.localReady', {
+        defaultValue: 'Open a local terminal for {{projectName}}.',
+        projectName: selectedProject.displayName,
+      });
 
-  const connectingDescription = isPlainShell
+  const connectingDescription = isCommandTerminal
     ? t('shell.runCommand', {
         command: initialCommand || t('shell.defaultCommand'),
         projectName: selectedProject.displayName,
       })
-    : t('shell.startCli', { projectName: selectedProject.displayName });
+    : t('shell.localConnecting', {
+        defaultValue: 'Starting the system login shell for {{projectName}}.',
+        projectName: selectedProject.displayName,
+      });
 
-  const overlayMode = !isInitialized ? 'loading' : isConnecting ? 'connecting' : !isConnected ? 'connect' : null;
-  const overlayDescription = overlayMode === 'connecting' ? connectingDescription : readyDescription;
+  const overlayMode = !isInitialized
+    ? 'loading'
+    : isConnecting
+      ? 'connecting'
+      : connectionError
+        ? 'error'
+        : !isConnected
+          ? 'connect'
+          : null;
+  const overlayDescription = connectionError?.message
+    ?? (overlayMode === 'connecting' ? connectingDescription : readyDescription);
+  const recoveryLabel = connectionError?.code === 'PROJECT_MISSING'
+    ? t('shell.actions.retryProject', { defaultValue: 'Retry project lookup' })
+    : connectionError?.code === 'CWD_UNAVAILABLE'
+      ? t('shell.actions.retryFolder', { defaultValue: 'Retry folder' })
+      : connectionError?.code === 'SHELL_UNAVAILABLE'
+        ? t('shell.actions.retryShell', { defaultValue: 'Retry shell' })
+        : t('shell.actions.reconnect', { defaultValue: 'Reconnect' });
 
   return (
     <div className="flex h-full w-full flex-col bg-gray-900">
@@ -275,13 +280,13 @@ export default function Shell({
         isConnected={isConnected}
         isInitialized={isInitialized}
         isRestarting={isRestarting}
-        hasSession={Boolean(selectedSession)}
-        sessionDisplayNameShort={sessionDisplayNameShort}
+        projectName={selectedProject.displayName}
         onDisconnect={handleDisconnectShell}
         onRestart={handleRestartShell}
-        statusNewSessionText={t('shell.status.newSession')}
-        statusInitializingText={t('shell.status.initializing')}
-        statusRestartingText={t('shell.status.restarting')}
+        connectedText={t('shell.status.connected', { defaultValue: 'Connected' })}
+        disconnectedText={t('shell.status.disconnected', { defaultValue: 'Disconnected' })}
+        initializingText={t('shell.status.initializing')}
+        restartingText={t('shell.status.restarting')}
         disconnectLabel={t('shell.actions.disconnect')}
         disconnectTitle={t('shell.actions.disconnectTitle')}
         restartLabel={t('shell.actions.restart')}
@@ -301,7 +306,7 @@ export default function Shell({
             mode={overlayMode}
             description={overlayDescription}
             loadingLabel={t('shell.loading')}
-            connectLabel={t('shell.actions.connect')}
+            connectLabel={connectionError ? recoveryLabel : t('shell.actions.connect')}
             connectTitle={t('shell.actions.connectTitle')}
             connectingLabel={t('shell.connecting')}
             onConnect={handleRestartShell}

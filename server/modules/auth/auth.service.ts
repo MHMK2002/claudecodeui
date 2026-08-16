@@ -1,4 +1,5 @@
 import { AppError } from '@/shared/utils.js';
+import type { RuntimeMode } from '@/shared/types.js';
 
 type AuthUser = {
   id: number | bigint;
@@ -8,6 +9,7 @@ type AuthUser = {
 type AuthLoginUser = AuthUser & { password_hash: string };
 
 type AuthDependencies = {
+  runtimeMode: RuntimeMode;
   users: {
     hasUsers(): boolean;
     createUser(username: string, passwordHash: string): AuthUser;
@@ -40,15 +42,28 @@ function isUniqueConstraintError(error: unknown): boolean {
  * transaction, and token dependencies.
  */
 export function createAuthService(dependencies: AuthDependencies) {
+  const assertCredentialAuthAvailable = () => {
+    if (dependencies.runtimeMode === 'desktop-local') {
+      throw new AppError('Product account authentication is unavailable in Desktop local mode.', {
+        code: 'AUTH_CREDENTIAL_LOGIN_UNAVAILABLE',
+        statusCode: 404,
+      });
+    }
+  };
+
   return {
     getStatus() {
       return {
-        needsSetup: !dependencies.users.hasUsers(),
+        runtimeMode: dependencies.runtimeMode,
+        needsSetup: dependencies.runtimeMode === 'desktop-local'
+          ? false
+          : !dependencies.users.hasUsers(),
         isAuthenticated: false,
       };
     },
 
     async register(usernameInput: unknown, passwordInput: unknown) {
+      assertCredentialAuthAvailable();
       const username = typeof usernameInput === 'string' ? usernameInput : '';
       const password = typeof passwordInput === 'string' ? passwordInput : '';
 
@@ -98,6 +113,7 @@ export function createAuthService(dependencies: AuthDependencies) {
     },
 
     async login(usernameInput: unknown, passwordInput: unknown) {
+      assertCredentialAuthAvailable();
       const username = typeof usernameInput === 'string' ? usernameInput : '';
       const password = typeof passwordInput === 'string' ? passwordInput : '';
       if (!username || !password) {

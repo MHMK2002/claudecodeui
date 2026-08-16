@@ -1,7 +1,14 @@
 // Service Worker for CloudCLI PWA
 // Cache only manifest (needed for PWA install). HTML and JS are never pre-cached
 // so a rebuild + refresh always picks up the latest assets.
-const BUILD_ID = new URL(self.location.href).searchParams.get('build') || 'unidentified';
+// Vite replaces this exact declaration in the distribution artifact. The
+// query fallback exists only for the development server, where public files
+// are served without the build transform.
+const EMBEDDED_BUILD_ID = null;
+const BUILD_ID = EMBEDDED_BUILD_ID || new URL(self.location.href).searchParams.get('build');
+if (!BUILD_ID || !/^[0-9A-Za-z][0-9A-Za-z._-]{0,159}$/.test(BUILD_ID)) {
+  throw new Error('CloudCLI service worker requires a valid build identity.');
+}
 const CACHE_PREFIX = 'cloudcli-web-';
 const CACHE_NAME = `${CACHE_PREFIX}${BUILD_ID}`;
 const urlsToCache = [
@@ -22,7 +29,15 @@ self.addEventListener('fetch', event => {
   const url = event.request.url;
 
   // Never intercept API requests or WebSocket upgrades
-  if (url.includes('/api/') || url.includes('/ws')) {
+  const requestUrl = new URL(url);
+  if (
+    requestUrl.pathname === '/health'
+    || requestUrl.pathname.startsWith('/api/')
+    || requestUrl.pathname.startsWith('/ws')
+    || requestUrl.pathname.startsWith('/shell')
+    || requestUrl.pathname.startsWith('/voice-stream')
+    || requestUrl.pathname.startsWith('/plugin-ws')
+  ) {
     return;
   }
 
@@ -41,21 +56,20 @@ self.addEventListener('fetch', event => {
   // Hashed assets (JS/CSS in /assets/) — cache-first since filenames change per build
   if (url.includes('/assets/')) {
     event.respondWith(
-      caches.match(event.request).then(cached => {
-        if (cached) return cached;
-        return fetch(event.request).then(response => {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
-          return response;
-        });
-      })
+      caches.open(CACHE_NAME).then(cache => cache.match(event.request).then(cached => {
+          if (cached) return cached;
+          return fetch(event.request).then(response => {
+            if (response.ok) cache.put(event.request, response.clone());
+            return response;
+          });
+        }))
     );
     return;
   }
 
   // Everything else — network-first
   event.respondWith(
-    fetch(event.request).catch(() => caches.match(event.request))
+    fetch(event.request).catch(() => caches.open(CACHE_NAME).then(cache => cache.match(event.request)))
   );
 });
 
@@ -67,7 +81,11 @@ self.addEventListener('activate', event => {
         cacheNames
           .filter(name => name !== CACHE_NAME && (name.startsWith(CACHE_PREFIX) || name.startsWith('claude-ui-')))
           .map(name => caches.delete(name))
-      )
+      ).then(() => self.clients.matchAll({ type: 'window', includeUncontrolled: true }))
+        .then(clients => Promise.all(clients.map(client => client.postMessage({
+          type: 'cloudcli:build-activated',
+          buildId: BUILD_ID,
+        }))))
     )
   );
   self.clients.claim();

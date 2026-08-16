@@ -39,19 +39,23 @@ export default function TokenUsageSummary({ usage, onClick }: TokenUsageSummaryP
   const outputTokens = readUsageNumber(usage?.outputTokens ?? breakdown?.output);
   const usedTokens = readUsageNumber(usage?.used) || inputTokens + outputTokens;
 
+  if (!usage || usedTokens <= 0) {
+    return null;
+  }
+
   return (
     <button
       type="button"
       onClick={onClick}
-      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/70 bg-background/70 px-2 text-xs text-muted-foreground shadow-sm transition-colors hover:border-primary/25 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 sm:gap-2 sm:px-2.5"
+      className="inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-sm text-muted-foreground transition-colors hover:bg-card hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:gap-2 sm:px-2.5"
       title={`${usedTokens.toLocaleString()} tokens used`}
       aria-label="Show token usage"
     >
-      <span className="grid h-5 w-5 place-items-center rounded-md bg-primary/10 text-primary">
+      <span className="grid h-5 w-5 place-items-center rounded-md bg-background text-muted-foreground ring-1 ring-border">
         <ActivityIcon className="h-3.5 w-3.5" />
       </span>
       <span className="font-medium text-foreground">{formatTokenCount(usedTokens)}</span>
-      <span className="hidden text-muted-foreground/70 sm:inline">tokens</span>
+      <span className="hidden text-muted-foreground sm:inline">tokens</span>
     </button>
   );
 }

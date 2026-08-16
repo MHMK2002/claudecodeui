@@ -55,6 +55,14 @@ export const userDb = {
     return { id: result.lastInsertRowid, username };
   },
 
+  /** Replaces credentials in place so Desktop LAN setup preserves all user-owned rows. */
+  updateCredentials(userId: number, username: string, passwordHash: string): void {
+    const db = getConnection();
+    db.prepare(
+      'UPDATE users SET username = ?, password_hash = ? WHERE id = ? AND is_active = 1'
+    ).run(username, passwordHash, userId);
+  },
+
   /**
    * Looks up an active user by username.
    * Returns the full row (including password hash) for auth verification.

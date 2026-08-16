@@ -23,12 +23,16 @@ interface PermissionRequestsBannerProps {
     decision: { allow?: boolean; message?: string; rememberEntry?: string | null; updatedInput?: unknown },
   ) => void;
   handleGrantToolPermission: (suggestion: { entry: string; toolName: string }) => { success: boolean };
+  deliveryDisabled?: boolean;
+  deliveryDisabledReason?: string | null;
 }
 
 export default function PermissionRequestsBanner({
   pendingPermissionRequests,
   handlePermissionDecision,
   handleGrantToolPermission,
+  deliveryDisabled = false,
+  deliveryDisabledReason = null,
 }: PermissionRequestsBannerProps) {
   // Filter out plan tool requests — they are handled inline by PlanDisplay
   const filteredRequests = pendingPermissionRequests.filter(
@@ -38,16 +42,19 @@ export default function PermissionRequestsBanner({
   if (!filteredRequests.length) {
     return null;
   }
+  const activeRequest = filteredRequests[0];
+  const waitingCount = filteredRequests.length - 1;
 
   return (
     <div className="mb-3 space-y-2">
-      {filteredRequests.map((request) => {
+      {[activeRequest].map((request) => {
         const CustomPanel = getPermissionPanel(request.toolName);
         if (CustomPanel) {
           return (
             <CustomPanel
               key={request.requestId}
               request={request}
+              deliveryDisabled={deliveryDisabled}
               onDecision={handlePermissionDecision}
             />
           );
@@ -100,6 +107,7 @@ export default function PermissionRequestsBanner({
             <ConfirmationActions>
               <ConfirmationAction
                 variant="outline"
+                disabled={deliveryDisabled}
                 onClick={() => handlePermissionDecision(request.requestId, { allow: false, message: 'User denied tool use' })}
               >
                 Deny
@@ -112,12 +120,13 @@ export default function PermissionRequestsBanner({
                   }
                   handlePermissionDecision(matchingRequestIds, { allow: true, rememberEntry: permissionEntry });
                 }}
-                disabled={!permissionEntry}
+                disabled={deliveryDisabled || !permissionEntry}
               >
                 {rememberLabel}
               </ConfirmationAction>
               <ConfirmationAction
-                variant="default"
+                variant="outline"
+                disabled={deliveryDisabled}
                 onClick={() => handlePermissionDecision(request.requestId, { allow: true })}
               >
                 Allow once
@@ -126,6 +135,16 @@ export default function PermissionRequestsBanner({
           </Confirmation>
         );
       })}
+      {deliveryDisabled && deliveryDisabledReason && (
+        <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-foreground" role="status">
+          {deliveryDisabledReason}
+        </p>
+      )}
+      {waitingCount > 0 && (
+        <p className="px-1 text-xs text-muted-foreground" role="status">
+          {waitingCount} more permission {waitingCount === 1 ? 'request is' : 'requests are'} waiting.
+        </p>
+      )}
     </div>
   );
 }

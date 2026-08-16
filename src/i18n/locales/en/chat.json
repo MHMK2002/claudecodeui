@@ -209,7 +209,8 @@
       "description": "Choose a project to open an interactive shell in that directory"
     },
     "status": {
-      "newSession": "New Session",
+      "connected": "Connected",
+      "disconnected": "Disconnected",
       "initializing": "Initializing...",
       "restarting": "Restarting..."
     },
@@ -218,15 +219,18 @@
       "disconnectTitle": "Disconnect from shell",
       "restart": "Restart",
       "restartTitle": "Restart Shell",
-      "connect": "Continue in Shell",
-      "connectTitle": "Connect to shell"
+      "connect": "Open terminal",
+      "connectTitle": "Open the local project terminal",
+      "reconnect": "Reconnect",
+      "retryProject": "Retry project lookup",
+      "retryFolder": "Retry folder",
+      "retryShell": "Retry shell"
     },
     "loading": "Loading terminal...",
     "connecting": "Connecting to shell...",
-    "startSession": "Start a new Claude session",
-    "resumeSession": "Resume session: {{displayName}}...",
+    "localReady": "Open a local terminal for {{projectName}}.",
+    "localConnecting": "Starting the system login shell for {{projectName}}.",
     "runCommand": "Run {{command}} in {{projectName}}",
-    "startCli": "Starting Claude CLI in {{projectName}}",
     "defaultCommand": "command"
   },
   "claudeStatus": {

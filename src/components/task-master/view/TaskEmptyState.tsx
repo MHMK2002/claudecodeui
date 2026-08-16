@@ -1,4 +1,4 @@
-import { FileText, Settings, Sparkles, Terminal } from 'lucide-react';
+import { FileText, Settings, Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '../../../lib/utils';
@@ -48,11 +48,12 @@ export default function TaskEmptyState({
           </div>
 
           <button
+            type="button"
             onClick={onOpenSetupModal}
-            className="mx-auto flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition-colors hover:bg-blue-700"
+            className="mx-auto flex min-h-11 items-center gap-2 rounded-lg bg-primary px-4 py-2 font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <Terminal className="h-4 w-4" />
-            {t('notConfigured.initializeButton')}
+            <Settings className="h-4 w-4" />
+            Set up Tasks
           </button>
         </div>
       </div>
@@ -76,15 +77,7 @@ export default function TaskEmptyState({
           <div className="mb-4 space-y-3">
             <div className="rounded-lg border border-blue-100 bg-white p-3 dark:border-blue-800/50 dark:bg-gray-800/60">
               <h4 className="mb-1 font-medium text-gray-900 dark:text-white">1. {t('gettingStarted.steps.createPRD.title')}</h4>
-              <p className="mb-3 text-sm text-gray-600 dark:text-gray-400">{t('gettingStarted.steps.createPRD.description')}</p>
-
-              <button
-                onClick={onCreatePrd}
-                className="inline-flex items-center gap-2 rounded bg-purple-100 px-2 py-1 text-xs text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-300 dark:hover:bg-purple-900/50"
-              >
-                <FileText className="h-3 w-3" />
-                {t('gettingStarted.steps.createPRD.addButton')}
-              </button>
+              <p className="text-sm text-gray-600 dark:text-gray-400">{t('gettingStarted.steps.createPRD.description')}</p>
 
               {existingPrds.length > 0 && (
                 <div className="mt-3 border-t border-gray-200 pt-3 dark:border-gray-700">
@@ -92,9 +85,10 @@ export default function TaskEmptyState({
                   <div className="flex flex-wrap gap-2">
                     {existingPrds.map((prd) => (
                       <button
+                        type="button"
                         key={prd.name}
                         onClick={() => onOpenPrd(prd)}
-                        className="inline-flex items-center gap-1 rounded bg-gray-100 px-2 py-1 text-xs text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                        className="inline-flex min-h-11 items-center gap-1 rounded bg-gray-100 px-3 py-2 text-xs text-gray-700 hover:bg-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
                       >
                         <FileText className="h-3 w-3" />
                         {prd.name}
@@ -123,15 +117,17 @@ export default function TaskEmptyState({
 
           <div className="flex flex-wrap gap-2">
             <button
+              type="button"
               onClick={onCreateTask}
-              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 font-medium text-white hover:bg-blue-700"
+              className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-primary px-4 py-2 font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <Sparkles className="h-4 w-4" />
-              Clarify a task
+              Create task
             </button>
             <button
+              type="button"
               onClick={onCreatePrd}
-              className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-4 py-2 font-medium text-white hover:bg-purple-700"
+              className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-border bg-background px-4 py-2 font-medium text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <FileText className="h-4 w-4" />
               {t('buttons.addPRD')}

@@ -41,6 +41,7 @@ type SidebarContentProps = {
   releaseInfo: ReleaseInfo | null;
   latestVersion: string | null;
   currentVersion: string;
+  desktopUpdaterState: DesktopUpdaterState | null;
   onShowVersionModal: () => void;
   onShowSettings: () => void;
   projectListProps: SidebarProjectListProps;
@@ -86,6 +87,7 @@ export default function SidebarContent({
   releaseInfo,
   latestVersion,
   currentVersion,
+  desktopUpdaterState,
   onShowVersionModal,
   onShowSettings,
   projectListProps,
@@ -252,6 +254,7 @@ export default function SidebarContent({
           releaseInfo={releaseInfo}
           latestVersion={latestVersion}
           currentVersion={currentVersion}
+          desktopUpdaterState={desktopUpdaterState}
           onShowVersionModal={onShowVersionModal}
           onShowSettings={onShowSettings}
           t={t}

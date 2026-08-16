@@ -1,12 +1,16 @@
-import { useTranslation } from 'react-i18next';
-
 export default function FileTreeLoadingState() {
-  const { t } = useTranslation();
-
   return (
-    <div className="flex h-full items-center justify-center">
-      <div className="text-sm text-muted-foreground">{t('fileTree.loading')}</div>
+    <div className="space-y-2 px-3 py-4" role="status" aria-label="Loading files">
+      <span className="sr-only">Loading files…</span>
+      {Array.from({ length: 6 }, (_, index) => (
+        <div key={index} className="flex h-9 items-center gap-3" aria-hidden="true">
+          <span className="h-5 w-5 rounded bg-muted motion-safe:animate-pulse" />
+          <span
+            className="h-4 rounded bg-muted motion-safe:animate-pulse"
+            style={{ width: `${72 - index * 5}%` }}
+          />
+        </div>
+      ))}
     </div>
   );
 }
-

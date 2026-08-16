@@ -4,31 +4,47 @@
  * actions to `useScheduledRuns`.
  */
 
-import { useCallback, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Plus } from 'lucide-react';
 
 import { cn } from '../../../lib/utils';
 import { useScheduledRuns } from '../../../contexts/ScheduledRunsContext';
 import { ScheduledRunCard } from './ScheduledRunCard';
-import { ScheduleEditorModal } from '../modals/ScheduleEditorModal';
 import type { ScheduledRun } from '../../../types/scheduledRuns';
+import { useTaskMaster } from '../../task-master/context/TaskMasterContext';
 
-export function ScheduledRunsTab() {
-  const { schedules, loadingList, error } = useScheduledRuns();
-  const [editorState, setEditorState] = useState<{ open: boolean; schedule: ScheduledRun | null }>({
-    open: false,
-    schedule: null,
-  });
+type ScheduledRunsTabProps = {
+  onCreate: () => void;
+  onEdit: (schedule: ScheduledRun) => void;
+  onOpenAgentSettings: () => void;
+};
 
-  const openCreate = useCallback(() => setEditorState({ open: true, schedule: null }), []);
-  const openEdit = useCallback(
-    (schedule: ScheduledRun) => setEditorState({ open: true, schedule }),
-    [],
-  );
-  const closeEditor = useCallback(
-    () => setEditorState({ open: false, schedule: null }),
-    [],
-  );
+export function ScheduledRunsTab({ onCreate, onEdit, onOpenAgentSettings }: ScheduledRunsTabProps) {
+  const { currentProject } = useTaskMaster();
+  const { schedules, loadingList, error, refresh, stageRemove, undoRemove } = useScheduledRuns();
+  const [pendingUndo, setPendingUndo] = useState<ScheduledRun | null>(null);
+  const undoNoticeTimerRef = useRef<number | null>(null);
+  const projectPath = currentProject?.fullPath || currentProject?.path;
+  const projectSchedules = schedules.filter((schedule) => (
+    schedule.projectId
+      ? schedule.projectId === currentProject?.projectId
+      : Boolean(projectPath && schedule.projectPath === projectPath)
+  ));
+
+  useEffect(() => () => {
+    if (undoNoticeTimerRef.current) window.clearTimeout(undoNoticeTimerRef.current);
+  }, []);
+
+  const handleDelete = (schedule: ScheduledRun) => {
+    const staged = stageRemove(schedule.id);
+    if (!staged) return;
+    if (undoNoticeTimerRef.current) window.clearTimeout(undoNoticeTimerRef.current);
+    setPendingUndo(staged);
+    undoNoticeTimerRef.current = window.setTimeout(() => {
+      setPendingUndo(null);
+      undoNoticeTimerRef.current = null;
+    }, 8_100);
+  };
 
   return (
     <div className="flex h-full flex-col">
@@ -36,47 +52,62 @@ export function ScheduledRunsTab() {
         <div>
           <h3 className="text-sm font-semibold text-foreground">Scheduled Agent Runs</h3>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Recurring AI jobs that run on a cron schedule.
+            Recurring local agent work for this project.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={openCreate}
-          className={cn(
-            'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium',
-            'bg-foreground text-background transition-opacity hover:opacity-90',
-          )}
-        >
-          <Plus className="h-3.5 w-3.5" />
-          New
-        </button>
+        {projectSchedules.length > 0 && (
+          <button
+            type="button"
+            onClick={onCreate}
+            className={cn(
+              'inline-flex min-h-11 items-center gap-1.5 rounded-md border border-border bg-background px-3 py-2 text-xs font-medium text-foreground',
+              'transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            )}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            New schedule
+          </button>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 pb-4">
-        {loadingList && schedules.length === 0 ? (
+        {pendingUndo && (
+          <div className="mb-3 rounded-lg border border-border bg-card p-3 text-xs text-foreground" role="status">
+            <p>“{pendingUndo.title}” will be deleted.</p>
+            <button
+              type="button"
+              onClick={() => {
+                if (undoRemove(pendingUndo.id)) setPendingUndo(null);
+              }}
+              className="mt-2 min-h-11 rounded-lg border border-border bg-background px-3 py-2 font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              Undo
+            </button>
+          </div>
+        )}
+        {loadingList && projectSchedules.length === 0 ? (
           <div className="py-12 text-center text-xs text-muted-foreground">Loading schedules…</div>
         ) : error ? (
-          <div className="py-12 text-center text-xs text-red-500">{error}</div>
-        ) : schedules.length === 0 ? (
-          <EmptyState onCreate={openCreate} />
+          <div className="py-12 text-center text-xs text-destructive" role="alert">
+            <p>{error}</p>
+            <button type="button" onClick={() => void refresh()} className="mt-3 min-h-11 rounded-lg bg-primary px-3 py-2 font-medium text-primary-foreground">Retry</button>
+          </div>
+        ) : projectSchedules.length === 0 ? (
+          <EmptyState onCreate={onCreate} />
         ) : (
           <div className="flex flex-col gap-2">
-            {schedules.map((schedule) => (
+            {projectSchedules.map((schedule) => (
               <ScheduledRunCard
                 key={schedule.id}
                 schedule={schedule}
-                onEdit={openEdit}
+                onEdit={onEdit}
+                onDelete={handleDelete}
+                onOpenAgentSettings={onOpenAgentSettings}
               />
             ))}
           </div>
         )}
       </div>
-
-      <ScheduleEditorModal
-        open={editorState.open}
-        editingSchedule={editorState.schedule}
-        onClose={closeEditor}
-      />
     </div>
   );
 }
@@ -94,14 +125,14 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
       </div>
       <p className="text-sm font-medium text-foreground">No schedules yet</p>
       <p className="mt-1 text-xs text-muted-foreground">
-        Schedule an agent to run on a recurring cron and notify you when it's done.
+        Schedule an agent to run at a recurring local time and notify you when it's done.
       </p>
       <button
         type="button"
         onClick={onCreate}
         className={cn(
-          'mt-4 inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium',
-          'bg-foreground text-background transition-opacity hover:opacity-90',
+          'mt-4 inline-flex min-h-11 items-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium',
+          'bg-primary text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         )}
       >
         <Plus className="h-3.5 w-3.5" />

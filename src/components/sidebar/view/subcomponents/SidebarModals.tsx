@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import ReactDOM from 'react-dom';
 import { AlertTriangle, EyeOff, Trash2 } from 'lucide-react';
 import type { TFunction } from 'i18next';
+
 import { Button } from '../../../../shared/view/ui';
 import Settings from '../../../settings/view/Settings';
 import VersionUpgradeModal from '../../../version-upgrade/view';
@@ -32,6 +33,10 @@ type SidebarModalsProps = {
   currentVersion: string;
   latestVersion: string | null;
   installMode: InstallMode;
+  isDesktopUpdater: boolean;
+  desktopUpdaterState: DesktopUpdaterState | null;
+  onCheckForUpdates: () => Promise<DesktopUpdaterState | null>;
+  onRestartAndInstall: () => Promise<DesktopUpdaterState>;
   t: TFunction;
 };
 
@@ -68,6 +73,10 @@ export default function SidebarModals({
   currentVersion,
   latestVersion,
   installMode,
+  isDesktopUpdater,
+  desktopUpdaterState,
+  onCheckForUpdates,
+  onRestartAndInstall,
   t,
 }: SidebarModalsProps) {
   // Settings expects project identity/path fields to be present for dropdown labels and local-scope MCP config.
@@ -215,6 +224,10 @@ export default function SidebarModals({
         currentVersion={currentVersion}
         latestVersion={latestVersion}
         installMode={installMode}
+        isDesktopUpdater={isDesktopUpdater}
+        desktopUpdaterState={desktopUpdaterState}
+        onCheckForUpdates={onCheckForUpdates}
+        onRestartAndInstall={onRestartAndInstall}
       />
     </>
   );

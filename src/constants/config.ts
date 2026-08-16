@@ -1,8 +1,18 @@
-/**
- * Environment Flag: Is Platform
- * Indicates if the app is running in Platform mode (hosted) or OSS mode (self-hosted)
- */
-export const IS_PLATFORM = import.meta.env?.VITE_IS_PLATFORM === 'true';
+import manifest from '../../shared/product-config.json';
+
+export type ProductFeature = keyof typeof manifest.features;
+
+/** Shared product identity and default feature availability. */
+export const PRODUCT_CONFIG = Object.freeze({
+  ...manifest,
+  features: Object.freeze({ ...manifest.features }),
+});
+
+export const PRODUCT_FEATURES = PRODUCT_CONFIG.features;
+export const isProductFeatureEnabled = (feature: ProductFeature): boolean => PRODUCT_FEATURES[feature] === true;
+
+/** Hosted platform behavior requires both the central feature and its explicit runtime mode. */
+export const IS_PLATFORM = PRODUCT_FEATURES.hosted && import.meta.env?.VITE_IS_PLATFORM === 'true';
 
 /**
  * For empty shell instances where no project is provided,

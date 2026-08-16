@@ -68,9 +68,7 @@
     "save": "Guardar",
     "delete": "Eliminar",
     "rename": "Renombrar",
-    "joinCommunity": "Unirse a la comunidad",
-    "reportIssue": "Informar de un problema",
-    "starOnGithub": "Dar estrella en GitHub"
+    "reportIssue": "Informar de un problema"
   },
   "branding": {
     "openSource": "Código abierto"

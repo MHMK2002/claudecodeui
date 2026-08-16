@@ -1,6 +1,17 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { Copy, Download, FileText, FolderPlus, Pencil, RefreshCw, Trash2, type LucideIcon } from 'lucide-react';
+
 import { cn } from '../../../lib/utils';
 
 type FileContextItem = {
@@ -28,6 +39,13 @@ type ContextMenuAction = {
 const CONTEXT_MENU_WIDTH = 200;
 const CONTEXT_MENU_HEIGHT = 300;
 const VIEWPORT_PADDING = 10;
+
+// eslint-disable-next-line react-refresh/only-export-components -- Focused accessibility tests exercise this predicate directly.
+export const isContextMenuKeyboardShortcut = (key: string, shiftKey: boolean) =>
+  key === 'ContextMenu' || (key === 'F10' && shiftKey);
+
+// eslint-disable-next-line react-refresh/only-export-components -- Focus behavior is covered as a pure keyboard contract.
+export const isContextMenuFocusExitKey = (key: string) => key === 'Tab';
 
 function calculateViewportSafePosition(clientX: number, clientY: number) {
   // Keep the context menu inside the visible viewport.
@@ -72,23 +90,59 @@ export default function FileContextMenu({
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const menuRef = useRef<HTMLDivElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
 
   const closeContextMenu = useCallback(() => {
     setIsMenuOpen(false);
   }, []);
 
+  const restoreTriggerFocus = useCallback(() => {
+    const returnTarget = returnFocusRef.current;
+    if (returnTarget?.isConnected) {
+      returnTarget.focus({ preventScroll: true });
+    }
+  }, []);
+
+  const closeContextMenuAndRestoreFocus = useCallback(() => {
+    closeContextMenu();
+    restoreTriggerFocus();
+  }, [closeContextMenu, restoreTriggerFocus]);
+
   const openContextMenuAtCursor = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     event.preventDefault();
     event.stopPropagation();
+
+    const eventTarget = event.target as HTMLElement;
+    const trigger = eventTarget.closest<HTMLElement>('[role="treeitem"]') ?? eventTarget;
+    returnFocusRef.current = trigger;
+    trigger.focus({ preventScroll: true });
 
     setMenuPosition(calculateViewportSafePosition(event.clientX, event.clientY));
     setIsMenuOpen(true);
   }, []);
 
+  const openContextMenuFromKeyboard = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!isContextMenuKeyboardShortcut(event.key, event.shiftKey)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const eventTarget = event.target as HTMLElement;
+    const trigger = eventTarget.closest<HTMLElement>('[role="treeitem"]') ?? eventTarget;
+    const triggerRect = trigger.getBoundingClientRect();
+    returnFocusRef.current = trigger;
+
+    setMenuPosition(calculateViewportSafePosition(triggerRect.left + 24, triggerRect.bottom));
+    setIsMenuOpen(true);
+  }, []);
+
   const runMenuActionAndClose = useCallback((action?: () => void) => {
     closeContextMenu();
+    restoreTriggerFocus();
     action?.();
-  }, [closeContextMenu]);
+  }, [closeContextMenu, restoreTriggerFocus]);
 
   const menuActions = useMemo<ContextMenuAction[]>(() => {
     if (item?.type === 'file') {
@@ -203,26 +257,40 @@ export default function FileContextMenu({
 
     const handleEscapeKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        closeContextMenu();
+        event.preventDefault();
+        // Capture Escape before document-level workspace shortcuts (notably
+        // the code editor's global close handler) can act on the same key.
+        event.stopPropagation();
+        closeContextMenuAndRestoreFocus();
       }
     };
 
     document.addEventListener('mousedown', handleOutsideMouseDown);
-    document.addEventListener('keydown', handleEscapeKeyDown);
+    document.addEventListener('keydown', handleEscapeKeyDown, true);
 
     return () => {
       document.removeEventListener('mousedown', handleOutsideMouseDown);
-      document.removeEventListener('keydown', handleEscapeKeyDown);
+      document.removeEventListener('keydown', handleEscapeKeyDown, true);
     };
-  }, [closeContextMenu, isMenuOpen]);
+  }, [closeContextMenu, closeContextMenuAndRestoreFocus, isMenuOpen]);
 
   useEffect(() => {
     if (!isMenuOpen) {
       return;
     }
 
+    const firstMenuItem = menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])');
+    firstMenuItem?.focus({ preventScroll: true });
+
     // Arrow key support keeps the menu accessible without a mouse.
     const handleKeyboardMenuNavigation = (event: KeyboardEvent) => {
+      if (isContextMenuFocusExitKey(event.key)) {
+        // Preserve the browser's native Tab destination. Unlike Escape, focus
+        // intentionally continues forward/backward instead of returning.
+        closeContextMenu();
+        return;
+      }
+
       const menuItems = menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])');
       if (!menuItems || menuItems.length === 0) {
         return;
@@ -244,6 +312,12 @@ export default function FileContextMenu({
           event.preventDefault();
           activeElement.click();
         }
+      } else if (event.key === 'Home') {
+        event.preventDefault();
+        menuItems[0]?.focus();
+      } else if (event.key === 'End') {
+        event.preventDefault();
+        menuItems[menuItems.length - 1]?.focus();
       }
     };
 
@@ -252,11 +326,15 @@ export default function FileContextMenu({
     return () => {
       document.removeEventListener('keydown', handleKeyboardMenuNavigation);
     };
-  }, [isMenuOpen]);
+  }, [closeContextMenu, isMenuOpen]);
 
   return (
     <>
-      <div onContextMenu={openContextMenuAtCursor} className={cn('contents', className)}>
+      <div
+        onContextMenu={openContextMenuAtCursor}
+        onKeyDown={openContextMenuFromKeyboard}
+        className={cn('contents', className)}
+      >
         {children}
       </div>
 
@@ -265,6 +343,11 @@ export default function FileContextMenu({
           ref={menuRef}
           role="menu"
           aria-label={t('fileTree.context.menuLabel', 'File context menu')}
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              closeContextMenu();
+            }
+          }}
           style={{ position: 'fixed', left: menuPosition.x, top: menuPosition.y, zIndex: 9999 }}
           className={cn(
             'min-w-[180px] py-1 px-1',
@@ -279,17 +362,17 @@ export default function FileContextMenu({
               <span className="ml-2 text-sm text-muted-foreground">{t('fileTree.context.loading', 'Loading...')}</span>
             </div>
           ) : (
-            menuActions.map((action) => (
+            menuActions.map((action, actionIndex) => (
               <Fragment key={action.key}>
                 {action.showDividerBefore && <div className="mx-2 my-1 h-px bg-border" />}
                 <button
                   role="menuitem"
-                  tabIndex={action.isDisabled ? -1 : 0}
+                  tabIndex={actionIndex === 0 && !action.isDisabled ? 0 : -1}
                   disabled={isLoading || action.isDisabled}
                   onClick={() => runMenuActionAndClose(action.onSelect)}
                   className={cn(
-                    'w-full flex items-center gap-3 px-3 py-2 text-sm text-left rounded-md transition-colors',
-                    'focus:outline-none focus:bg-accent',
+                    'flex min-h-11 w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm transition-colors',
+                    'focus-visible:outline-none focus-visible:bg-accent focus-visible:ring-2 focus-visible:ring-ring',
                     action.isDisabled
                       ? 'opacity-50 cursor-not-allowed'
                       : action.isDanger

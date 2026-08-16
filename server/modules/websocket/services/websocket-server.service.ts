@@ -3,6 +3,7 @@ import type { Server as HttpServer } from 'node:http';
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from 'ws';
 
 import { handleChatConnection } from '@/modules/websocket/services/chat-websocket.service.js';
+import { handleCommandTerminalConnection } from '@/modules/websocket/services/command-terminal-websocket.service.js';
 import { verifyWebSocketClient } from '@/modules/websocket/services/websocket-auth.service.js';
 import { handlePluginWsProxy } from '@/modules/websocket/services/plugin-websocket-proxy.service.js';
 import { handleShellConnection } from '@/modules/websocket/services/shell-websocket.service.js';
@@ -14,6 +15,7 @@ type WebSocketServerDependencies = {
   verifyClient: Parameters<typeof verifyWebSocketClient>[1];
   chat: Parameters<typeof handleChatConnection>[2];
   shell: Parameters<typeof handleShellConnection>[1];
+  commandTerminal: Parameters<typeof handleCommandTerminalConnection>[1];
   getPluginPort: Parameters<typeof handlePluginWsProxy>[2];
 };
 
@@ -100,7 +102,18 @@ export function createWebSocketServer(
     const pathname = new URL(url, 'http://localhost').pathname;
 
     if (pathname === '/shell') {
-      handleShellConnection(ws, dependencies.shell);
+      const shellOwnerKey = String(
+        incomingRequest.user?.userId
+        ?? incomingRequest.user?.id
+        ?? incomingRequest.user?.username
+        ?? 'local-owner',
+      );
+      handleShellConnection(ws, dependencies.shell, shellOwnerKey);
+      return;
+    }
+
+    if (pathname === '/command-terminal') {
+      handleCommandTerminalConnection(ws, dependencies.commandTerminal);
       return;
     }
 

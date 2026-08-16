@@ -234,6 +234,46 @@ export type ResolvedProviderSelection = {
 };
 
 // ---------------------------
+//----------------- PROVIDER TEXT COMPLETION TYPES ------------
+/**
+ * Provider-neutral input for a bounded, non-interactive text completion.
+ *
+ * The Providers module validates `selection` for `userId`, runs only `prompt`
+ * in an isolated read-only runtime, and binds `signal` to the provider abort
+ * capability. Consumers must not place filesystem paths or credentials in this
+ * object. Git uses this boundary for staged commit-message suggestions.
+ */
+export type ProviderTextCompletionInput = {
+  userId: number;
+  selection: ResolvedProviderSelection;
+  prompt: string;
+  signal?: AbortSignal;
+};
+
+/**
+ * Successful provider-neutral text completion.
+ *
+ * `selection` is the exact server-validated provider/profile/model triple used
+ * by the runtime; callers return it to clients so execution is never mistaken
+ * for an implicit provider fallback.
+ */
+export type ProviderTextCompletionResult = {
+  text: string;
+  selection: ResolvedProviderSelection;
+};
+
+/**
+ * Narrow Providers application-service contract consumed by the Git module.
+ *
+ * Implementations must isolate the provider cwd, prevent project mutation,
+ * avoid creating application Chat sessions, support cancellation and timeout,
+ * and reject terminal runs that do not contain assistant text.
+ */
+export type ProviderTextCompletionService = {
+  complete(input: ProviderTextCompletionInput): Promise<ProviderTextCompletionResult>;
+};
+
+// ---------------------------
 //----------------- PROVIDER ACTIVE MODEL TYPES ------------
 /**
  * Provider-neutral result for the model that is actively driving a session or
@@ -1183,8 +1223,10 @@ export type FileTreeServices = {
     requestedFileCount: number;
     files: FileTreeUploadedFile[];
   }): Promise<{
-    success: true;
+    success: boolean;
+    status: 'complete' | 'partial';
     files: Array<{ name: string; path: string; size: number; mimeType: string }>;
+    failures: Array<{ name: string; code: string; message: string }>;
     uploadedCount: number;
     requestedFileCount: number;
     targetPath: string;
@@ -1307,6 +1349,7 @@ export type CliEnvironment = Record<string, string | undefined>;
  * injects only the fields the service needs.
  */
 export type CliPackageMetadata = {
+  productName: string;
   version: string;
   homepage?: string;
   bugsUrl?: string;
@@ -1333,3 +1376,132 @@ export type CliApplication = {
 export type SandboxCommandService = {
   execute(argumentsList: string[]): Promise<number>;
 };
+
+// ---------------------------
+//----------------- SCHEDULED RUN CONTRACTS ------------
+/**
+ * Terminal state of one scheduled execution.
+ *
+ * `missed` is reserved for a due time that elapsed while Desktop/local server
+ * was inactive; it is recorded for visibility and is never replayed. `skipped`
+ * means the server was active but a recoverable prerequisite such as project
+ * or provider availability prevented execution.
+ */
+export type ScheduledRunHistoryStatus = 'running' | 'succeeded' | 'failed' | 'skipped' | 'missed';
+
+/** Identifies whether a history row came from the scheduler tick or Run now. */
+export type ScheduledRunTrigger = 'tick' | 'manual';
+
+/**
+ * Persisted recurring-run record shared by the database repository,
+ * Schedules application service, and scheduler.
+ *
+ * `projectId` is nullable only for pre-migration rows. New mutations always
+ * resolve a canonical registered project id and path. Profile identity is
+ * required for Claude/Codex and null for connection-backed providers.
+ */
+export type ScheduledRunRecord = {
+  id: number;
+  userId: number;
+  title: string;
+  projectId: string | null;
+  projectPath: string;
+  provider: LLMProvider;
+  providerProfileId: number | null;
+  model: string;
+  prompt: string;
+  cronExpression: string;
+  timezone: string;
+  notifyOnSuccess: boolean;
+  notifyOnFailure: boolean;
+  notifyChannels: string[] | null;
+  isEnabled: boolean;
+  lastRunAt: string | null;
+  nextRunAt: string;
+  inFlightRunId: number | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** Persisted audit row for one scheduled execution attempt or missed due time. */
+export type ScheduledRunHistoryRecord = {
+  id: number;
+  scheduleId: number;
+  userId: number;
+  status: ScheduledRunHistoryStatus;
+  trigger: ScheduledRunTrigger;
+  startedAt: string;
+  finishedAt: string | null;
+  durationMs: number | null;
+  outputSummary: string | null;
+  errorMessage: string | null;
+  notificationDispatched: boolean;
+};
+
+/**
+ * Fully normalized database-create input.
+ *
+ * Only the Schedules application service constructs this after resolving the
+ * registered project, validating provider/profile/model selection, and
+ * calculating the first future execution.
+ */
+export type ScheduledRunPersistenceCreateInput = {
+  title: string;
+  projectId: string;
+  projectPath: string;
+  provider: LLMProvider;
+  providerProfileId: number | null;
+  model: string;
+  prompt: string;
+  cronExpression: string;
+  timezone: string;
+  notifyOnSuccess: boolean;
+  notifyOnFailure: boolean;
+  notifyChannels?: string[] | null;
+  isEnabled: boolean;
+  nextRunAt: string;
+};
+
+/** Partial persistence update after application-service validation. */
+export type ScheduledRunPersistenceUpdateInput = Partial<ScheduledRunPersistenceCreateInput>;
+
+/** Result of the repository's atomic duplicate-execution claim. */
+export type ScheduledRunClaim = {
+  run: ScheduledRunHistoryRecord;
+  schedule: ScheduledRunRecord;
+};
+
+/**
+ * Complete create/update fields accepted by the Schedules application service.
+ *
+ * Routes produce this only after validating transport shapes. `projectId`
+ * rather than a client-supplied path preserves the canonical local-project
+ * boundary.
+ */
+export type ScheduledRunMutationInput = {
+  title: string;
+  projectId: string;
+  provider: LLMProvider;
+  providerProfileId: number | null;
+  model: string;
+  prompt: string;
+  cronExpression: string;
+  timezone: string;
+  notifyOnSuccess: boolean;
+  notifyOnFailure: boolean;
+  notifyChannels: string[] | null;
+  isEnabled: boolean;
+};
+
+/** Transport-validated partial schedule mutation used by PATCH. */
+export type ScheduledRunMutationPatch = Partial<ScheduledRunMutationInput>;
+
+//----------------- RUNTIME BOUNDARY ------------
+/**
+ * Explicit server execution boundary shared by Auth and WebSocket modules.
+ * Desktop local is passwordless/loopback-only; every other mode retains an
+ * explicit remote-capable authentication boundary.
+ */
+export type RuntimeMode = 'desktop-local' | 'desktop-lan' | 'standalone-web' | 'platform';
+
+// ---------------------------

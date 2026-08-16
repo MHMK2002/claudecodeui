@@ -210,7 +210,7 @@ export default function CodeEditorMediaPreview({
           href={currentUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
+          className="flex min-h-11 min-w-11 items-center justify-center rounded-md text-gray-600 hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
           aria-label={labels.openInNewTab}
           title={labels.openInNewTab}
         >
@@ -223,7 +223,7 @@ export default function CodeEditorMediaPreview({
         <button
           type="button"
           onClick={onToggleFullscreen}
-          className="flex items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
+          className="flex min-h-11 min-w-11 items-center justify-center rounded-md text-gray-600 hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
           aria-label={isFullscreen ? labels.exitFullscreen : labels.fullscreen}
           title={isFullscreen ? labels.exitFullscreen : labels.fullscreen}
         >
@@ -241,7 +241,7 @@ export default function CodeEditorMediaPreview({
       <button
         type="button"
         onClick={onClose}
-        className="flex items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
+        className="flex min-h-11 min-w-11 items-center justify-center rounded-md text-gray-600 hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
         aria-label={labels.close}
         title={labels.close}
       >

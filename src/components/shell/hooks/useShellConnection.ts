@@ -3,25 +3,38 @@ import type { MutableRefObject } from 'react';
 import type { FitAddon } from '@xterm/addon-fit';
 import type { Terminal } from '@xterm/xterm';
 
-import type { Project, ProjectSession } from '../../../types/app';
-import { TERMINAL_INIT_DELAY_MS } from '../constants/constants';
-import { getShellWebSocketUrl, parseShellMessage, sendSocketMessage } from '../utils/socket';
+import type { Project } from '../../../types/app';
+import type { RuntimeMode } from '../../auth/types';
+import {
+  AUTH_LOCAL_SESSION_UNAVAILABLE_EVENT,
+  renewDesktopLocalSession,
+} from '../../../utils/api';
+import type {
+  ShellConnectionError,
+  ShellIncomingMessage,
+  ShellTerminalMode,
+} from '../types/types';
+import {
+  createShellInitMessage,
+  getShellWebSocketUrl,
+  parseShellMessage,
+  sendSocketMessage,
+} from '../utils/socket';
 
 const ANSI_ESCAPE_REGEX =
   /(?:\u001B\[[0-?]*[ -/]*[@-~]|\u009B[0-?]*[ -/]*[@-~]|\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)|\u009D[^\u0007\u009C]*(?:\u0007|\u009C)|\u001B[PX^_][^\u001B]*\u001B\\|[\u0090\u0098\u009E\u009F][^\u009C]*\u009C|\u001B[@-Z\\-_])/g;
-const PROCESS_EXIT_REGEX = /Process exited with code (\d+)/;
+const PROCESS_EXIT_REGEX = /Process exited with code (-?\d+)/;
 
 type UseShellConnectionOptions = {
   wsRef: MutableRefObject<WebSocket | null>;
   terminalRef: MutableRefObject<Terminal | null>;
   fitAddonRef: MutableRefObject<FitAddon | null>;
   selectedProjectRef: MutableRefObject<Project | null | undefined>;
-  selectedSessionRef: MutableRefObject<ProjectSession | null | undefined>;
-  initialCommandRef: MutableRefObject<string | null | undefined>;
-  isPlainShellRef: MutableRefObject<boolean>;
+  commandRef: MutableRefObject<string | null | undefined>;
   onProcessCompleteRef: MutableRefObject<((exitCode: number) => void) | null | undefined>;
   isInitialized: boolean;
   autoConnect: boolean;
+  runtimeMode: RuntimeMode | null;
   closeSocket: () => void;
   clearTerminalScreen: () => void;
   onOutputRef?: MutableRefObject<(() => void) | null>;
@@ -30,211 +43,267 @@ type UseShellConnectionOptions = {
 type UseShellConnectionResult = {
   isConnected: boolean;
   isConnecting: boolean;
-  closeSocket: () => void;
+  connectionError: ShellConnectionError | null;
   connectToShell: (options?: { forceRestart?: boolean }) => void;
   disconnectFromShell: (options?: { suppressAutoConnect?: boolean }) => void;
 };
+
+function normalizeConnectionError(message: Extract<ShellIncomingMessage, { type: 'error' }>): ShellConnectionError {
+  const knownCodes = new Set<ShellConnectionError['code']>([
+    'INVALID_SHELL_REQUEST',
+    'PROJECT_MISSING',
+    'CWD_UNAVAILABLE',
+    'SHELL_UNAVAILABLE',
+    'SOCKET_FAILURE',
+    'INVALID_COMMAND_TERMINAL_REQUEST',
+  ]);
+  const code = knownCodes.has(message.code as ShellConnectionError['code'])
+    ? message.code as ShellConnectionError['code']
+    : 'UNKNOWN';
+  const recovery = message.recovery === 'choose-project' || message.recovery === 'restart'
+    ? message.recovery
+    : 'retry';
+  return {
+    code,
+    message: typeof message.message === 'string' && message.message.trim()
+      ? message.message
+      : 'The local terminal could not start.',
+    recovery,
+  };
+}
 
 export function useShellConnection({
   wsRef,
   terminalRef,
   fitAddonRef,
   selectedProjectRef,
-  selectedSessionRef,
-  initialCommandRef,
-  isPlainShellRef,
+  commandRef,
   onProcessCompleteRef,
   isInitialized,
   autoConnect,
+  runtimeMode,
   closeSocket,
   clearTerminalScreen,
   onOutputRef,
 }: UseShellConnectionOptions): UseShellConnectionResult {
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
+  const [connectionError, setConnectionError] = useState<ShellConnectionError | null>(null);
   const connectingRef = useRef(false);
   const forceRestartOnInitRef = useRef(false);
   const suppressAutoConnectRef = useRef(false);
+  const intentionalCloseRef = useRef(false);
+  const activeModeRef = useRef<ShellTerminalMode>('interactive-terminal');
 
-  const handleProcessCompletion = useCallback(
-    (output: string) => {
-      if (!isPlainShellRef.current || !onProcessCompleteRef.current) {
-        return;
-      }
+  const handleProcessCompletion = useCallback((output: string) => {
+    if (!commandRef.current || !onProcessCompleteRef.current) return;
+    const match = output.replace(ANSI_ESCAPE_REGEX, '').match(PROCESS_EXIT_REGEX);
+    if (!match) return;
+    const exitCode = Number.parseInt(match[1], 10);
+    if (Number.isInteger(exitCode)) onProcessCompleteRef.current(exitCode);
+  }, [commandRef, onProcessCompleteRef]);
 
-      const sanitizedOutput = output.replace(ANSI_ESCAPE_REGEX, '');
-      const cleanOutput = sanitizedOutput;
-      if (cleanOutput.includes('Process exited with code 0')) {
-        onProcessCompleteRef.current(0);
-        return;
-      }
-
-      const match = cleanOutput.match(PROCESS_EXIT_REGEX);
-      if (!match) {
-        return;
-      }
-
-      const exitCode = Number.parseInt(match[1], 10);
-      if (!Number.isNaN(exitCode) && exitCode !== 0) {
-        onProcessCompleteRef.current(exitCode);
-      }
-    },
-    [isPlainShellRef, onProcessCompleteRef],
-  );
-
-  const handleSocketMessage = useCallback(
-    (rawPayload: string) => {
-      const message = parseShellMessage(rawPayload);
-      if (!message) {
-        console.error('[Shell] Error handling WebSocket message:', rawPayload);
-        return;
-      }
-
-      if (message.type === 'output') {
-        const output = typeof message.data === 'string' ? message.data : '';
-        handleProcessCompletion(output);
-        terminalRef.current?.write(output);
-        onOutputRef?.current?.();
-        return;
-      }
-
-    },
-    [handleProcessCompletion, onOutputRef, terminalRef],
-  );
-
-  const connectWebSocket = useCallback(
-    (isConnectionLocked = false) => {
-      if ((connectingRef.current && !isConnectionLocked) || isConnecting || isConnected) {
-        return;
-      }
-
-      try {
-        const wsUrl = getShellWebSocketUrl();
-        if (!wsUrl) {
-          connectingRef.current = false;
-          setIsConnecting(false);
-          return;
-        }
-
-        connectingRef.current = true;
-
-        const socket = new WebSocket(wsUrl);
-        wsRef.current = socket;
-
-        socket.onopen = () => {
-          setIsConnected(true);
-          setIsConnecting(false);
-          connectingRef.current = false;
-
-          window.setTimeout(() => {
-            const currentTerminal = terminalRef.current;
-            const currentFitAddon = fitAddonRef.current;
-            const currentProject = selectedProjectRef.current;
-            if (!currentTerminal || !currentFitAddon || !currentProject) {
-              return;
-            }
-
-            currentFitAddon.fit();
-            const forceRestart = forceRestartOnInitRef.current;
-            forceRestartOnInitRef.current = false;
-
-            sendSocketMessage(socket, {
-              type: 'init',
-              projectPath: currentProject.fullPath || currentProject.path || '',
-              sessionId: isPlainShellRef.current ? null : selectedSessionRef.current?.id || null,
-              hasSession: isPlainShellRef.current ? false : Boolean(selectedSessionRef.current),
-              provider: isPlainShellRef.current ? 'plain-shell' : (selectedSessionRef.current?.__provider || localStorage.getItem('selected-provider') || 'claude'),
-              cols: currentTerminal.cols,
-              rows: currentTerminal.rows,
-              initialCommand: initialCommandRef.current,
-              isPlainShell: isPlainShellRef.current,
-              forceRestart,
-            });
-          }, TERMINAL_INIT_DELAY_MS);
-        };
-
-        socket.onmessage = (event) => {
-          const rawPayload = typeof event.data === 'string' ? event.data : String(event.data ?? '');
-          handleSocketMessage(rawPayload);
-        };
-
-        socket.onclose = () => {
-          setIsConnected(false);
-          setIsConnecting(false);
-          connectingRef.current = false;
-          clearTerminalScreen();
-        };
-
-        socket.onerror = () => {
-          setIsConnected(false);
-          setIsConnecting(false);
-          connectingRef.current = false;
-        };
-      } catch {
-        setIsConnected(false);
-        setIsConnecting(false);
-        connectingRef.current = false;
-        forceRestartOnInitRef.current = false;
-      }
-    },
-    [
-      clearTerminalScreen,
-      fitAddonRef,
-      handleSocketMessage,
-      initialCommandRef,
-      isConnected,
-      isConnecting,
-      isPlainShellRef,
-      selectedProjectRef,
-      selectedSessionRef,
-      terminalRef,
-      wsRef,
-    ],
-  );
-
-  const connectToShell = useCallback((options?: { forceRestart?: boolean }) => {
-    if (!isInitialized || isConnected || isConnecting || connectingRef.current) {
+  const handleSocketMessage = useCallback((rawPayload: string) => {
+    const message = parseShellMessage(rawPayload);
+    if (!message) {
+      setConnectionError({
+        code: 'SOCKET_FAILURE',
+        message: 'The terminal returned an unreadable response.',
+        recovery: 'retry',
+      });
       return;
     }
 
+    if (message.type === 'output') {
+      handleProcessCompletion(message.data);
+      terminalRef.current?.write(message.data);
+      onOutputRef?.current?.();
+      return;
+    }
+
+    if (message.type === 'ready') {
+      setConnectionError(null);
+      setIsConnected(true);
+      setIsConnecting(false);
+      connectingRef.current = false;
+      return;
+    }
+
+    if (message.type === 'error') {
+      setConnectionError(normalizeConnectionError(message));
+      setIsConnected(false);
+      setIsConnecting(false);
+      connectingRef.current = false;
+      return;
+    }
+
+    if (message.type === 'exit') {
+      onProcessCompleteRef.current?.(message.exitCode);
+      setIsConnected(false);
+      setConnectionError({
+        code: 'SHELL_UNAVAILABLE',
+        message: `The terminal exited with code ${message.exitCode}.`,
+        recovery: 'restart',
+      });
+      return;
+    }
+
+    if (
+      message.type === 'auth_url'
+      && activeModeRef.current === 'command-terminal'
+      && message.autoOpen
+      && message.url
+    ) {
+      window.open(message.url, '_blank', 'noopener,noreferrer');
+    }
+  }, [handleProcessCompletion, onOutputRef, onProcessCompleteRef, terminalRef]);
+
+  const connectWebSocket = useCallback(async (connectionLockHeld = false) => {
+    if ((connectingRef.current && !connectionLockHeld) || isConnecting || isConnected) return;
+
+    const currentProject = selectedProjectRef.current;
+    const command = commandRef.current?.trim() || '';
+    const mode: ShellTerminalMode = command ? 'command-terminal' : 'interactive-terminal';
+    activeModeRef.current = mode;
+    if (!command && !currentProject?.projectId) {
+      connectingRef.current = false;
+      setIsConnecting(false);
+      setConnectionError({
+        code: 'PROJECT_MISSING',
+        message: 'Choose a registered project before opening Shell.',
+        recovery: 'choose-project',
+      });
+      return;
+    }
+
+    try {
+      connectingRef.current = true;
+      intentionalCloseRef.current = false;
+      setConnectionError(null);
+
+      if (runtimeMode === 'desktop-local') {
+        const renewed = await renewDesktopLocalSession();
+        if (renewed === false) {
+          connectingRef.current = false;
+          setIsConnecting(false);
+          window.dispatchEvent(new Event(AUTH_LOCAL_SESSION_UNAVAILABLE_EVENT));
+          return;
+        }
+        if (!connectingRef.current) return;
+      }
+
+      const socket = new WebSocket(getShellWebSocketUrl(mode));
+      wsRef.current = socket;
+
+      socket.onopen = () => {
+        const terminal = terminalRef.current;
+        const fitAddon = fitAddonRef.current;
+        const latestProject = selectedProjectRef.current;
+        if (!terminal || !fitAddon) return;
+        fitAddon.fit();
+
+        if (mode === 'command-terminal') {
+          sendSocketMessage(socket, createShellInitMessage({
+            mode,
+            command,
+            cols: terminal.cols,
+            rows: terminal.rows,
+          }));
+          return;
+        }
+
+        if (!latestProject?.projectId) {
+          socket.close();
+          return;
+        }
+        sendSocketMessage(socket, createShellInitMessage({
+          mode,
+          projectId: latestProject.projectId,
+          cols: terminal.cols,
+          rows: terminal.rows,
+          forceRestart: forceRestartOnInitRef.current || undefined,
+        }));
+        forceRestartOnInitRef.current = false;
+      };
+
+      socket.onmessage = (event) => {
+        handleSocketMessage(typeof event.data === 'string' ? event.data : String(event.data ?? ''));
+      };
+
+      socket.onclose = () => {
+        const isCurrent = wsRef.current === socket;
+        if (isCurrent) wsRef.current = null;
+        setIsConnected(false);
+        setIsConnecting(false);
+        connectingRef.current = false;
+        if (isCurrent && !intentionalCloseRef.current) {
+          setConnectionError((current) => current ?? {
+            code: 'SOCKET_FAILURE',
+            message: 'The terminal connection closed unexpectedly.',
+            recovery: 'retry',
+          });
+        }
+      };
+
+      socket.onerror = () => {
+        setIsConnected(false);
+        setIsConnecting(false);
+        connectingRef.current = false;
+        setConnectionError({
+          code: 'SOCKET_FAILURE',
+          message: 'The terminal socket could not connect.',
+          recovery: 'retry',
+        });
+      };
+    } catch {
+      setIsConnected(false);
+      setIsConnecting(false);
+      connectingRef.current = false;
+      setConnectionError({
+        code: 'SOCKET_FAILURE',
+        message: 'The terminal socket could not connect.',
+        recovery: 'retry',
+      });
+    }
+  }, [commandRef, fitAddonRef, handleSocketMessage, isConnected, isConnecting, runtimeMode, selectedProjectRef, terminalRef, wsRef]);
+
+  const connectToShell = useCallback((options?: { forceRestart?: boolean }) => {
+    if (!isInitialized || isConnected || isConnecting || connectingRef.current) return;
     forceRestartOnInitRef.current = Boolean(options?.forceRestart);
     suppressAutoConnectRef.current = false;
     connectingRef.current = true;
     setIsConnecting(true);
-    connectWebSocket(true);
+    void connectWebSocket(true);
   }, [connectWebSocket, isConnected, isConnecting, isInitialized]);
 
   const disconnectFromShell = useCallback((options?: { suppressAutoConnect?: boolean }) => {
-    if (options?.suppressAutoConnect) {
-      suppressAutoConnectRef.current = true;
-    }
-
+    if (options?.suppressAutoConnect) suppressAutoConnectRef.current = true;
+    intentionalCloseRef.current = true;
     closeSocket();
     clearTerminalScreen();
     setIsConnected(false);
     setIsConnecting(false);
+    setConnectionError(null);
     connectingRef.current = false;
     forceRestartOnInitRef.current = false;
   }, [clearTerminalScreen, closeSocket]);
 
   useEffect(() => {
     if (
-      !autoConnect ||
-      suppressAutoConnectRef.current ||
-      !isInitialized ||
-      isConnecting ||
-      isConnected
-    ) {
-      return;
-    }
-
+      !autoConnect
+      || suppressAutoConnectRef.current
+      || !isInitialized
+      || isConnecting
+      || isConnected
+      || connectionError
+    ) return;
     connectToShell();
-  }, [autoConnect, connectToShell, isConnected, isConnecting, isInitialized]);
+  }, [autoConnect, connectToShell, connectionError, isConnected, isConnecting, isInitialized]);
 
   return {
     isConnected,
     isConnecting,
-    closeSocket,
+    connectionError,
     connectToShell,
     disconnectFromShell,
   };

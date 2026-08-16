@@ -70,9 +70,7 @@
     "save": "Speichern",
     "delete": "Löschen",
     "rename": "Umbenennen",
-    "joinCommunity": "Community beitreten",
-    "reportIssue": "Problem melden",
-    "starOnGithub": "Stern auf GitHub"
+    "reportIssue": "Problem melden"
   },
   "branding": {
     "openSource": "Open Source"

@@ -7,23 +7,27 @@ import type {
   Project,
   ProjectSession,
   LLMProvider,
+  ProviderSelectionCatalog,
 } from '../../../../types/app';
 import { getIntrinsicMessageKey } from '../../utils/messageKeys';
 import { groupConsecutiveTools, isToolGroupItem } from '../../utils/toolGrouping';
 import type { TaskMasterTask } from '../../../task-master/types';
 
 import MessageComponent from './MessageComponent';
-import MessageEditComposer from './MessageEditComposer';
 import ProviderSelectionEmptyState from './ProviderSelectionEmptyState';
 import ToolGroupContainer from './ToolGroupContainer';
 import LoadAllMessagesOverlay from './LoadAllMessagesOverlay';
-import ChatExportMenu from './ChatExportMenu';
 
 interface ChatMessagesPaneProps {
   scrollContainerRef: RefObject<HTMLDivElement>;
   onWheel: () => void;
   onTouchMove: () => void;
   isLoadingSessionMessages: boolean;
+  showDelayedSessionSkeleton: boolean;
+  sessionHistoryError: string | null;
+  /** Page-level resolver grants history the one primary recovery only when higher-priority failures are absent. */
+  historyRecoveryPrimary: boolean;
+  onRetrySessionHistory: () => void;
   /** True while the viewed session has an active provider run in flight. */
   isProcessing?: boolean;
   /** True while ChatComposer's floating activity/stop tab is rendered above the input. */
@@ -51,6 +55,8 @@ interface ChatMessagesPaneProps {
   onShowAllTasks?: (() => void) | null;
   onStartTask?: ((task: TaskMasterTask) => void) | null;
   isStartingTask?: boolean;
+  providerSelectionCatalog: ProviderSelectionCatalog | null;
+  providerCatalogLoading: boolean;
   isLoadingMoreMessages: boolean;
   hasMoreMessages: boolean;
   totalMessages: number;
@@ -76,22 +82,12 @@ interface ChatMessagesPaneProps {
     content: string,
     images: import('../../types/types').ChatImage[],
   ) => void;
-  /**
-   * Per-message edit handler for the LAST user turn. Rewinds through a
-   * provider-native branch and resubmits via `chat.send`. The pencil
-   * affordance only renders on the most recent user turn.
-   */
-  onRequestEdit?: (messageId: string, content: string, images: import('../../types/types').ChatImage[]) => void;
-  /**
-   * Currently-editing user message. When set, the matching bubble is
-   * replaced with `MessageEditComposer` instead of the normal render.
-   */
-  editingMessageId?: string | null;
-  editInitialContent?: string;
-  editPending?: boolean;
-  editError?: string | null;
-  onConfirmEdit?: (nextContent: string, nextImages: import('../../types/types').ChatImage[]) => void | Promise<void>;
-  onCancelEdit?: () => void;
+  /** Copies the latest user turn into the persistent composer draft without mutating history. */
+  onCopyToComposer?: (
+    messageId: string,
+    content: string,
+    images: import('../../types/types').ChatImage[],
+  ) => void;
   showRawParameters?: boolean;
   showThinking?: boolean;
   selectedProject: Project;
@@ -102,6 +98,10 @@ function ChatMessagesPane({
   onWheel,
   onTouchMove,
   isLoadingSessionMessages,
+  showDelayedSessionSkeleton,
+  sessionHistoryError,
+  historyRecoveryPrimary,
+  onRetrySessionHistory,
   isProcessing = false,
   hasActivityIndicator = false,
   chatMessages,
@@ -127,6 +127,8 @@ function ChatMessagesPane({
   onShowAllTasks,
   onStartTask,
   isStartingTask = false,
+  providerSelectionCatalog,
+  providerCatalogLoading,
   isLoadingMoreMessages,
   hasMoreMessages,
   totalMessages,
@@ -144,13 +146,7 @@ function ChatMessagesPane({
   onShowSettings,
   onGrantToolPermission,
   onRequestRewind,
-  onRequestEdit,
-  editingMessageId,
-  editInitialContent,
-  editPending,
-  editError,
-  onConfirmEdit,
-  onCancelEdit,
+  onCopyToComposer,
   showRawParameters,
   showThinking,
   selectedProject,
@@ -205,20 +201,36 @@ function ChatMessagesPane({
         hasActivityIndicator ? 'pb-12 sm:pb-14' : 'pb-3 sm:pb-4'
       }`}
     >
-      {chatMessages.length > 0 && (
-        <div className="pointer-events-none sticky right-4 top-3 z-10 mb-2 flex justify-end sm:px-4">
-          <div className="pointer-events-auto">
-            <ChatExportMenu messages={chatMessages} sessionTitle={selectedSession?.title} />
-          </div>
-        </div>
-      )}
       <div className="mx-auto w-full max-w-[54.25rem] space-y-3 px-4 sm:space-y-4">
-      {(isLoadingSessionMessages || isProcessing) && chatMessages.length === 0 ? (
-        <div className="mt-8 text-center text-gray-500 dark:text-gray-400">
-          <div className="flex items-center justify-center space-x-2">
-            <div className="h-4 w-4 animate-spin rounded-full border-b-2 border-gray-400" />
-            <p>{t('session.loading.sessionMessages')}</p>
-          </div>
+      {sessionHistoryError && chatMessages.length === 0 ? (
+        <div className="mx-auto mt-8 max-w-md rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-center" role="alert">
+          <p className="font-medium text-foreground">Conversation history could not be loaded.</p>
+          <p className="mt-1 text-sm text-muted-foreground">{sessionHistoryError}</p>
+          <button
+            type="button"
+            onClick={onRetrySessionHistory}
+            data-ux-primary={historyRecoveryPrimary ? 'true' : undefined}
+            className={`mt-4 min-h-11 rounded-md px-4 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+              historyRecoveryPrimary
+                ? 'bg-primary text-primary-foreground'
+                : 'border border-border bg-background text-foreground'
+            }`}
+          >
+            Retry history
+          </button>
+        </div>
+      ) : isLoadingSessionMessages && chatMessages.length === 0 ? (
+        <div className="mx-auto mt-8 max-w-2xl" role="status" aria-live="polite">
+          <span className="sr-only">{t('session.loading.sessionMessages')}</span>
+          {showDelayedSessionSkeleton ? (
+            <div className="space-y-5" data-testid="session-message-skeleton">
+              <div className="ml-auto h-16 w-3/5 animate-pulse rounded-2xl bg-muted motion-reduce:animate-none" />
+              <div className="h-24 w-4/5 animate-pulse rounded-2xl bg-muted motion-reduce:animate-none" />
+              <div className="ml-auto h-12 w-2/5 animate-pulse rounded-2xl bg-muted motion-reduce:animate-none" />
+            </div>
+          ) : (
+            <p className="text-center text-sm text-muted-foreground">{t('session.loading.sessionMessages')}</p>
+          )}
         </div>
       ) : chatMessages.length === 0 ? (
         <ProviderSelectionEmptyState
@@ -244,9 +256,28 @@ function ChatMessagesPane({
           onShowAllTasks={onShowAllTasks}
           onStartTask={onStartTask}
           isStartingTask={isStartingTask}
+          catalog={providerSelectionCatalog}
+          catalogLoading={providerCatalogLoading}
         />
       ) : (
         <>
+          {sessionHistoryError && (
+            <div className="flex flex-col gap-2 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm sm:flex-row sm:items-center sm:justify-between" role="alert">
+              <span className="text-foreground">{sessionHistoryError}</span>
+              <button
+                type="button"
+                onClick={onRetrySessionHistory}
+                data-ux-primary={historyRecoveryPrimary ? 'true' : undefined}
+                className={`min-h-11 shrink-0 rounded-md px-3 py-2 font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                  historyRecoveryPrimary
+                    ? 'bg-primary text-primary-foreground'
+                    : 'border border-border bg-background text-foreground'
+                }`}
+              >
+                Retry history
+              </button>
+            </div>
+          )}
           {/* Loading indicator for older messages (hide when load-all is active) */}
           {isLoadingMoreMessages && !isLoadingAllMessages && !allMessagesLoaded && (
             <div className="py-3 text-center text-gray-500 dark:text-gray-400">
@@ -323,43 +354,6 @@ function ChatMessagesPane({
               const messagePrevMessage = prevMessage;
               prevMessage = item;
 
-              // While editing, replace the user bubble with the inline
-              // composer. The user message skeleton (right-aligned, same
-              // padding) is preserved so the surrounding layout doesn't jump.
-              if (
-                editingMessageId
-                && item.type === 'user'
-                && typeof item.id === 'string'
-                && item.id.startsWith(editingMessageId)
-                && onConfirmEdit
-                && onCancelEdit
-              ) {
-                return (
-                  <div
-                    key={getMessageKey(item)}
-                    className="chat-message user flex justify-end px-3 sm:px-0"
-                  >
-                    {/* Unlike the read-only bubble (which is sized by its text),
-                        the editor must claim the full width of the user column:
-                        left to shrink-to-fit it would collapse to the textarea's
-                        default intrinsic width and be far narrower than the
-                        message being edited. */}
-                    <div className="flex w-full items-end sm:max-w-[85%] md:max-w-md lg:max-w-lg xl:max-w-xl">
-                      <div className="flex w-full min-w-0 flex-col items-end gap-2">
-                        <MessageEditComposer
-                          initialContent={editInitialContent ?? String(item.content ?? '')}
-                          initialImages={item.images ?? []}
-                          pending={Boolean(editPending)}
-                          error={editError ?? null}
-                          onSubmit={onConfirmEdit}
-                          onCancel={onCancelEdit}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                );
-              }
-
               return (
                 <MessageComponent
                   key={getMessageKey(item)}
@@ -370,7 +364,7 @@ function ChatMessagesPane({
                   onShowSettings={onShowSettings}
                   onGrantToolPermission={onGrantToolPermission}
                   onRequestRewind={isProcessing ? undefined : onRequestRewind}
-                  onRequestEdit={isProcessing ? undefined : onRequestEdit}
+                  onCopyToComposer={isProcessing ? undefined : onCopyToComposer}
                   showRawParameters={showRawParameters}
                   showThinking={showThinking}
                   selectedProject={selectedProject}

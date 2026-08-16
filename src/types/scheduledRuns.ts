@@ -1,14 +1,16 @@
 export type ScheduleProvider = 'claude' | 'codex' | 'cursor' | 'opencode';
 
-export type HistoryStatus = 'running' | 'succeeded' | 'failed' | 'skipped';
+export type HistoryStatus = 'running' | 'succeeded' | 'failed' | 'skipped' | 'missed';
 export type RunTrigger = 'tick' | 'manual';
 
 export interface ScheduledRun {
   id: number;
   userId: number;
   title: string;
+  projectId: string | null;
   projectPath: string;
   provider: ScheduleProvider;
+  providerProfileId: number | null;
   model: string;
   prompt: string;
   cronExpression: string;
@@ -38,8 +40,9 @@ export interface ScheduledRunHistory {
 
 export interface CreateScheduledRunInput {
   title: string;
-  projectPath: string;
+  projectId: string;
   provider: ScheduleProvider;
+  providerProfileId: number | null;
   model: string;
   prompt: string;
   cronExpression: string;
@@ -51,3 +54,8 @@ export interface CreateScheduledRunInput {
 }
 
 export type UpdateScheduledRunInput = Partial<CreateScheduledRunInput>;
+
+export type ScheduleWorkspaceRequest = {
+  requestId: number;
+  schedule: ScheduledRun | null;
+};

@@ -1,9 +1,12 @@
 import type { Project, ProjectSession, LLMProvider } from '../../../types/app';
+import type { SettingsMainTab } from '../../settings/types/types';
+import type { SessionStore } from '../../../stores/useSessionStore';
 import type {
   MarkSessionIdle,
   MarkSessionProcessing,
   SessionActivityMap,
 } from '../../../hooks/useSessionProtection';
+import type { SendWebSocketMessage } from '../../../contexts/webSocketDispatch';
 
 export type Provider = LLMProvider;
 
@@ -123,10 +126,11 @@ export type SessionEstablishedContext = {
 };
 
 export interface ChatInterfaceProps {
+  sessionStore: SessionStore;
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   ws: WebSocket | null;
-  sendMessage: (message: unknown) => void;
+  sendMessage: SendWebSocketMessage;
   onFileOpen?: (filePath: string, diffInfo?: any) => void;
   onInputFocusChange?: (focused: boolean) => void;
   onSessionProcessing?: MarkSessionProcessing;
@@ -134,7 +138,7 @@ export interface ChatInterfaceProps {
   processingSessions?: SessionActivityMap;
   onNavigateToSession?: (targetSessionId: string, options?: SessionNavigationOptions) => void;
   onSessionEstablished?: (sessionId: string, context: SessionEstablishedContext) => void;
-  onShowSettings?: () => void;
+  onShowSettings?: (tab?: SettingsMainTab) => void;
   showRawParameters?: boolean;
   showThinking?: boolean;
   sendByCtrlEnter?: boolean;

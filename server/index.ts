@@ -9,13 +9,24 @@ import http from 'http';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import cors from 'cors';
 
-import { AppError, findApplicationRoot, getModuleDirectory, terminalTextStyles } from '@/shared/utils.js';
+import {
+    AppError,
+    findApplicationRoot,
+    getModuleDirectory,
+    IS_PLATFORM,
+    PRODUCT_CONFIG,
+    RUNTIME_MODE,
+    terminalTextStyles,
+    validateServerRuntimeHost,
+} from '@/shared/utils.js';
 import {
     closeSessionsWatcher,
     initializeSessionsWatcher,
     providerRuntimeService,
+    providerTextCompletionService,
 } from '@/modules/providers/index.js';
 import { createWebSocketServer } from '@/modules/websocket/index.js';
+import { resolveActiveProjectDirectory } from '@/modules/projects/index.js';
 
 import { getConnectableHost } from '../shared/networkHosts.js';
 
@@ -34,7 +45,13 @@ import {
 } from './modules/scheduled-runs/index.js';
 import { commandsRoutes } from './modules/commands/index.js';
 import { settingsRoutes } from './modules/settings/index.js';
-import { createSystemModule } from './modules/system/index.js';
+import {
+    createSystemModule,
+    getDesktopOwnerProof,
+    isDesktopShutdownAuthorized,
+    loadServerBuildIdentity,
+    scheduleDesktopRuntimeShutdown,
+} from './modules/system/index.js';
 import { createAgentModule } from './modules/agent/index.js';
 import projectModuleRoutes from './modules/projects/projects.routes.js';
 import notificationRoutes from './modules/notifications/notifications.routes.js';
@@ -53,36 +70,24 @@ import { fileTreeRoutes } from './modules/file-tree/index.js';
 import { worktreesRoutes } from './modules/worktrees/index.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
-import { initializeDatabase, sessionsDb } from './modules/database/index.js';
+import { initializeDatabase } from './modules/database/index.js';
 import { configureWebPush } from './modules/notifications/index.js';
-import { IS_PLATFORM } from './constants/config.js';
 
 const __dirname = getModuleDirectory(import.meta.url);
 // The server source runs from /server, while the compiled output runs from /dist-server/server.
 // Resolving the app root once keeps every repo-level lookup below aligned across both layouts.
 const APP_ROOT = findApplicationRoot(__dirname);
 const installMode = fs.existsSync(path.join(APP_ROOT, '.git')) ? 'git' : 'npm';
-// Version of the code that is actually running, captured once at process
-// startup. This intentionally does NOT re-read package.json per request: after
-// an update replaces the files on disk, package.json reflects the NEW version
-// while this long-lived process still runs the OLD code. The frontend bundle is
-// rebuilt on update, so a mismatch between this value and the frontend's
-// build-time version means the server was updated but not restarted.
-const RUNNING_VERSION = (() => {
-    try {
-        return JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'package.json'), 'utf8')).version || null;
-    } catch {
-        return null;
-    }
-})();
-const RUNNING_BUILD_ID = (() => {
-    try {
-        const value = fs.readFileSync(path.join(APP_ROOT, 'dist', 'build-id.txt'), 'utf8').trim();
-        return value || `${RUNNING_VERSION || 'unknown'}-unidentified`;
-    } catch {
-        return `${RUNNING_VERSION || 'unknown'}-unidentified`;
-    }
-})();
+const runtimeLayout = path.relative(APP_ROOT, __dirname).split(path.sep)[0] === 'dist-server'
+    ? 'compiled'
+    : 'source';
+// Captured once at process startup so a replaced on-disk bundle cannot make an
+// old process report the new identity. Missing or malformed identity is a
+// startup failure, never a successful "unidentified" health response.
+const RUNNING_BUILD_IDENTITY = loadServerBuildIdentity({
+    appRoot: APP_ROOT,
+    runtimeLayout,
+});
 const systemRoutes = createSystemModule({
     appRoot: APP_ROOT,
     installMode,
@@ -97,8 +102,7 @@ const queryCursor = providerRuntimeService.getRunner('cursor');
 const queryCodex = providerRuntimeService.getRunner('codex');
 const queryOpenCode = providerRuntimeService.getRunner('opencode');
 const gitRoutes = createGitModule({
-    queryClaude,
-    queryCursor,
+    textCompletion: providerTextCompletionService,
 });
 const agentRoutes = createAgentModule({
     queryClaude,
@@ -110,29 +114,24 @@ const agentRoutes = createAgentModule({
 // Single WebSocket server that handles chat, shell, and plugin proxy paths.
 const wss = createWebSocketServer(server, {
     verifyClient: {
-        isPlatform: IS_PLATFORM,
+        runtimeMode: RUNTIME_MODE,
+        allowedDesktopOrigin: process.env.CLOUDCLI_DESKTOP_ALLOWED_ORIGIN,
         authenticateWebSocket,
     },
     chat: {
         runtime: providerRuntimeService,
     },
     shell: {
-        resolveProviderSessionId: (sessionId, provider) => {
-            const dbSession = sessionsDb.getSessionById(sessionId);
-            if (dbSession) {
-                return dbSession.provider_session_id ?? null;
-            }
-
-            return null;
-        },
+        resolveProjectPath: resolveActiveProjectDirectory,
     },
+    commandTerminal: {},
     getPluginPort,
 });
 
 // Make WebSocket server available to routes
 app.locals.wss = wss;
 
-app.use(cors({ exposedHeaders: ['X-Refreshed-Token', 'X-Auth-Error'] }));
+app.use(cors({ exposedHeaders: ['X-Refreshed-Token', 'X-Auth-Error', 'X-CloudCLI-Runtime-Mode'] }));
 app.use(express.json({
     limit: '50mb',
     type: (req) => {
@@ -152,10 +151,32 @@ app.get('/health', (req, res) => {
         status: 'ok',
         timestamp: new Date().toISOString(),
         installMode,
-        version: RUNNING_VERSION,
-        buildId: RUNNING_BUILD_ID,
+        version: RUNNING_BUILD_IDENTITY.version,
+        buildId: RUNNING_BUILD_IDENTITY.buildId,
+        productName: PRODUCT_CONFIG.productName,
+        features: PRODUCT_CONFIG.features,
+        runtimeMode: RUNTIME_MODE,
+        pid: process.pid,
         desktopLaunchNonce: process.env.CLOUDCLI_DESKTOP_LAUNCH_NONCE || null,
+        desktopOwnerProof: getDesktopOwnerProof(process.env.CLOUDCLI_DESKTOP_OWNER_NONCE),
+        desktopProcessStartedAt: process.env.CLOUDCLI_DESKTOP_PROCESS_STARTED_AT || null,
     });
+});
+
+// An app-managed runtime shuts down itself after proving ownership. Electron
+// never sends a signal to a PID inferred only from a mutable marker file.
+app.post('/desktop/shutdown', (req, res) => {
+    const providedOwnerNonce = req.headers['x-cloudcli-desktop-owner-nonce'];
+    const authorized = isDesktopShutdownAuthorized({
+        remoteAddress: req.socket.remoteAddress,
+        providedOwnerNonce: typeof providedOwnerNonce === 'string' ? providedOwnerNonce : undefined,
+        expectedOwnerNonce: process.env.CLOUDCLI_DESKTOP_OWNER_NONCE,
+    });
+    if (!authorized) {
+        return res.status(404).json({ success: false });
+    }
+    res.status(202).json({ success: true });
+    scheduleDesktopRuntimeShutdown(() => void shutdownRuntimeServices());
 });
 
 // Optional API key validation (if configured)
@@ -211,7 +232,7 @@ app.use('/api/providers', authenticateToken, providerRoutes);
 app.use('/api/agent', agentRoutes);
 
 // Scheduled runs API routes (uses API key authentication; cron + scheduler)
-app.use('/api/scheduled-runs', scheduledRunsRoutes);
+app.use('/api/scheduled-runs', authenticateToken, scheduledRunsRoutes);
 
 app.use('/api/voice', authenticateToken, voiceRoutes);
 
@@ -291,7 +312,7 @@ app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
 });
 
 const SERVER_PORT = Number.parseInt(process.env.SERVER_PORT || '3001', 10);
-const HOST = process.env.HOST || '0.0.0.0';
+const HOST = validateServerRuntimeHost(process.env.HOST || '0.0.0.0');
 const DISPLAY_HOST = getConnectableHost(HOST);
 const VITE_PORT = process.env.VITE_PORT || 5173;
 const LOCAL_SERVER_MARKER_PATH = path.join(os.homedir(), '.cloudcli', 'local-server.json');
@@ -315,12 +336,24 @@ async function writeLocalServerMarker() {
         port: Number.parseInt(String(SERVER_PORT), 10),
         url: `http://${DISPLAY_HOST}:${SERVER_PORT}`,
         installMode,
+        runtimeMode: RUNTIME_MODE,
         appRoot: APP_ROOT,
+        version: RUNNING_BUILD_IDENTITY.version,
+        buildId: RUNNING_BUILD_IDENTITY.buildId,
+        managedBy: process.env.CLOUDCLI_DESKTOP_OWNER_NONCE ? 'cloudcli-desktop' : null,
+        desktopLaunchNonce: process.env.CLOUDCLI_DESKTOP_LAUNCH_NONCE || null,
+        desktopOwnerNonce: process.env.CLOUDCLI_DESKTOP_OWNER_NONCE || null,
+        desktopProcessStartedAt: process.env.CLOUDCLI_DESKTOP_PROCESS_STARTED_AT || null,
         updatedAt: new Date().toISOString(),
     };
 
     await fsPromises.mkdir(path.dirname(LOCAL_SERVER_MARKER_PATH), { recursive: true });
-    await fsPromises.writeFile(LOCAL_SERVER_MARKER_PATH, JSON.stringify(marker, null, 2), 'utf8');
+    const temporaryPath = `${LOCAL_SERVER_MARKER_PATH}.${process.pid}.tmp`;
+    await fsPromises.writeFile(temporaryPath, JSON.stringify(marker, null, 2), {
+        encoding: 'utf8',
+        mode: 0o600,
+    });
+    await fsPromises.rename(temporaryPath, LOCAL_SERVER_MARKER_PATH);
 }
 
 async function removeLocalServerMarker() {
@@ -340,6 +373,45 @@ async function removeLocalServerMarker() {
             console.warn('[WARN] Could not remove local server marker:', getErrorMessage(error));
         }
     }
+}
+
+let shutdownPromise: Promise<void> | null = null;
+
+async function shutdownRuntimeServices(): Promise<void> {
+    if (shutdownPromise) return shutdownPromise;
+    shutdownPromise = (async () => {
+        const forceExitTimer = setTimeout(() => process.exit(1), 5_000);
+        forceExitTimer.unref();
+        server.close();
+        try {
+            await closeSessionsWatcher();
+        } catch (err) {
+            console.error('[Sessions] Error during shutdown:', getErrorMessage(err));
+        }
+        try {
+            await stopScheduler();
+        } catch (err) {
+            console.error('[Scheduler] Error during shutdown:', getErrorMessage(err));
+        }
+        try {
+            await browserUseService.stopAllSessions();
+        } catch (err) {
+            console.error('[Browser] Error stopping sessions during shutdown:', getErrorMessage(err));
+        }
+        try {
+            await stopAllPlugins();
+        } catch (err) {
+            console.error('[Plugins] Error stopping plugins during shutdown:', getErrorMessage(err));
+        }
+        try {
+            await removeLocalServerMarker();
+        } catch (err) {
+            console.error('[Local Server] Error removing server marker during shutdown:', getErrorMessage(err));
+        }
+        clearTimeout(forceExitTimer);
+        process.exit(0);
+    })();
+    return shutdownPromise;
 }
 
 // Initialize database and start server
@@ -384,8 +456,8 @@ async function startServer() {
             // Start watching the projects folder for changes
             await initializeSessionsWatcher();
 
-            // Start the scheduled-runs tick loop (60s). Repairs orphaned
-            // runs from any prior crash at boot, then ticks every minute.
+            // Start the local scheduled-runs loop. Startup repairs interrupted
+            // runs and marks downtime due times Missed without replay.
             startScheduler().catch(err => {
                 console.error('[Scheduler] Failed to start:', getErrorMessage(err));
             });
@@ -396,31 +468,6 @@ async function startServer() {
             });
         });
 
-        await closeSessionsWatcher();
-        // Clean up plugin processes on shutdown
-        const shutdownRuntimeServices = async () => {
-            try {
-                await stopScheduler();
-            } catch (err) {
-                console.error('[Scheduler] Error during shutdown:', getErrorMessage(err));
-            }
-            try {
-                await browserUseService.stopAllSessions();
-            } catch (err) {
-                console.error('[Browser] Error stopping sessions during shutdown:', getErrorMessage(err));
-            }
-            try {
-                await stopAllPlugins();
-            } catch (err) {
-                console.error('[Plugins] Error stopping plugins during shutdown:', getErrorMessage(err));
-            }
-            try {
-                await removeLocalServerMarker();
-            } catch (err) {
-                console.error('[Local Server] Error removing server marker during shutdown:', getErrorMessage(err));
-            }
-            process.exit(0);
-        };
         process.on('SIGTERM', () => void shutdownRuntimeServices());
         process.on('SIGINT', () => void shutdownRuntimeServices());
     } catch (error) {

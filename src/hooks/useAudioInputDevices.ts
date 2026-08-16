@@ -11,11 +11,22 @@ export type AudioInputDevices = {
   needsPermission: boolean;
   /** False in SSR / browsers without the Media Devices API. */
   supported: boolean;
+  status: AudioInputStatus;
+  error: string | null;
   /** Throwaway getUserMedia grant so labels populate, then re-enumerate. */
-  requestPermission: () => Promise<void>;
+  requestPermission: () => Promise<boolean>;
   /** Re-enumerate on demand. */
   refresh: () => void;
 };
+
+export type AudioInputStatus =
+  | 'checking'
+  | 'ready'
+  | 'permission-required'
+  | 'permission-denied'
+  | 'missing'
+  | 'unsupported'
+  | 'error';
 
 const isSupported = (): boolean =>
   typeof navigator !== 'undefined' &&
@@ -30,28 +41,55 @@ const isSupported = (): boolean =>
 export function useAudioInputDevices(): AudioInputDevices {
   const [supported] = useState(isSupported);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  const [status, setStatus] = useState<AudioInputStatus>(supported ? 'checking' : 'unsupported');
+  const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     if (!isSupported()) return;
+    setStatus((current) => current === 'permission-denied' ? current : 'checking');
     navigator.mediaDevices
       .enumerateDevices()
-      .then((list) => setDevices(list.filter((d) => d.kind === 'audioinput')))
-      .catch(() => {
-        /* enumeration can reject in restricted contexts — keep the previous list */
+      .then((list) => {
+        const inputs = list.filter((device) => device.kind === 'audioinput');
+        setDevices(inputs);
+        setError(null);
+        setStatus((current) => {
+          if (current === 'permission-denied') return current;
+          if (inputs.length === 0) return 'missing';
+          return inputs.every((device) => !device.label) ? 'permission-required' : 'ready';
+        });
+      })
+      .catch((cause) => {
+        setStatus('error');
+        setError(cause instanceof Error ? cause.message : 'Microphones could not be listed.');
       });
   }, []);
 
   const requestPermission = useCallback(async () => {
-    if (!isSupported() || typeof navigator.mediaDevices.getUserMedia !== 'function') return;
+    if (!isSupported() || typeof navigator.mediaDevices.getUserMedia !== 'function') return false;
+    setStatus('checking');
+    setError(null);
     try {
       // We only need the permission grant so enumerateDevices returns labels —
       // release the mic immediately.
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach((t) => t.stop());
-    } catch {
-      /* denied/failed: labels stay hidden; the picker still works by index */
-    } finally {
       refresh();
+      return true;
+    } catch (cause) {
+      const name = cause instanceof DOMException ? cause.name : '';
+      if (name === 'NotAllowedError' || name === 'SecurityError') {
+        setStatus('permission-denied');
+        setError('Microphone permission is blocked. Allow access in system or browser settings.');
+      } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+        setDevices([]);
+        setStatus('missing');
+        setError('No microphone was found. Connect a microphone and try again.');
+      } else {
+        setStatus('error');
+        setError(cause instanceof Error ? cause.message : 'Microphone access failed.');
+      }
+      return false;
     }
   }, [refresh]);
 
@@ -63,7 +101,7 @@ export function useAudioInputDevices(): AudioInputDevices {
     return () => navigator.mediaDevices.removeEventListener?.('devicechange', onChange);
   }, [supported, refresh]);
 
-  const needsPermission = supported && devices.length > 0 && devices.every((d) => !d.label);
+  const needsPermission = status === 'permission-required';
 
-  return { devices, needsPermission, supported, requestPermission, refresh };
+  return { devices, needsPermission, supported, status, error, requestPermission, refresh };
 }

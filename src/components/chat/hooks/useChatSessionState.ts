@@ -3,10 +3,18 @@ import type { MutableRefObject } from 'react';
 
 import { api, authenticatedFetch } from '../../../utils/api';
 import type { MarkSessionIdle, SessionActivityMap } from '../../../hooks/useSessionProtection';
+import { getViewedSessionActivity } from '../../../hooks/useSessionProtection';
 import type { Project, ProjectSession, LLMProvider } from '../../../types/app';
 import type { SessionStore, NormalizedMessage } from '../../../stores/useSessionStore';
+import { useSessionStoreRevision } from '../../../stores/useSessionStore';
 import type { ChatImage, ChatMessage } from '../types/types';
 import { createCachedDiffCalculator, type DiffCalculator } from '../utils/messageTransforms';
+import {
+  resolveLoadAllHistoryCompletion,
+  resolveLoadOlderHistoryCompletion,
+  resolveSessionPaginationSnapshot,
+  ownsSessionHistoryView,
+} from '../utils/sessionHistory';
 
 import { normalizedToChatMessages } from './useChatMessages';
 
@@ -150,6 +158,8 @@ export function useChatSessionState({
 }: UseChatSessionStateArgs) {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(selectedSession?.id || null);
   const [isLoadingSessionMessages, setIsLoadingSessionMessages] = useState(false);
+  const [sessionHistoryError, setSessionHistoryError] = useState<string | null>(null);
+  const [showDelayedSessionSkeleton, setShowDelayedSessionSkeleton] = useState(false);
   const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [totalMessages, setTotalMessages] = useState(0);
@@ -166,7 +176,6 @@ export function useChatSessionState({
   const wasNearTopRef = useRef(false);
   const [searchTarget, setSearchTarget] = useState<{ timestamp?: string; uuid?: string; snippet?: string } | null>(null);
   const searchScrollActiveRef = useRef(false);
-  const isLoadingSessionRef = useRef(false);
   const isLoadingMoreRef = useRef(false);
   const allMessagesLoadedRef = useRef(false);
   const topLoadLockRef = useRef(false);
@@ -250,12 +259,32 @@ export function useChatSessionState({
   /* ---------------------------------------------------------------- */
 
   const activeSessionId = selectedSession?.id || currentSessionId || null;
+  const currentSessionIdRef = useRef<string | null>(currentSessionId);
+  currentSessionIdRef.current = currentSessionId;
+  const activeSessionIdRef = useRef<string | null>(activeSessionId);
+  activeSessionIdRef.current = activeSessionId;
+  const activeProjectId = selectedProject?.projectId ?? null;
+  const activeProjectIdRef = useRef<string | null>(activeProjectId);
+  activeProjectIdRef.current = activeProjectId;
+  const historyViewKey = `${activeProjectId ?? ''}:${activeSessionId ?? ''}`;
+  const historyViewKeyRef = useRef(historyViewKey);
+  const historyViewGenerationRef = useRef(0);
+  if (historyViewKeyRef.current !== historyViewKey) {
+    historyViewKeyRef.current = historyViewKey;
+    historyViewGenerationRef.current += 1;
+  }
+  const sessionStoreRevision = useSessionStoreRevision(sessionStore, activeSessionId);
+
+  useEffect(() => {
+    isLoadingMoreRef.current = false;
+    setIsLoadingMoreMessages(false);
+  }, [historyViewKey]);
 
   // The activity indicator always reflects the latest status of the session
   // being viewed — never stale local UI state from the last time it was
   // open. Session ids are concrete before any send, so no pending
   // placeholder entry exists anymore.
-  const sessionActivity = (activeSessionId && processingSessions?.get(activeSessionId)) || null;
+  const sessionActivity = getViewedSessionActivity(processingSessions, activeSessionId);
   const isProcessing = sessionActivity !== null;
   const canAbortSession = isProcessing && sessionActivity.canInterrupt;
 
@@ -269,13 +298,6 @@ export function useChatSessionState({
   /* ---------------------------------------------------------------- */
   const [pendingUserMessage, setPendingUserMessage] = useState<ChatMessage | null>(null);
   const flushedPendingUserMessageRef = useRef<ChatMessage | null>(null);
-
-  // Tell the store which session we're viewing so it only re-renders for this one
-  const prevActiveForStoreRef = useRef<string | null>(null);
-  if (activeSessionId !== prevActiveForStoreRef.current) {
-    prevActiveForStoreRef.current = activeSessionId;
-    sessionStore.setActiveSession(activeSessionId);
-  }
 
   useEffect(() => {
     if (!pendingUserMessage) {
@@ -301,7 +323,26 @@ export function useChatSessionState({
     setPendingUserMessage(null);
   }, [activeSessionId, pendingUserMessage, sessionStore]);
 
-  const storeMessages = activeSessionId ? sessionStore.getMessages(activeSessionId) : [];
+  const storeMessages = useMemo(() => {
+    // The revision is the external-store invalidation signal; messages remain
+    // owned by the stable store object rather than copied into React state.
+    void sessionStoreRevision;
+    return activeSessionId ? sessionStore.getMessages(activeSessionId) : [];
+  }, [activeSessionId, sessionStore, sessionStoreRevision]);
+
+  useEffect(() => {
+    if (!activeSessionId) return;
+    const slot = sessionStore.getSessionSlot(activeSessionId);
+    if (!slot || slot.fetchedAt === 0) return;
+    const pagination = resolveSessionPaginationSnapshot(slot);
+    setHasMoreMessages(pagination.hasMore);
+    setTotalMessages(pagination.total);
+    if (pagination.allLoaded) {
+      allMessagesLoadedRef.current = true;
+      setAllMessagesLoaded(true);
+      setVisibleMessageCount(Infinity);
+    }
+  }, [activeSessionId, sessionStore, sessionStoreRevision]);
 
   // Reset viewHiddenCount when store messages change
   const prevStoreLenRef = useRef(0);
@@ -319,6 +360,15 @@ export function useChatSessionState({
     if (viewHiddenCount > 0 && viewHiddenCount < all.length) return all.slice(0, -viewHiddenCount);
     return all;
   }, [storeMessages, viewHiddenCount, pendingUserMessage]);
+
+  useEffect(() => {
+    if (!isLoadingSessionMessages || chatMessages.length > 0) {
+      setShowDelayedSessionSkeleton(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setShowDelayedSessionSkeleton(true), 350);
+    return () => window.clearTimeout(timer);
+  }, [chatMessages.length, isLoadingSessionMessages]);
 
   /* ---------------------------------------------------------------- */
   /*  addMessage / clearMessages / rewindMessages                     */
@@ -435,9 +485,10 @@ export function useChatSessionState({
         // The WebSocket event performs the same refresh for other tabs. This
         // local refresh makes composer restoration deterministic for the tab
         // that initiated the rewind.
-        await sessionStore.refreshFromServer(activeSessionId).catch((error) => {
-          console.error('Failed to refresh the rewound session:', error);
-        });
+        const refreshResult = await sessionStore.refreshFromServer(activeSessionId);
+        if (!refreshResult.ok && refreshResult.applied) {
+          throw new Error(refreshResult.error);
+        }
       }
 
       const restoredDraft = mode === 'conversation' || mode === 'both'
@@ -483,33 +534,40 @@ export function useChatSessionState({
       if (!hasMoreMessages || !selectedSession || !selectedProject) return false;
 
       isLoadingMoreRef.current = true;
+      const requestView = {
+        sessionId: selectedSession.id,
+        projectId: selectedProject.projectId,
+        generation: historyViewGenerationRef.current,
+      };
+      const requestStillOwnsView = () => ownsSessionHistoryView(requestView, {
+        sessionId: activeSessionIdRef.current,
+        projectId: activeProjectIdRef.current,
+        generation: historyViewGenerationRef.current,
+      });
       const previousScrollHeight = container.scrollHeight;
       const previousScrollTop = container.scrollTop;
 
+      setIsLoadingMoreMessages(true);
+      setSessionHistoryError(null);
       try {
-        const slot = await sessionStore.fetchMore(selectedSession.id, {
+        const result = await sessionStore.fetchMore(selectedSession.id, {
           limit: MESSAGES_PER_PAGE,
         });
-        if (!slot) return false;
-        if (slot.serverMessages.length === 0) {
-          if (!slot.hasMore) {
-            setHasMoreMessages(false);
-            allMessagesLoadedRef.current = true;
-            setAllMessagesLoaded(true);
-            if (loadAllOverlayTimerRef.current) {
-              clearTimeout(loadAllOverlayTimerRef.current);
-              loadAllOverlayTimerRef.current = null;
-            }
-            setShowLoadAllOverlay(false);
-          }
+        if (!requestStillOwnsView()) return false;
+        const completion = resolveLoadOlderHistoryCompletion(result);
+        if (!completion.applied) {
+          if (completion.error) setSessionHistoryError(completion.error);
           return false;
         }
 
-        pendingScrollRestoreRef.current = { height: previousScrollHeight, top: previousScrollTop };
-        setHasMoreMessages(slot.hasMore);
-        setTotalMessages(slot.total);
-        setVisibleMessageCount((prev) => prev + MESSAGES_PER_PAGE);
-        if (!slot.hasMore) {
+        setSessionHistoryError(null);
+        if (completion.addedCount > 0) {
+          pendingScrollRestoreRef.current = { height: previousScrollHeight, top: previousScrollTop };
+          setVisibleMessageCount((prev) => prev + completion.addedCount);
+        }
+        setHasMoreMessages(completion.hasMore);
+        setTotalMessages(completion.total);
+        if (completion.allLoaded) {
           allMessagesLoadedRef.current = true;
           setAllMessagesLoaded(true);
           if (loadAllOverlayTimerRef.current) {
@@ -518,9 +576,20 @@ export function useChatSessionState({
           }
           setShowLoadAllOverlay(false);
         }
-        return true;
+        return completion.addedCount > 0;
+      } catch (error) {
+        if (!requestStillOwnsView()) return false;
+        setSessionHistoryError(
+          error instanceof Error
+            ? error.message
+            : 'Could not load earlier messages. Check your connection and try again.',
+        );
+        return false;
       } finally {
-        isLoadingMoreRef.current = false;
+        if (requestStillOwnsView()) {
+          isLoadingMoreRef.current = false;
+          setIsLoadingMoreMessages(false);
+        }
       }
     },
     [hasMoreMessages, isLoadingMoreMessages, selectedProject, selectedSession, sessionStore],
@@ -628,11 +697,14 @@ export function useChatSessionState({
 
   // Main session loading effect — store-based
   useEffect(() => {
-    if (!selectedSession || !selectedProject) {
+    let cancelled = false;
+    const selectedSessionId = selectedSession?.id;
+    if (!selectedSessionId || !selectedProject) {
       // A freshly created session can be mid-run before the router has a
       // canonical selectedSession (the URL effect synthesizes one on the
       // next render). Keep the active view intact instead of wiping it.
-      if (currentSessionId && processingSessionsRef.current?.has(currentSessionId)) {
+      const currentSession = currentSessionIdRef.current;
+      if (currentSession && processingSessionsRef.current?.has(currentSession)) {
         return;
       }
 
@@ -642,11 +714,12 @@ export function useChatSessionState({
       setHasMoreMessages(false);
       setTotalMessages(0);
       setTokenBudget(null);
+      setSessionHistoryError(null);
+      setIsLoadingSessionMessages(false);
       lastLoadedSessionKeyRef.current = null;
       return;
     }
 
-    const selectedSessionId = selectedSession.id;
     const sessionKey = `${selectedSessionId}:${selectedProject.projectId}`;
 
     const subscribeToSelectedSession = () => {
@@ -670,7 +743,8 @@ export function useChatSessionState({
       return;
     }
 
-    const sessionChanged = currentSessionId !== null && currentSessionId !== selectedSessionId;
+    const currentSession = currentSessionIdRef.current;
+    const sessionChanged = currentSession !== null && currentSession !== selectedSessionId;
     if (sessionChanged) {
       resetStreamingState();
     }
@@ -707,19 +781,28 @@ export function useChatSessionState({
 
     // Fetch from server → store updates → chatMessages re-derives automatically
     setIsLoadingSessionMessages(true);
+    setSessionHistoryError(null);
     sessionStore.fetchFromServer(selectedSessionId, {
       limit: MESSAGES_PER_PAGE,
       offset: 0,
-    }).then(slot => {
-      if (slot) {
-        setHasMoreMessages(slot.hasMore);
-        setTotalMessages(slot.total);
-        if (slot.tokenUsage) setTokenBudget(slot.tokenUsage as Record<string, unknown>);
+    }).then(result => {
+      if (cancelled) return;
+      if (result.ok && result.applied) {
+        setHasMoreMessages(result.slot.hasMore);
+        setTotalMessages(result.slot.total);
+        if (result.slot.tokenUsage) setTokenBudget(result.slot.tokenUsage as Record<string, unknown>);
+      } else if (!result.ok && result.applied) {
+        setSessionHistoryError(result.error);
       }
       setIsLoadingSessionMessages(false);
-    }).catch(() => {
+    }).catch((error: unknown) => {
+      if (cancelled) return;
+      setSessionHistoryError(error instanceof Error ? error.message : 'Could not load this conversation.');
       setIsLoadingSessionMessages(false);
     });
+    return () => {
+      cancelled = true;
+    };
   }, [
     resetStreamingState,
     selectedProject,
@@ -731,6 +814,28 @@ export function useChatSessionState({
     sessionStore,
   ]);
 
+  const retrySessionHistory = useCallback(async (): Promise<boolean> => {
+    const sessionId = selectedSession?.id;
+    if (!sessionId || !selectedProject) return false;
+    setIsLoadingSessionMessages(true);
+    setSessionHistoryError(null);
+    const result = await sessionStore.fetchFromServer(sessionId, {
+      limit: MESSAGES_PER_PAGE,
+      offset: 0,
+    });
+    if (activeSessionIdRef.current !== sessionId) return false;
+    if (result.ok && result.applied) {
+      setSessionHistoryError(null);
+      setHasMoreMessages(result.slot.hasMore);
+      setTotalMessages(result.slot.total);
+      if (result.slot.tokenUsage) setTokenBudget(result.slot.tokenUsage as Record<string, unknown>);
+    } else if (!result.ok && result.applied) {
+      setSessionHistoryError(result.error);
+    }
+    setIsLoadingSessionMessages(false);
+    return result.ok && result.applied;
+  }, [selectedProject, selectedSession?.id, sessionStore]);
+
   // External message update (e.g. WebSocket reconnect, background refresh)
   useEffect(() => {
     if (!externalMessageUpdate || !selectedSession || !selectedProject) return;
@@ -739,7 +844,9 @@ export function useChatSessionState({
       try {
         // Skip store refresh during active streaming
         if (!isProcessing) {
-          await sessionStore.refreshFromServer(selectedSession.id);
+          const result = await sessionStore.refreshFromServer(selectedSession.id);
+          if (result.ok && result.applied) setSessionHistoryError(null);
+          else if (!result.ok && result.applied) setSessionHistoryError(result.error);
 
           if (isNearBottom()) {
             setTimeout(() => scrollToBottom(), 200);
@@ -786,18 +893,21 @@ export function useChatSessionState({
       if (!allMessagesLoadedRef.current && selectedSession && selectedProject) {
           try {
             // Load all messages into the store for search navigation
-            const slot = await sessionStore.fetchFromServer(selectedSession.id, {
+            const result = await sessionStore.fetchFromServer(selectedSession.id, {
               limit: null,
               offset: 0,
             });
-            if (slot) {
+            const completion = resolveLoadAllHistoryCompletion(result);
+            if (result.ok && completion.complete) {
               setHasMoreMessages(false);
-              setTotalMessages(slot.total);
-              messagesOffsetRef.current = slot.total;
+              setTotalMessages(completion.total ?? result.snapshot.total);
+              messagesOffsetRef.current = completion.total ?? result.snapshot.total;
               setVisibleMessageCount(Infinity);
               setAllMessagesLoaded(true);
               allMessagesLoadedRef.current = true;
               await new Promise(resolve => setTimeout(resolve, 300));
+            } else if (completion.error) {
+              setSessionHistoryError(completion.error);
             }
           } catch {
             // Fall through and scroll in current messages
@@ -921,6 +1031,16 @@ export function useChatSessionState({
     if (!selectedSession || !selectedProject) return;
     if (isLoadingAllMessages) return;
     const requestSessionId = selectedSession.id;
+    const requestView = {
+      sessionId: requestSessionId,
+      projectId: selectedProject.projectId,
+      generation: historyViewGenerationRef.current,
+    };
+    const requestStillOwnsView = () => ownsSessionHistoryView(requestView, {
+      sessionId: activeSessionIdRef.current,
+      projectId: activeProjectIdRef.current,
+      generation: historyViewGenerationRef.current,
+    });
     allMessagesLoadedRef.current = true;
     isLoadingMoreRef.current = true;
     setIsLoadingAllMessages(true);
@@ -935,21 +1055,24 @@ export function useChatSessionState({
     const previousScrollTop = container ? container.scrollTop : 0;
 
     try {
-      const slot = await sessionStore.fetchFromServer(requestSessionId, {
+      const result = await sessionStore.fetchFromServer(requestSessionId, {
         limit: null,
         offset: 0,
       });
 
-      if (currentSessionId !== requestSessionId) return;
+      if (!requestStillOwnsView()) return;
 
-      if (slot) {
+      const completion = resolveLoadAllHistoryCompletion(result);
+
+      if (result.ok && completion.complete) {
+        setSessionHistoryError(null);
         if (container) {
           pendingScrollRestoreRef.current = { height: previousScrollHeight, top: previousScrollTop };
         }
 
         setHasMoreMessages(false);
-        setTotalMessages(slot.total);
-        messagesOffsetRef.current = slot.total;
+        setTotalMessages(completion.total ?? result.slot.total);
+        messagesOffsetRef.current = completion.total ?? result.slot.total;
         setVisibleMessageCount(Infinity);
         setAllMessagesLoaded(true);
 
@@ -962,17 +1085,26 @@ export function useChatSessionState({
         }, 2500);
       } else {
         allMessagesLoadedRef.current = false;
-        setShowLoadAllOverlay(false);
+        setAllMessagesLoaded(false);
+        setLoadAllJustFinished(false);
+        setShowLoadAllOverlay(completion.showOverlay);
+        setSessionHistoryError(completion.error);
       }
     } catch (error) {
+      if (!requestStillOwnsView()) return;
       console.error('Error loading all messages:', error);
       allMessagesLoadedRef.current = false;
+      setAllMessagesLoaded(false);
+      setLoadAllJustFinished(false);
       setShowLoadAllOverlay(false);
+      setSessionHistoryError('Could not load the complete conversation. Try again.');
     } finally {
-      isLoadingMoreRef.current = false;
-      setIsLoadingAllMessages(false);
+      if (requestStillOwnsView()) {
+        isLoadingMoreRef.current = false;
+        setIsLoadingAllMessages(false);
+      }
     }
-  }, [selectedSession, selectedProject, isLoadingAllMessages, currentSessionId, sessionStore]);
+  }, [selectedSession, selectedProject, isLoadingAllMessages, sessionStore]);
 
   const loadEarlierMessages = useCallback(() => {
     setVisibleMessageCount((prev) => prev + 100);
@@ -993,6 +1125,11 @@ export function useChatSessionState({
     currentSessionId,
     setCurrentSessionId,
     isLoadingSessionMessages,
+    showDelayedSessionSkeleton,
+    // View-owned requests surface here. Header Export has separate feedback
+    // and must never echo its transport failure inside the conversation body.
+    sessionHistoryError,
+    retrySessionHistory,
     isLoadingMoreMessages,
     hasMoreMessages,
     totalMessages,

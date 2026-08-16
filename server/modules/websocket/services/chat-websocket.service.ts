@@ -183,6 +183,19 @@ function readRequiredSessionId(data: AnyRecord): string | null {
 }
 
 /**
+ * Rejects the retired two-transport edit protocol before any provider, DB, or
+ * run-registry call. Exported for the WebSocket contract test.
+ */
+export function rejectTransactionalEdit(ws: WebSocket, data: AnyRecord): void {
+  sendProtocolError(
+    ws,
+    'TRANSACTIONAL_EDIT_UNAVAILABLE',
+    'Transactional edit and resubmit is unavailable. Copy the message to the composer instead.',
+    readRequiredSessionId(data) ?? undefined,
+  );
+}
+
+/**
  * Handles `chat.send`: resolves the session row (provider, project path, and
  * provider-native id all come from the database — never from the client),
  * re-validates the session's provider/profile selection before anything is
@@ -499,6 +512,7 @@ function handlePermissionResponse(data: AnyRecord, dependencies: ChatWebSocketDe
  * - `chat.abort`               { sessionId }
  * - `chat.subscribe`           { sessions: [{ sessionId, lastSeq? }] }
  * - `chat.permission-response` { requestId, allow, updatedInput?, message?, rememberEntry? }
+ * - retired `chat.edit-and-resubmit` is rejected without mutation
  *
  * Outbound protocol (server to client): every frame is `kind`-based — either
  * a provider `NormalizedMessage` (with `seq`) or a gateway event
@@ -537,6 +551,10 @@ export function handleChatConnection(
           return;
         case 'chat.permission-response':
           handlePermissionResponse(data, dependencies);
+          return;
+        case 'chat.edit-and-resubmit':
+        case 'chat.edit_and_resubmit':
+          rejectTransactionalEdit(ws, data);
           return;
         default:
           sendProtocolError(ws, 'UNKNOWN_MESSAGE_TYPE', `Unknown message type "${messageType}".`);

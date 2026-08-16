@@ -43,7 +43,7 @@ export const PromptInput = React.forwardRef<HTMLFormElement, PromptInputProps>(
           ref={ref}
           data-slot="prompt-input"
           className={cn(
-            'relative overflow-hidden rounded-xl border border-border/50 bg-card/80 shadow-sm backdrop-blur-sm transition-all duration-200 focus-within:border-primary/30 focus-within:shadow-md focus-within:ring-1 focus-within:ring-primary/15',
+            'relative overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-colors duration-200 focus-within:border-foreground/20 focus-within:ring-2 focus-within:ring-ring/15',
             className
           )}
           {...props}
@@ -99,7 +99,7 @@ export const PromptInputTextarea = React.forwardRef<
       data-slot="prompt-input-textarea"
       dir={resolvedDir}
       className={cn(
-        'chat-input-placeholder block max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent px-4 py-2 text-sm leading-6 text-foreground placeholder-muted-foreground/50 focus:outline-none sm:max-h-[300px]',
+        'chat-input-placeholder block max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent px-4 py-3 text-base leading-6 text-foreground placeholder:text-muted-foreground focus:outline-none sm:max-h-[300px]',
         className
       )}
       value={value}
@@ -118,7 +118,10 @@ export const PromptInputFooter = React.forwardRef<
   <div
     ref={ref}
     data-slot="prompt-input-footer"
-    className={cn('flex items-center justify-between border-t border-border/30 px-3 py-2', className)}
+    className={cn(
+      'flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 border-t border-border bg-muted/60 px-2 py-2 sm:flex-nowrap sm:px-3',
+      className,
+    )}
     {...props}
   />
 ));
@@ -159,8 +162,12 @@ export const PromptInputButton = React.forwardRef<HTMLButtonElement, PromptInput
         type="button"
         variant="ghost"
         size="icon"
-        className={cn('h-8 w-8 [&_svg]:size-4', className)}
         {...props}
+        aria-label={props['aria-label'] ?? (typeof tooltip?.content === 'string' ? tooltip.content : undefined)}
+        className={cn(
+          'h-11 w-11 rounded-lg text-muted-foreground hover:bg-card hover:text-foreground focus-visible:ring-2 [&_svg]:size-4',
+          className,
+        )}
       >
         {children}
       </Button>
@@ -209,7 +216,10 @@ export const PromptInputSubmit = React.forwardRef<HTMLButtonElement, PromptInput
         type={isActive ? 'button' : 'submit'}
         variant="default"
         size="icon"
-        className={cn('h-8 w-8 shrink-0 rounded-lg', className)}
+        className={cn(
+          'h-11 w-11 shrink-0 rounded-lg border border-transparent disabled:border-border disabled:bg-card disabled:text-muted-foreground disabled:opacity-100 disabled:shadow-none',
+          className,
+        )}
         {...props}
       >
         {children ?? (isActive ? (

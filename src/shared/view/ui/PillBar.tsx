@@ -22,14 +22,17 @@ type PillProps = {
   onClick: () => void;
   children: ReactNode;
   className?: string;
+  ariaLabel?: string;
 };
 
-export function Pill({ isActive, onClick, children, className }: PillProps) {
+export function Pill({ isActive, onClick, children, className, ariaLabel }: PillProps) {
   return (
     <button
+      type="button"
       onClick={onClick}
+      aria-label={ariaLabel}
       className={cn(
-        'flex touch-manipulation items-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-all duration-150',
+        'flex min-h-11 touch-manipulation items-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         isActive
           ? 'bg-background text-foreground shadow-sm'
           : 'text-muted-foreground active:bg-background/50',

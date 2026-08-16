@@ -3,6 +3,7 @@ import type { PendingPermissionRequest } from '../../types/types';
 
 export interface PermissionPanelProps {
   request: PendingPermissionRequest;
+  deliveryDisabled?: boolean;
   onDecision: (
     requestIds: string | string[],
     decision: { allow?: boolean; message?: string; updatedInput?: unknown },

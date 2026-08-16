@@ -167,6 +167,48 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
     return projectRoot;
   }
 
+  const normalizeFileSystemIdentityPath = (candidatePath: string): string => (
+    path.resolve(candidatePath).normalize('NFC').toLocaleLowerCase('en-US')
+  );
+
+  async function assertUploadPathHasNoSymlinkAlias(
+    projectRoot: string,
+    realProjectRoot: string,
+    targetPath: string,
+  ): Promise<void> {
+    let existingAncestor = targetPath;
+    while (true) {
+      try {
+        const realExistingAncestor = await fileSystem.realpath(existingAncestor);
+        const expectedRealAncestor = path.resolve(
+          realProjectRoot,
+          path.relative(projectRoot, existingAncestor),
+        );
+        if (
+          normalizeFileSystemIdentityPath(realExistingAncestor)
+          !== normalizeFileSystemIdentityPath(expectedRealAncestor)
+        ) {
+          throw createFileTreeError(
+            'Upload destinations cannot pass through symbolic links.',
+            400,
+            'UPLOAD_SYMLINK_PATH',
+          );
+        }
+        return;
+      } catch (error) {
+        if (error instanceof AppError) throw error;
+        if (readErrorCode(error) !== 'ENOENT') throw error;
+        if (normalizeFileSystemIdentityPath(existingAncestor)
+          === normalizeFileSystemIdentityPath(projectRoot)) {
+          throw error;
+        }
+        const parentPath = path.dirname(existingAncestor);
+        if (parentPath === existingAncestor) throw error;
+        existingAncestor = parentPath;
+      }
+    }
+  }
+
   async function buildFileTree(
     directoryPath: string,
     maximumDepth: number,
@@ -183,10 +225,10 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       }
     } catch (error) {
       const errorCode = readErrorCode(error);
-      if (errorCode !== 'EACCES' && errorCode !== 'EPERM') {
+      if (currentDepth > 0 && errorCode !== 'EACCES' && errorCode !== 'EPERM') {
         dependencies.logger.error(`Error reading directory "${directoryPath}"`, error);
       }
-      return [];
+      throw error;
     }
 
     const visibleEntries = entries.filter((entry) => {
@@ -402,8 +444,12 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       const projectRoot = await resolveProjectRoot(projectId);
       try {
         await fileSystem.access(projectRoot);
-      } catch {
-        throw createFileTreeError(`Project path not found: ${projectRoot}`, 404, 'PROJECT_PATH_NOT_FOUND');
+      } catch (error) {
+        mapFileSystemError(error, {
+          ENOENT: { message: `Project path not found: ${projectRoot}`, statusCode: 404 },
+          EACCES: { message: 'Permission denied while reading the project folder', statusCode: 403 },
+          EPERM: { message: 'Permission denied while reading the project folder', statusCode: 403 },
+        });
       }
 
       let includeEntry: FileTreeEntryFilter | undefined;
@@ -418,7 +464,15 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
         }
       }
 
-      return buildFileTree(projectRoot, 10, 0, includeEntry);
+      try {
+        return await buildFileTree(projectRoot, 10, 0, includeEntry);
+      } catch (error) {
+        mapFileSystemError(error, {
+          ENOENT: { message: `Project path not found: ${projectRoot}`, statusCode: 404 },
+          EACCES: { message: 'Permission denied while reading the project folder', statusCode: 403 },
+          EPERM: { message: 'Permission denied while reading the project folder', statusCode: 403 },
+        });
+      }
     },
 
     async createEntry(input) {
@@ -555,58 +609,109 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
 
       try {
         const projectRoot = await resolveProjectRoot(input.projectId);
+        const realProjectRoot = await fileSystem.realpath(projectRoot);
         const resolvedTargetDirectory = !input.targetPath
           || input.targetPath === '.'
           || input.targetPath === './'
           ? path.resolve(projectRoot)
           : resolvePathInsideProject(projectRoot, input.targetPath);
 
+        await assertUploadPathHasNoSymlinkAlias(
+          projectRoot,
+          realProjectRoot,
+          resolvedTargetDirectory,
+        );
+
         try {
           await fileSystem.access(resolvedTargetDirectory);
         } catch {
           await fileSystem.makeDirectory(resolvedTargetDirectory, true);
         }
+        await assertUploadPathHasNoSymlinkAlias(
+          projectRoot,
+          realProjectRoot,
+          resolvedTargetDirectory,
+        );
 
-        const uploadedFiles: Array<{ name: string; path: string; size: number; mimeType: string }> = [];
-        for (let fileIndex = 0; fileIndex < input.files.length; fileIndex += 1) {
-          const file = input.files[fileIndex];
+        const uploadEntries = input.files.map((file, fileIndex) => {
           const fileName = input.relativePaths[fileIndex] || file.originalName;
           const destinationPath = path.join(resolvedTargetDirectory, fileName);
-
-          try {
-            resolvePathInsideProject(projectRoot, destinationPath);
-          } catch (error) {
-            if (error instanceof AppError && error.statusCode === 403) {
-              await cleanupTemporaryFiles([file]);
-              continue;
-            }
-            throw error;
+          resolvePathInsideProject(projectRoot, destinationPath);
+          return { file, fileName, destinationPath };
+        });
+        for (const entry of uploadEntries) {
+          await assertUploadPathHasNoSymlinkAlias(
+            projectRoot,
+            realProjectRoot,
+            entry.destinationPath,
+          );
+        }
+        const destinationKeys = new Set<string>();
+        for (const entry of uploadEntries) {
+          const destinationKey = entry.destinationPath
+            .normalize('NFC')
+            .toLocaleLowerCase('en-US');
+          if (destinationKeys.has(destinationKey)) {
+            throw createFileTreeError(
+              'Two uploaded files resolve to the same destination.',
+              400,
+              'UPLOAD_DUPLICATE_PATH',
+            );
           }
-
-          const parentDirectory = path.dirname(destinationPath);
-          try {
-            await fileSystem.access(parentDirectory);
-          } catch {
-            await fileSystem.makeDirectory(parentDirectory, true);
-          }
-
-          await fileSystem.copyFile(file.temporaryPath, destinationPath);
-          await fileSystem.unlink(file.temporaryPath);
-          uploadedFiles.push({
-            name: fileName,
-            path: destinationPath,
-            size: file.size,
-            mimeType: file.mimeType,
-          });
+          destinationKeys.add(destinationKey);
         }
 
+        const uploadedFiles: Array<{ name: string; path: string; size: number; mimeType: string }> = [];
+        const uploadFailures: Array<{ name: string; code: string; message: string }> = [];
+        for (const { file, fileName, destinationPath } of uploadEntries) {
+          try {
+            const parentDirectory = path.dirname(destinationPath);
+            try {
+              await fileSystem.access(parentDirectory);
+            } catch {
+              await fileSystem.makeDirectory(parentDirectory, true);
+            }
+
+            await assertUploadPathHasNoSymlinkAlias(
+              projectRoot,
+              realProjectRoot,
+              destinationPath,
+            );
+
+            await fileSystem.copyFile(file.temporaryPath, destinationPath);
+            uploadedFiles.push({
+              name: fileName,
+              path: destinationPath,
+              size: file.size,
+              mimeType: file.mimeType,
+            });
+          } catch (error) {
+            const errorCode = readErrorCode(error) ?? 'UPLOAD_FILE_FAILED';
+            const message = error instanceof AppError
+              ? error.message
+              : errorCode === 'EACCES' || errorCode === 'EPERM'
+                ? 'Permission denied while writing this file.'
+                : 'This file could not be written.';
+            uploadFailures.push({ name: fileName, code: errorCode, message });
+            dependencies.logger.error(`Error uploading file "${fileName}": ${readErrorMessage(error)}`, error);
+          } finally {
+            await cleanupTemporaryFiles([file]);
+          }
+        }
+
+        const requestedFileCount = Math.max(input.files.length, input.requestedFileCount);
+        const status = uploadedFiles.length === requestedFileCount ? 'complete' as const : 'partial' as const;
         return {
-          success: true,
+          success: status === 'complete',
+          status,
           files: uploadedFiles,
+          failures: uploadFailures,
           uploadedCount: uploadedFiles.length,
-          requestedFileCount: input.requestedFileCount,
+          requestedFileCount,
           targetPath: resolvedTargetDirectory,
-          message: `Uploaded ${uploadedFiles.length} ${uploadedFiles.length === 1 ? 'file' : 'files'} successfully`,
+          message: status === 'complete'
+            ? `Uploaded ${uploadedFiles.length} ${uploadedFiles.length === 1 ? 'file' : 'files'} successfully`
+            : `Uploaded ${uploadedFiles.length} of ${requestedFileCount} files.`,
         };
       } catch (error) {
         await cleanupTemporaryFiles(input.files);

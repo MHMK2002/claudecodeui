@@ -221,7 +221,7 @@ export default function TaskDetailModal({
                 <button
                   onClick={handleSaveChanges}
                   disabled={isSaving}
-                  className="rounded-md p-2 text-green-600 hover:bg-green-50 disabled:opacity-50 dark:hover:bg-green-950"
+                  className="min-h-11 min-w-11 rounded-md p-2 text-primary hover:bg-accent disabled:opacity-50"
                   title="Save"
                 >
                   <Save className={cn('w-5 h-5', isSaving && 'animate-spin')} />
@@ -232,7 +232,7 @@ export default function TaskDetailModal({
                     setIsEditMode(false);
                   }}
                   disabled={isSaving}
-                  className="rounded-md p-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
+                  className="min-h-11 min-w-11 rounded-md p-2 text-muted-foreground hover:bg-accent"
                   title="Cancel editing"
                 >
                   <X className="h-5 w-5" />
@@ -241,13 +241,13 @@ export default function TaskDetailModal({
             ) : (
               <button
                 onClick={() => setIsEditMode(true)}
-                className="rounded-md p-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
+                className="min-h-11 min-w-11 rounded-md p-2 text-muted-foreground hover:bg-accent"
                 title="Edit task"
               >
                 <Edit className="h-5 w-5" />
               </button>
             )}
-            <button onClick={onClose} className="rounded-md p-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800" title="Close">
+            <button onClick={onClose} className="min-h-11 min-w-11 rounded-md p-2 text-muted-foreground hover:bg-accent" title="Close">
               <X className="h-5 w-5" />
             </button>
           </div>

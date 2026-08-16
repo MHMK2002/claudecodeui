@@ -47,7 +47,7 @@ body.cc-modal-window {
   --b-strong: #c3ccd6;
   --tx: #11151a;
   --tx2: #566171;
-  --tx3: #7f8b98;
+  --tx3: var(--tx2);
   --brand: #0a66d9;
   --brand-2: #0f5fc6;
   --brand-faint: rgba(10, 102, 217, 0.09);
@@ -80,6 +80,12 @@ button {
   cursor: pointer;
   border: 0;
   background: none;
+}
+
+button:focus-visible,
+.startup-details summary:focus-visible {
+  outline: 2px solid var(--brand-2);
+  outline-offset: 2px;
 }
 
 #app {
@@ -421,6 +427,38 @@ svg {
   gap: 12px;
 }
 
+.cc-lan-access,
+.cc-field {
+  display: grid;
+  gap: 8px;
+}
+
+.cc-lan-access {
+  padding-top: 12px;
+  border-top: 1px solid var(--b-subtle);
+}
+
+.cc-field span {
+  color: var(--tx2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cc-field input {
+  min-height: 44px;
+  width: 100%;
+  border: 1px solid var(--b-subtle);
+  border-radius: 8px;
+  background: var(--s1);
+  color: var(--tx);
+  padding: 9px 11px;
+}
+
+.cc-field input:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
 .cc-permissions {
   display: grid;
   gap: 10px;
@@ -640,6 +678,33 @@ svg {
   flex-wrap: wrap;
 }
 
+.startup-details {
+  border: 1px solid var(--b);
+  border-radius: 10px;
+  background: var(--s2);
+}
+
+.startup-details summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  color: var(--tx);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.startup-details pre {
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  border-top: 1px solid var(--b);
+  padding: 12px;
+  color: var(--tx2);
+  font: 11px/1.55 var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
 .env {
   display: flex;
   align-items: center;
@@ -716,6 +781,17 @@ body.win .titlebar {
 }
 
 @media (max-width: 760px) {
+  .btn,
+  .icon-btn,
+  .sb-item,
+  .startup-details summary {
+    min-height: 44px;
+  }
+
+  .icon-btn {
+    min-width: 44px;
+  }
+
   .v-sidebar {
     grid-template-columns: 1fr;
   }

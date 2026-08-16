@@ -314,7 +314,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     const providerSessionId = options.providerSessionId ?? sessionId;
     const db = openOpenCodeDatabase();
     if (!db) {
-      return { messages: [], total: 0, hasMore: false, offset: 0, limit: null };
+      throw new Error(`OpenCode history database is unavailable for session ${sessionId}.`);
     }
 
     try {
@@ -357,7 +357,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[OpenCodeProvider] Failed to load session ${sessionId}:`, message);
-      return { messages: [], total: 0, hasMore: false, offset: 0, limit: null };
+      throw error;
     } finally {
       db.close();
     }

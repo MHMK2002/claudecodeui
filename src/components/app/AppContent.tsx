@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
@@ -14,6 +14,7 @@ import { useSessionProtection } from '../../hooks/useSessionProtection';
 import { useProjectsState } from '../../hooks/useProjectsState';
 import { useQueuedMessageAutoSend } from '../../hooks/useQueuedMessageAutoSend';
 import { api } from '../../utils/api';
+import type { ScheduleWorkspaceRequest } from '../../types/scheduledRuns';
 
 type RunningSessionApiItem = {
   sessionId?: unknown;
@@ -60,6 +61,8 @@ function AppContentInner() {
   const { t } = useTranslation('common');
   const { isMobile } = useDeviceSettings({ trackPWA: false });
   const { ws, sendMessage, subscribe } = useWebSocket();
+  const [taskWorkspaceRequest, setTaskWorkspaceRequest] = useState(0);
+  const [scheduleWorkspaceRequest, setScheduleWorkspaceRequest] = useState<ScheduleWorkspaceRequest | null>(null);
 
   const {
     processingSessions,
@@ -151,6 +154,17 @@ function AppContentInner() {
     openSettings,
     refreshProjects: refreshProjectsSilently,
   });
+
+  useEffect(() => {
+    const editingSchedule = scheduleWorkspaceRequest?.schedule;
+    if (!editingSchedule || !selectedProject) return;
+    const belongsToProject = editingSchedule.projectId
+      ? editingSchedule.projectId === selectedProject.projectId
+      : editingSchedule.projectPath === (selectedProject.fullPath || selectedProject.path);
+    if (belongsToProject) return;
+    setScheduleWorkspaceRequest(null);
+    if (activeTab === 'schedules') setActiveTab('chat');
+  }, [activeTab, scheduleWorkspaceRequest, selectedProject, setActiveTab]);
 
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
@@ -272,8 +286,42 @@ function AppContentInner() {
           newSessionTrigger={newSessionTrigger}
           onProjectSelect={handleProjectSelect}
           onProjectsRefresh={() => void refreshProjectsSilently()}
+          taskWorkspaceRequest={taskWorkspaceRequest}
+          scheduleWorkspaceRequest={scheduleWorkspaceRequest}
+          onCloseScheduleWorkspace={() => {
+            setScheduleWorkspaceRequest(null);
+            setActiveTab('chat');
+          }}
         />
       </div>
+
+      <QuickSettingsPanel
+        sendMessage={sendMessage}
+        onSessionEstablished={(targetSessionId, context) =>
+          registerOptimisticSession({ sessionId: targetSessionId, ...context })
+        }
+        onNavigateToSession={(targetSessionId: string) => navigate(`/session/${targetSessionId}`)}
+        onSessionProcessing={markSessionProcessing}
+        onCreateTask={() => {
+          setActiveTab('tasks');
+          setTaskWorkspaceRequest((request) => request + 1);
+        }}
+        onCreateSchedule={() => {
+          setActiveTab('schedules');
+          setScheduleWorkspaceRequest((current) => ({
+            requestId: (current?.requestId ?? 0) + 1,
+            schedule: null,
+          }));
+        }}
+        onEditSchedule={(schedule) => {
+          setActiveTab('schedules');
+          setScheduleWorkspaceRequest((current) => ({
+            requestId: (current?.requestId ?? 0) + 1,
+            schedule,
+          }));
+        }}
+        onOpenProviderSettings={() => openSettings('agents')}
+      />
 
       <CommandPalette
         selectedProject={selectedProject}
@@ -282,17 +330,6 @@ function AppContentInner() {
         onShowTab={setActiveTab}
       />
 
-      {/* Rendered at app level (not inside MainContent) so the drawer's
-          z-index escapes the content overflow context. The task/schedule tabs
-          drive chat runs, so it takes the same callbacks MainContent gets. */}
-      <QuickSettingsPanel
-        sendMessage={sendMessage}
-        onSessionEstablished={(targetSessionId, context) =>
-          registerOptimisticSession({ sessionId: targetSessionId, ...context })
-        }
-        onNavigateToSession={(targetSessionId: string) => navigate(`/session/${targetSessionId}`)}
-        onSessionProcessing={markSessionProcessing}
-      />
     </div>
   );
 }

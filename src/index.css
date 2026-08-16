@@ -31,13 +31,15 @@
     --popover-foreground: 36 25% 4%;
     --primary: 221.2 83.2% 53.3%;
     --primary-foreground: 210 40% 98%;
+    --message-user: 221.2 83.2% 53.3%;
+    --message-user-foreground: 210 40% 98%;
     --secondary: 44 15% 91%;
     --secondary-foreground: 36 15% 18%;
     --muted: 44 15% 91%;
-    --muted-foreground: 40 5% 44%;
+    --muted-foreground: 40 5% 40%;
     --accent: 44 15% 91%;
     --accent-foreground: 36 15% 18%;
-    --destructive: 0 84.2% 60.2%;
+    --destructive: 0 72% 42%;
     --destructive-foreground: 210 40% 98%;
     --border: 44 14% 87%;
     --input: 44 14% 87%;
@@ -93,14 +95,16 @@
     --popover-foreground: 40 8% 93%;
     --primary: 217.2 91.2% 59.8%;
     --primary-foreground: 0 0% 8%;
+    --message-user: 224 76% 48%;
+    --message-user-foreground: 210 40% 98%;
     --secondary: 0 0% 17%;
     --secondary-foreground: 40 8% 93%;
     --muted: 0 0% 17%;
     --muted-foreground: 0 0% 60%;
     --accent: 0 0% 17%;
     --accent-foreground: 40 8% 93%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 40 8% 93%;
+    --destructive: 0 72% 65%;
+    --destructive-foreground: 0 0% 8%;
     --border: 0 0% 17%;
     --input: 0 0% 23%;
     --ring: 217.2 91.2% 59.8%;
@@ -541,25 +545,25 @@
   
   /* Custom class for chat input placeholder */
   .chat-input-placeholder::placeholder {
-    color: rgb(156 163 175) !important;
+    color: hsl(var(--muted-foreground)) !important;
     opacity: 1 !important;
   }
 
-  .dark .chat-input-placeholder::placeholder {
-    color: rgb(75 85 99) !important;
+  .dark textarea.chat-input-placeholder::placeholder {
+    color: hsl(var(--muted-foreground)) !important;
     opacity: 1 !important;
-    -webkit-text-fill-color: rgb(75 85 99) !important;
+    -webkit-text-fill-color: hsl(var(--muted-foreground)) !important;
   }
 
   .chat-input-placeholder::-webkit-input-placeholder {
-    color: rgb(156 163 175) !important;
+    color: hsl(var(--muted-foreground)) !important;
     opacity: 1 !important;
   }
 
-  .dark .chat-input-placeholder::-webkit-input-placeholder {
-    color: rgb(75 85 99) !important;
+  .dark textarea.chat-input-placeholder::-webkit-input-placeholder {
+    color: hsl(var(--muted-foreground)) !important;
     opacity: 1 !important;
-    -webkit-text-fill-color: rgb(75 85 99) !important;
+    -webkit-text-fill-color: hsl(var(--muted-foreground)) !important;
   }
   
   /* WebKit specific placeholder styles */

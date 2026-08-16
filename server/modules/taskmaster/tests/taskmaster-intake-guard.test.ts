@@ -12,18 +12,7 @@ import { createTaskmasterRouter } from '../taskmaster.routes.js';
 // closed so nothing can persist a task by calling them straight.
 test('legacy task-producing routes cannot bypass explicit intake approval', async () => {
   const router = createTaskmasterRouter({
-    fileSystem: {} as typeof import('node:fs'),
-    fileSystemPromises: {} as typeof import('node:fs/promises'),
-    spawnProcess: (() => { throw new Error('spawn should not run'); }) as unknown as
-      Parameters<typeof createTaskmasterRouter>[0]['spawnProcess'],
-    resolveProjectPathById: () => { throw new Error('project resolution should not run'); },
-    taskmasterService: {
-      detectMcpServer: async () => ({
-        hasMCPServer: false,
-        reason: 'Not configured',
-        hasConfig: false,
-      }),
-    },
+    taskmasterService: {} as Parameters<typeof createTaskmasterRouter>[0]['taskmasterService'],
   } as unknown as Parameters<typeof createTaskmasterRouter>[0]);
 
   const app = express();

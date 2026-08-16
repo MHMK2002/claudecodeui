@@ -6,6 +6,8 @@ export type AuthUser = {
   [key: string]: unknown;
 };
 
+export type RuntimeMode = 'desktop-local' | 'desktop-lan' | 'standalone-web' | 'platform';
+
 export type AuthActionResult = { success: true } | { success: false; error: string };
 
 export type AuthSessionPayload = {
@@ -17,6 +19,7 @@ export type AuthSessionPayload = {
 
 export type AuthStatusPayload = {
   needsSetup?: boolean;
+  runtimeMode?: RuntimeMode;
 };
 
 export type AuthUserPayload = {
@@ -39,10 +42,13 @@ export type AuthContextValue = {
   needsSetup: boolean;
   hasCompletedOnboarding: boolean;
   error: string | null;
+  runtimeMode: RuntimeMode | null;
+  localBootstrapReady: boolean;
   login: (username: string, password: string) => Promise<AuthActionResult>;
   register: (username: string, password: string) => Promise<AuthActionResult>;
-  logout: () => void;
+  logout: () => Promise<AuthActionResult>;
   refreshOnboardingStatus: () => Promise<void>;
+  retryLocalBootstrap: () => Promise<void>;
 };
 
 export type AuthProviderProps = {

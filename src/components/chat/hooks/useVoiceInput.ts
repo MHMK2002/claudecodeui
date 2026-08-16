@@ -9,6 +9,11 @@ import {
   transcribeVoice,
 } from '../../../lib/voiceApi';
 import { readVoiceConfig } from '../../../hooks/useVoiceConfig';
+import { useAuth } from '../../auth/context/AuthContext';
+import {
+  AUTH_LOCAL_SESSION_UNAVAILABLE_EVENT,
+  renewDesktopLocalSession,
+} from '../../../utils/api';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -104,6 +109,7 @@ export function useVoiceInput(
   onError?: (msg: string) => void,
   onInterim?: (text: string | null) => void,
 ) {
+  const { runtimeMode } = useAuth();
   const [state, setState] = useState<VoiceInputState>('idle');
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -219,6 +225,14 @@ export function useVoiceInput(
       };
 
       const isSoniox = readVoiceConfig().sttProvider === 'soniox';
+      if (isSoniox && runtimeMode === 'desktop-local') {
+        const renewed = await renewDesktopLocalSession();
+        if (renewed === false) {
+          stopRecordingTracks();
+          window.dispatchEvent(new Event(AUTH_LOCAL_SESSION_UNAVAILABLE_EVENT));
+          throw new Error('Local voice session could not be restored.');
+        }
+      }
 
       // Soniox streams over a WebSocket relay (server/modules/websocket/services/
       // voice-stream-proxy.service.ts) instead of an upload-then-poll REST call, so
@@ -480,7 +494,7 @@ export function useVoiceInput(
     } finally {
       if (startAttemptRef.current === startAttempt) startingRef.current = false;
     }
-  }, [onTranscript, onError]);
+  }, [onTranscript, onError, runtimeMode]);
 
   // Stop recording. Pass { send: true } to auto-send the transcript once it's ready,
   // and { origin } to bind the eventual transcript to the session it was committed in

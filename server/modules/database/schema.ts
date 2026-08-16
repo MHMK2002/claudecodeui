@@ -200,8 +200,10 @@ CREATE TABLE IF NOT EXISTS scheduled_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
     title TEXT NOT NULL,
+    project_id TEXT,
     project_path TEXT NOT NULL,
     provider TEXT NOT NULL,
+    provider_profile_id INTEGER,
     model TEXT NOT NULL,
     prompt TEXT NOT NULL,
     cron_expression TEXT NOT NULL,
@@ -216,7 +218,9 @@ CREATE TABLE IF NOT EXISTS scheduled_runs (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (project_path) REFERENCES projects(project_path) ON DELETE CASCADE
+    FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    FOREIGN KEY (project_path) REFERENCES projects(project_path) ON DELETE CASCADE ON UPDATE CASCADE,
+    FOREIGN KEY (provider_profile_id) REFERENCES provider_profiles(id) ON DELETE SET NULL
 );
 `;
 
@@ -297,6 +301,8 @@ ${SCHEDULED_RUNS_TABLE_SCHEMA_SQL}
 CREATE INDEX IF NOT EXISTS idx_scheduled_runs_user_id ON scheduled_runs(user_id);
 CREATE INDEX IF NOT EXISTS idx_scheduled_runs_due ON scheduled_runs(is_enabled, next_run_at);
 CREATE INDEX IF NOT EXISTS idx_scheduled_runs_project ON scheduled_runs(project_path);
+-- NOTE: The project_id index is created in migrations after legacy scheduled_runs
+-- tables receive the project_id column.
 CREATE INDEX IF NOT EXISTS idx_scheduled_runs_in_flight ON scheduled_runs(in_flight_run_id);
 
 ${SCHEDULED_RUN_HISTORY_TABLE_SCHEMA_SQL}

@@ -80,6 +80,10 @@
     "holdToTalkDescription": "Hold Option+Space anywhere in the app to dictate. Release to fill the input.",
     "holdToTalk": "Enable Option+Space hold-to-talk",
     "holdToTalkHint": "Hold Option+Space to record, release to transcribe into the input.",
+    "readAloud": "Read aloud",
+    "readAloudDescription": "Show speech controls on assistant messages.",
+    "readAloudAdvancedDescription": "Configure the OpenAI-compatible text-to-speech backend.",
+    "language": "Dictation language",
     "cleanupTitle": "Transcript cleanup",
     "cleanupDescription": "Optionally polish the STT result with a selected Codex provider and model before it fills the input.",
     "cleanupEnable": "Clean up transcript",
@@ -145,6 +149,12 @@
     "notifications": "Notifications",
     "plugins": "Plugins",
     "about": "About"
+  },
+  "settingsGroups": {
+    "general": "General",
+    "aiIntegrations": "AI & integrations",
+    "projectTools": "Project tools",
+    "system": "System"
   },
   "notifications": {
     "title": "Notifications",

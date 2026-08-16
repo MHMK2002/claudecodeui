@@ -1,5 +1,3 @@
-import { useState, type ReactNode } from 'react';
-import { useTranslation } from 'react-i18next';
 import {
   Activity,
   BarChart3,
@@ -19,9 +17,11 @@ import {
   Trash2,
   type LucideIcon,
 } from 'lucide-react';
+import { useState, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 
-import { usePlugins } from '../../../contexts/PluginsContext';
-import type { Plugin } from '../../../contexts/PluginsContext';
+import { PRODUCT_CONFIG } from '../../../constants/config';
+import { usePlugins, type Plugin } from '../../../contexts/PluginsContext';
 
 import PluginIcon from './PluginIcon';
 
@@ -670,7 +670,7 @@ export default function PluginSettingsTab() {
         </a>
         <span className="text-muted-foreground/20">·</span>
         <a
-          href="https://cloudcli.ai/docs/plugin-overview"
+          href={PRODUCT_CONFIG.documentationUrl}
           target="_blank"
           rel="noopener noreferrer"
           className="inline-flex items-center gap-1 text-xs text-muted-foreground/60 transition-colors hover:text-foreground"

@@ -4,7 +4,8 @@ This module owns the server-side WebSocket gateway used by:
 
 1. Chat streaming (`/ws`)
 2. Interactive terminal sessions (`/shell`)
-3. Plugin WebSocket passthrough (`/plugin-ws/:pluginName`)
+3. Explicit setup/provider-login commands (`/command-terminal`)
+4. Plugin WebSocket passthrough (`/plugin-ws/:pluginName`)
 
 It is intentionally structured as **small services** plus a **barrel export** in `index.ts`.
 
@@ -36,7 +37,8 @@ Benefits:
 | `services/chat-websocket.service.ts` | Handles the `/ws` chat protocol (`chat.send` / `chat.abort` / `chat.subscribe` / `chat.permission-response`) |
 | `services/chat-run-registry.service.ts` | Tracks live provider runs per app session id: seq numbering, event replay buffer, provider-id mapping, completion state |
 | `services/chat-session-writer.service.ts` | Gateway writer handed to provider runtimes: remaps provider session ids to app ids, swallows `session_created`, assigns `seq` |
-| `services/shell-websocket.service.ts` | Handles `/shell` PTY lifecycle, reconnect buffering, auth URL detection |
+| `services/shell-websocket.service.ts` | Handles the project-id-only `/shell` interactive-terminal lifecycle and reconnect buffer |
+| `services/command-terminal-websocket.service.ts` | Isolates explicit setup/provider-login commands and auth URL detection on `/command-terminal` |
 | `services/plugin-websocket-proxy.service.ts` | Bridges client socket to plugin socket |
 | `services/websocket-writer.service.ts` | Adapts raw WebSocket to writer interface (`send`, `setSessionId`, `getSessionId`) for non-chat writer consumers |
 | `services/websocket-state.service.ts` | Holds shared chat client set and open-state constant |
@@ -50,12 +52,14 @@ flowchart LR
   B --> D{Pathname}
   D -->|/ws| E[handleChatConnection]
   D -->|/shell| F[handleShellConnection]
+  D -->|/command-terminal| P[handleCommandTerminalConnection]
   D -->|/plugin-ws/:name| G[handlePluginWsProxy]
   D -->|other| H[close()]
 
   E --> I[connectedClients Set]
   E --> J[chatRunRegistry + ChatSessionWriter]
   F --> K[ptySessionsMap]
+  P --> Q[One explicit command PTY]
   G --> L[Upstream Plugin ws://127.0.0.1:port/ws]
 
   I --> M[projects.service loading_progress]
@@ -76,14 +80,14 @@ sequenceDiagram
 
   Client->>WSS: Upgrade Request
   WSS->>Auth: verifyClient(info)
+  Auth->>Auth: reject token/access_token query credentials
   alt Platform mode
-    Auth->>Auth: authenticateWebSocket(null)
-    Auth->>Auth: attach request.user
-  else OSS mode
-    Auth->>Auth: read token from ?token or Authorization
-    Auth->>Auth: authenticateWebSocket(token)
-    Auth->>Auth: attach request.user
+    Auth->>Auth: resolve the platform principal
+  else Desktop / standalone mode
+    Auth->>Auth: read the HttpOnly session cookie
+    Auth->>Auth: validate the session and user
   end
+  Auth->>Auth: attach request.user
 
   alt Auth failed
     Auth-->>WSS: false (reject handshake)
@@ -94,6 +98,8 @@ sequenceDiagram
       Router->>Chat: handleChatConnection(ws, request, deps.chat)
     else pathname == /shell
       Router->>Shell: handleShellConnection(ws, deps.shell)
+    else pathname == /command-terminal
+      Router->>Shell: handleCommandTerminalConnection(ws, deps.commandTerminal)
     else pathname startsWith /plugin-ws/
       Router->>Proxy: handlePluginWsProxy(ws, pathname, getPluginPort)
     else unknown
@@ -143,13 +149,13 @@ flowchart TD
 3. **Per-run event log**: every live event gets a monotonically increasing `seq`. `chat.subscribe { sessions: [{ sessionId, lastSeq }] }` re-attaches the live stream to the requesting socket (any provider, not just Claude) and replays events with `seq > lastSeq`. If the buffer no longer covers `lastSeq`, the client refreshes over REST.
 4. `chat_subscribed` includes `isProcessing` (replaces `check-session-status`) and `pendingPermissions` (replaces `get-pending-permissions`).
 
-## `/shell` Terminal Flow
+## `/shell` Local Terminal Flow
 
-The shell handler manages persistent PTY sessions keyed by:
-
-`<projectPath>_<sessionIdOrDefault>[_cmd_<hash>]`
-
-This enables reconnect behavior and isolates command-specific plain-shell sessions.
+The primary Shell accepts only `init { mode: "interactive-terminal", projectId,
+cols, rows, forceRestart? }`. It resolves the registered project row server-side,
+canonicalizes that stored directory, and keys the retained PTY by authenticated
+principal plus `projectId`.
+Client paths, provider ids, provider session ids, and setup commands are rejected.
 
 ### Shell Lifecycle
 
@@ -157,16 +163,16 @@ This enables reconnect behavior and isolates command-specific plain-shell sessio
 stateDiagram-v2
   [*] --> WaitingInit
   WaitingInit --> ValidateInit: message.type == init
-  ValidateInit --> ReconnectExisting: session key exists and not login reset
-  ValidateInit --> SpawnNewPTY: valid path + valid sessionId
-  ValidateInit --> EmitError: invalid payload/path/sessionId
+  ValidateInit --> ReconnectExisting: retained project PTY exists
+  ValidateInit --> SpawnNewPTY: registered project + available cwd/shell
+  ValidateInit --> EmitError: invalid/project/cwd/shell failure
 
   ReconnectExisting --> Running: attach ws, replay buffer
   SpawnNewPTY --> Running: pty.spawn + wire onData/onExit
 
   Running --> Running: input -> pty.write
   Running --> Running: resize -> pty.resize
-  Running --> Running: onData -> buffer + output + auth_url detection
+  Running --> Running: onData -> bounded buffer + output
   Running --> Exited: onExit
   Running --> Detached: ws close
 
@@ -179,20 +185,22 @@ stateDiagram-v2
 
 ### Shell Behaviors in Detail
 
-1. `init`:
-Reads `projectPath`, `sessionId`, `provider`, `hasSession`, `initialCommand`, `isPlainShell`.
-2. Login reset:
-For login-like commands, existing keyed PTY session is killed and recreated.
-3. Validation:
-Path must exist and be a directory; `sessionId` must match safe pattern.
-4. Command build:
-Provider-specific command construction with resume semantics.
-5. PTY output buffering:
-Stores up to 5000 chunks for replay on reconnect.
-6. URL detection:
-Strips ANSI, accumulates text buffer, extracts URLs, emits `auth_url` once per normalized URL, supports `autoOpen`.
-7. Close behavior:
+1. `init` validates `interactive-terminal` and a safe database `projectId`.
+2. The Projects module resolves only active rows; Shell then uses `realpath` and requires a directory.
+3. macOS/Linux spawn the user's system shell directly with `-l`; Windows spawns COMSPEC directly. No `bash -c` wrapper exists.
+4. Input, resize, restart, buffered reconnect, copy, and paste stay terminal-native.
+5. Failures use typed `PROJECT_MISSING`, `CWD_UNAVAILABLE`, `SHELL_UNAVAILABLE`, or `SOCKET_FAILURE` recovery frames.
+6. PTY output is bounded to one MiB for replay.
+7. Provider/session resume and auth URL detection are absent from `/shell`.
+8. Close behavior:
 Socket disconnect does not instantly kill PTY; session is kept alive and terminated on timeout.
+
+## `/command-terminal` Setup Flow
+
+Provider Login and the temporary Task setup command use a separate loopback-only
+transport. It launches the same system login shell directly, writes the explicit
+command as terminal input, and keeps auth URL detection isolated from the local
+project Shell. Both terminal paths reject remote, LAN, and platform upgrades.
 
 ## `/plugin-ws/:pluginName` Proxy Flow
 

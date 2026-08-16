@@ -1,25 +1,36 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, session, shell, webContents } from 'electron';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { readBuildIdentityFileSync } from '../shared/buildIdentity.js';
+import productConfig from '../shared/product-config.json' with { type: 'json' };
+
 import { CloudController } from './cloud.js';
 import { DesktopWindowManager } from './desktopWindow.js';
 import { DesktopNotificationsController } from './desktopNotifications.js';
 import { DesktopDiagnostics, redactDiagnosticValue } from './diagnostics.js';
-import { LocalAuthStore } from './localAuth.js';
+import {
+  DESKTOP_UPDATER_CHANNELS,
+  DesktopUpdaterController,
+  createDesktopInstallPreparation,
+  registerDesktopUpdaterIpc,
+} from './desktopUpdater.js';
 import { isExactVerifiedOrigin } from './localOrigin.js';
 import { LocalServerController } from './localServer.js';
+import { createDesktopPdfExporter, registerDesktopPdfExportHandler } from './pdfExport.js';
 import { TabsController } from './tabs.js';
+import { createVoiceSecureStorage } from './voiceSecureStorage.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const APP_NAME = 'CloudCLI';
+const APP_NAME = productConfig.productName;
+const CLOUD_ENABLED = productConfig.features.cloud === true;
 const APP_USER_MODEL_ID = 'ai.cloudcli.desktop';
 const CALLBACK_PROTOCOL = 'cloudcli';
 const CALLBACK_URL = `${CALLBACK_PROTOCOL}://auth/callback`;
-const CLOUDCLI_CONTROL_PLANE_URL = process.env.CLOUDCLI_CONTROL_PLANE_URL || 'https://cloudcli.ai';
+const CLOUDCLI_CONTROL_PLANE_URL = process.env.CLOUDCLI_CONTROL_PLANE_URL || productConfig.homepageUrl;
 const REMOTE_START_TIMEOUT_MS = 30000;
 const AUTH_CALLBACK_TTL_MS = 10 * 60 * 1000;
 
@@ -34,12 +45,44 @@ let desktopWindow = null;
 let localServer = null;
 let cloud = null;
 let desktopNotifications = null;
-let localAuth = null;
+let desktopUpdater = null;
 let diagnostics = null;
-let buildId = null;
+let voiceSecureStorage = null;
+let buildIdentity = null;
+let localStartupFailure = null;
 let isQuitting = false;
 let isRefreshingCloud = false;
 let pendingCloudConnectStartedAt = 0;
+
+const exportDesktopPdf = createDesktopPdfExporter({
+  BrowserWindow,
+  dialog,
+  getParentWindow: () => desktopWindow?.getMainWindow() ?? null,
+});
+
+function cloudDisabledError() {
+  return new Error('Cloud is not available in this build.');
+}
+
+function createDisabledCloudController() {
+  const reject = async () => { throw cloudDisabledError(); };
+  return Object.freeze({
+    getAccount: () => null,
+    getAuthState: () => 'disabled',
+    getEnvironments: () => [],
+    getEnvironmentUrl: () => null,
+    findEnvironment: () => null,
+    buildConnectUrl: () => { throw cloudDisabledError(); },
+    clearCloudAccount: async () => {},
+    loadCloudAccount: async () => {},
+    refreshCloudEnvironments: reject,
+    saveFromCallback: reject,
+    startEnvironmentAndWait: reject,
+    stopEnvironment: reject,
+    getEnvironmentCredentials: reject,
+    getEnvironmentLaunchUrl: reject,
+  });
+}
 
 function getAppRoot() {
   return app.isPackaged ? app.getAppPath() : path.resolve(__dirname, '..');
@@ -47,6 +90,16 @@ function getAppRoot() {
 
 function getLauncherPath() {
   return path.join(__dirname, 'launcher', 'index.html');
+}
+
+function isTrustedDesktopChrome(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'file:'
+      && path.resolve(fileURLToPath(parsed)) === path.resolve(getLauncherPath());
+  } catch {
+    return false;
+  }
 }
 
 function getPreloadPath() {
@@ -72,26 +125,34 @@ function getDesktopNotificationsSettingsPath() {
   return path.join(app.getPath('userData'), 'desktop-notifications-settings.json');
 }
 
-function getLocalAuthPath() {
-  return path.join(app.getPath('userData'), 'local-auth.json');
+function getVoiceSecureStoragePath() {
+  return path.join(app.getPath('userData'), 'voice-secrets.json');
 }
 
 function getDiagnosticsDirectory() {
   return path.join(app.getPath('userData'), 'diagnostics');
 }
 
-function readBuildId() {
-  try {
-    const value = fs.readFileSync(path.join(getAppRoot(), 'dist', 'build-id.txt'), 'utf8').trim();
-    if (value) return value;
-  } catch {
-    // Development checkouts may not have a client build yet.
+function readBuildIdentity() {
+  const appRoot = getAppRoot();
+  const candidates = app.isPackaged
+    ? [path.join(appRoot, 'dist', 'build-identity.json')]
+    : [
+        path.join(appRoot, '.build-identity', 'build-identity.json'),
+        path.join(appRoot, 'dist', 'build-identity.json'),
+      ];
+  const identityPath = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!identityPath) {
+    throw new Error(`Desktop build identity is missing. Checked: ${candidates.join(', ')}`);
   }
-  if (app.isPackaged) throw new Error('Packaged desktop build identity is missing.');
-  return `${app.getVersion()}-unidentified`;
+  return readBuildIdentityFileSync(identityPath, {
+    expectedVersion: app.getVersion(),
+    source: 'Desktop build identity',
+  });
 }
 
 function getRunningEnvironmentUrls() {
+  if (!CLOUD_ENABLED) return [];
   return cloud.getEnvironments()
     .filter((environment) => environment.status === 'running')
     .map((environment) => cloud.getEnvironmentUrl(environment))
@@ -104,8 +165,9 @@ function getDisplayTargetName() {
 
 function getCloudState() {
   return {
-    appVersion: app.getVersion(),
-    buildId,
+    enabled: CLOUD_ENABLED,
+    appVersion: buildIdentity.version,
+    buildId: buildIdentity.buildId,
     account: cloud.getAccount(),
     environments: cloud.getEnvironments(),
     controlPlaneUrl: CLOUDCLI_CONTROL_PLANE_URL,
@@ -115,9 +177,11 @@ function getCloudState() {
 function getLocalState() {
   return {
     desktopSettings: localServer.getSettings(),
+    startupStage: localServer.getStartupStage(),
     localServerRunning: Boolean(localServer.getLocalServerUrl()),
     localWebUrl: localServer.getLocalServerUrl(),
     shareableWebUrl: localServer.getShareableWebUrl(),
+    runtimeMode: localServer.getRuntimeMode(),
   };
 }
 
@@ -140,6 +204,8 @@ function getDesktopState() {
   const localState = getLocalState();
   const authState = cloud.getAuthState();
   return {
+    productName: APP_NAME,
+    features: productConfig.features,
     account: {
       connected: authState === 'connected',
       email: cloudAccount?.email || null,
@@ -152,17 +218,31 @@ function getDesktopState() {
     shareableWebUrl: localState.shareableWebUrl,
     localServerRunning: localState.localServerRunning,
     localStartupLogs: localServer.getStartupLogs(),
-    cloudLoading: isRefreshingCloud,
+    localStartupStage: localState.startupStage,
+    localStartupFailure,
+    cloudLoading: CLOUD_ENABLED && isRefreshingCloud,
     tabs: tabs.getSerializableTabs(),
     activeTabId: tabs.activeTabId,
     environments: cloud.getEnvironments().map(serializeEnvironment),
     desktopNotifications: desktopNotifications?.getState() || { enabled: false, supported: false, connectedCount: 0, targetCount: 0 },
+    desktopUpdater: desktopUpdater?.getState() || null,
   };
+}
+
+function broadcastDesktopUpdaterState(state) {
+  const verifiedOrigin = localServer?.getVerifiedLocalOrigin();
+  if (!verifiedOrigin) return;
+
+  for (const contents of webContents.getAllWebContents()) {
+    if (contents.isDestroyed()) continue;
+    if (!isExactVerifiedOrigin(contents.getURL(), verifiedOrigin)) continue;
+    contents.send(DESKTOP_UPDATER_CHANNELS.stateChanged, state);
+  }
 }
 
 async function openExternalUrl(url) {
   if (String(url).startsWith(CALLBACK_PROTOCOL + "://")) {
-    await handleDeepLink(url);
+    if (CLOUD_ENABLED) await handleDeepLink(url);
     return;
   }
 
@@ -191,7 +271,11 @@ function syncDesktopState() {
   desktopWindow.buildAppMenu();
   desktopWindow.emitDesktopState();
   if (activeTarget?.kind === 'local' && !localServer?.getLocalServerUrl()) {
-    void desktopWindow.showLocalStartupTarget(localServer.getPendingTarget(), localServer.getStartupLogs())
+    void desktopWindow.showLocalStartupTarget(
+      localServer.getPendingTarget(),
+      localServer.getStartupLogs(),
+      localServer.getStartupStage(),
+    )
       .catch((error) => {
         if (isExpectedNavigationAbort(error)) return;
         void showError('Could not update local startup log', error);
@@ -251,8 +335,8 @@ async function getDiagnosticsText() {
   ]);
   return JSON.stringify(redactDiagnosticValue({
     app: APP_NAME,
-    version: app.getVersion(),
-    buildId,
+    version: buildIdentity.version,
+    buildId: buildIdentity.buildId,
     electron: process.versions.electron,
     node: process.versions.node,
     platform: process.platform,
@@ -287,6 +371,7 @@ async function copyDiagnostics() {
 }
 
 async function refreshCloudEnvironments({ showErrors = false } = {}) {
+  if (!CLOUD_ENABLED) return [];
   isRefreshingCloud = true;
   syncDesktopState();
   try {
@@ -314,6 +399,7 @@ async function refreshCloudEnvironments({ showErrors = false } = {}) {
 }
 
 async function connectCloudAccount() {
+  if (!CLOUD_ENABLED) throw cloudDisabledError();
   const connectUrl = cloud.buildConnectUrl();
   pendingCloudConnectStartedAt = Date.now();
   clipboard.writeText(connectUrl);
@@ -322,6 +408,7 @@ async function connectCloudAccount() {
 }
 
 async function handleDeepLink(url) {
+  if (!CLOUD_ENABLED) return;
   let parsed;
   try {
     parsed = new URL(url);
@@ -359,8 +446,7 @@ async function handleDeepLink(url) {
 }
 
 async function copyLocalWebUrl() {
-  await localServer.ensureLocalServer();
-  const shareableUrl = localServer.getShareableWebUrl();
+  const shareableUrl = await localServer.createBrowserHandoffUrl();
   const localUrl = localServer.getLocalServerUrl();
 
   if (!shareableUrl) {
@@ -382,8 +468,7 @@ async function copyLocalWebUrl() {
 }
 
 async function openLocalWebUi() {
-  await localServer.ensureLocalServer();
-  const url = localServer.getShareableWebUrl() || localServer.getLocalServerUrl();
+  const url = await localServer.createBrowserHandoffUrl();
   if (!url) {
     throw new Error('Local CloudCLI URL is not available yet.');
   }
@@ -409,6 +494,10 @@ async function updateDesktopSetting(key, value) {
 }
 
 async function showEnvironmentPicker() {
+  if (!CLOUD_ENABLED) {
+    await openLocalInDesktop();
+    return getDesktopState();
+  }
   let environments = cloud.getEnvironments();
   let refreshError = null;
 
@@ -442,18 +531,21 @@ async function showEnvironmentPicker() {
 }
 
 async function startEnvironment(environment) {
+  if (!CLOUD_ENABLED) throw cloudDisabledError();
   await cloud.startEnvironmentAndWait(environment, REMOTE_START_TIMEOUT_MS);
   await refreshCloudEnvironments({ showErrors: true });
   return getDesktopState();
 }
 
 async function stopEnvironment(environment) {
+  if (!CLOUD_ENABLED) throw cloudDisabledError();
   await cloud.stopEnvironment(environment);
   await refreshCloudEnvironments({ showErrors: true });
   return getDesktopState();
 }
 
 async function openEnvironmentInBrowser(environment) {
+  if (!CLOUD_ENABLED) throw cloudDisabledError();
   await openExternalUrl(await cloud.getEnvironmentLaunchUrl(environment));
   return getDesktopState();
 }
@@ -505,6 +597,7 @@ async function getEnvironmentCredentials(environment) {
 }
 
 async function openEnvironmentInIde(environment, ide) {
+  if (!CLOUD_ENABLED) throw cloudDisabledError();
   const credentials = await getEnvironmentCredentials(environment);
   const scheme = ide === 'cursor' ? 'cursor' : 'vscode';
   const remoteUri = `${scheme}://vscode-remote/ssh-remote+${getSafeSshUsername(credentials)}@${getSafeSshHost(credentials)}/workspace/${getProjectFolder(environment)}?windowId=_blank`;
@@ -513,6 +606,7 @@ async function openEnvironmentInIde(environment, ide) {
 }
 
 async function openEnvironmentInSsh(environment) {
+  if (!CLOUD_ENABLED) throw cloudDisabledError();
   const credentials = await getEnvironmentCredentials(environment);
   const remoteCommand = `cd /workspace/${getProjectFolder(environment)} && exec $SHELL -l`;
   const sshCommand = `ssh -t ${shellQuote(getSshTarget(credentials))} ${shellQuote(remoteCommand)}`;
@@ -549,6 +643,7 @@ async function copyEnvironmentMobileUrl(environment) {
 }
 
 async function openCloudDashboard() {
+  if (!CLOUD_ENABLED) throw cloudDisabledError();
   await openExternalUrl(CLOUDCLI_CONTROL_PLANE_URL);
   return getDesktopState();
 }
@@ -559,6 +654,7 @@ function getActiveRemoteEnvironment() {
 }
 
 async function runActiveEnvironmentAction(action) {
+  if (!CLOUD_ENABLED) throw cloudDisabledError();
   const environment = getActiveRemoteEnvironment();
   if (!environment) {
     throw new Error('Open a cloud environment first.');
@@ -580,25 +676,57 @@ async function runActiveEnvironmentAction(action) {
   }
 }
 
-async function openLocalInDesktop() {
+async function openLocalInDesktop({ repair = false } = {}) {
   const existingTab = tabs.getTab('local');
-  if (existingTab && localServer.getLocalServerUrl()) {
+  if (!repair && existingTab && localServer.getLocalServerUrl()) {
+    await localServer.bootstrapLocalSession(session.defaultSession);
     await desktopWindow.showTarget(await localServer.getResolvedTarget());
     return getDesktopState();
   }
 
+  localStartupFailure = null;
   const pendingTarget = localServer.getPendingTarget();
   tabs.upsertTarget(pendingTarget);
   setActiveTarget(pendingTarget);
-  await desktopWindow.showLocalStartupTarget(pendingTarget, localServer.getStartupLogs());
-  desktopWindow.emitDesktopState();
+  const showStartupStage = async (stage) => {
+    localServer.setStartupStage(stage);
+    await desktopWindow.showLocalStartupTarget(
+      pendingTarget,
+      localServer.getStartupLogs(),
+      stage,
+    );
+    desktopWindow.emitDesktopState();
+  };
+  await showStartupStage('starting-local-server');
 
-  const target = await localServer.getResolvedTarget();
-  await desktopWindow.showTarget(target);
-  return getDesktopState();
+  try {
+    if (repair) {
+      await localServer.restartAndRepair();
+    } else {
+      await localServer.ensureLocalServer();
+    }
+    await showStartupStage('checking-compatibility');
+    const target = await localServer.getResolvedTarget();
+    await showStartupStage('opening-workspace');
+    await localServer.bootstrapLocalSession(session.defaultSession);
+    await desktopWindow.showTarget(target);
+    localServer.setStartupStage('idle');
+    desktopWindow.emitDesktopState();
+    return getDesktopState();
+  } catch (error) {
+    localServer.setStartupStage('failed');
+    localStartupFailure = {
+      kind: repair || error?.code === 'LOCAL_SERVER_COMPATIBILITY' ? 'compatibility' : 'startup',
+      message: String(redactDiagnosticValue(error?.message || String(error))),
+    };
+    await desktopWindow.showLauncher();
+    desktopWindow.emitDesktopState();
+    throw error;
+  }
 }
 
 async function openEnvironmentInDesktop(environment) {
+  if (!CLOUD_ENABLED) throw cloudDisabledError();
   const pendingTarget = getEnvironmentTarget(environment);
   const tabId = tabs.getTabIdForTarget(pendingTarget);
   const hadTab = Boolean(tabs.getTab(tabId));
@@ -712,6 +840,7 @@ async function getEnvironmentAuthToken(environmentUrl) {
 }
 
 async function clearCloudAccount() {
+  if (!CLOUD_ENABLED) return getDesktopState();
   await cloud.clearCloudAccount();
   desktopNotifications?.stop();
   const removedTabs = tabs.removeByKind('remote');
@@ -727,6 +856,7 @@ async function clearCloudAccount() {
 }
 
 function getRemoteEnvironmentMenuItems() {
+  if (!CLOUD_ENABLED) return [];
   const cloudAccount = cloud.getAccount();
   const environments = cloud.getEnvironments();
 
@@ -746,6 +876,7 @@ function getRemoteEnvironmentMenuItems() {
 }
 
 function registerProtocolHandler() {
+  if (!CLOUD_ENABLED) return;
   const appEntry = path.join(getAppRoot(), 'electron', 'main.js');
   if (process.defaultApp && process.argv.length >= 2) {
     app.setAsDefaultProtocolClient(CALLBACK_PROTOCOL, process.execPath, [appEntry]);
@@ -755,24 +886,36 @@ function registerProtocolHandler() {
 }
 
 function registerIpcHandlers() {
-  ipcMain.on('cloudcli-desktop:get-local-auth-token', (event) => {
-    const authorized = isExactVerifiedOrigin(event.senderFrame?.url, localServer?.getVerifiedLocalOrigin());
-    void diagnostics?.record('local-auth.read', { authorized, senderUrl: event.senderFrame?.url });
-    event.returnValue = authorized ? localAuth?.getToken() : null;
-  });
-  ipcMain.on('cloudcli-desktop:update-local-auth-token', (event, token) => {
-    const authorized = isExactVerifiedOrigin(event.senderFrame?.url, localServer?.getVerifiedLocalOrigin());
-    void diagnostics?.record('local-auth.update', { authorized, senderUrl: event.senderFrame?.url });
-    if (!authorized) return;
-    void localAuth?.save(typeof token === 'string' ? token : null).catch((error) => {
-      console.error('[LocalAuth] Could not persist the desktop login:', error?.message || error);
-    });
+  registerDesktopPdfExportHandler({
+    ipcMain,
+    getVerifiedOrigin: () => localServer?.getVerifiedLocalOrigin(),
+    exportPdf: exportDesktopPdf,
   });
 
-  ipcMain.handle('cloudcli-desktop:connect-cloud', async () => ({
-    ...getDesktopState(),
-    connectUrl: await connectCloudAccount(),
-  }));
+  registerDesktopUpdaterIpc({
+    ipcMain,
+    controller: desktopUpdater,
+    getVerifiedOrigin: () => localServer?.getVerifiedLocalOrigin(),
+  });
+
+  ipcMain.handle('cloudcli-desktop:renew-local-session', async (event) => {
+    const authorized = isExactVerifiedOrigin(event.senderFrame?.url, localServer?.getVerifiedLocalOrigin());
+    void diagnostics?.record('local-session.renew', { authorized, senderUrl: event.senderFrame?.url });
+    if (!authorized) throw new Error('Local session renewal is unavailable for this page.');
+    return localServer.bootstrapLocalSession(session.defaultSession);
+  });
+
+  ipcMain.handle('cloudcli-desktop:get-voice-secrets', async (event) => {
+    const authorized = isExactVerifiedOrigin(event.senderFrame?.url, localServer?.getVerifiedLocalOrigin());
+    if (!authorized) throw new Error('Voice secure storage is unavailable for this page.');
+    return voiceSecureStorage.read();
+  });
+
+  ipcMain.handle('cloudcli-desktop:set-voice-secrets', async (event, patch) => {
+    const authorized = isExactVerifiedOrigin(event.senderFrame?.url, localServer?.getVerifiedLocalOrigin());
+    if (!authorized) throw new Error('Voice secure storage is unavailable for this page.');
+    return voiceSecureStorage.write(patch);
+  });
 
   ipcMain.handle('cloudcli-desktop:copy-diagnostics', async () => {
     await copyDiagnostics();
@@ -781,22 +924,9 @@ function registerIpcHandlers() {
 
   ipcMain.handle('cloudcli-desktop:copy-local-web-url', async () => copyLocalWebUrl());
   ipcMain.handle('cloudcli-desktop:get-state', () => getDesktopState());
-  ipcMain.handle('cloudcli-desktop:open-cloud-dashboard', async () => openCloudDashboard());
-  ipcMain.handle('cloudcli-desktop:run-active-environment-action', async (_event, action) => runActiveEnvironmentAction(action));
-  ipcMain.handle('cloudcli-desktop:open-environment', async (_event, environmentId) => {
-    const environment = cloud.findEnvironment(environmentId);
-    if (!environment) {
-      throw new Error('Environment not found. Refresh and try again.');
-    }
-    return openEnvironmentInDesktop(environment);
-  });
   ipcMain.handle('cloudcli-desktop:open-local', async () => openLocalInDesktop());
+  ipcMain.handle('cloudcli-desktop:restart-and-repair-local', async () => openLocalInDesktop({ repair: true }));
   ipcMain.handle('cloudcli-desktop:open-local-web-ui', async () => openLocalWebUi());
-  ipcMain.handle('cloudcli-desktop:refresh-environments', async () => {
-    await refreshCloudEnvironments({ showErrors: true });
-    return getDesktopState();
-  });
-  ipcMain.handle('cloudcli-desktop:disconnect-cloud', async () => clearCloudAccount());
   ipcMain.handle('cloudcli-desktop:reload-active-tab', async () => desktopWindow.reloadActiveTab());
   ipcMain.handle('cloudcli-desktop:show-environment-picker', async () => showEnvironmentPicker());
   ipcMain.handle('cloudcli-desktop:show-launcher', async () => {
@@ -813,17 +943,49 @@ function registerIpcHandlers() {
     desktopWindow.closeSettingsWindow();
     return getDesktopState();
   });
-  ipcMain.handle('cloudcli-desktop:show-active-environment-actions-menu', async () => desktopWindow.showActiveEnvironmentActionsMenu());
-  ipcMain.handle('cloudcli-desktop:show-environment-actions-menu', async (_event, environmentId) => desktopWindow.showEnvironmentActionsMenu(environmentId));
   ipcMain.handle('cloudcli-desktop:update-setting', async (_event, key, value) => updateDesktopSetting(key, value));
+  ipcMain.handle('cloudcli-desktop:configure-lan-access', async (event, options) => {
+    if (!isTrustedDesktopChrome(event.senderFrame?.url)) {
+      throw new Error('LAN configuration is unavailable for this page.');
+    }
+    const result = await localServer.configureLanAccess(session.defaultSession, options);
+    syncDesktopState();
+    if (localServer.getLocalServerUrl()) {
+      await openLocalInDesktop();
+    }
+    return { ...getDesktopState(), lanAccessResult: result };
+  });
+
+  if (CLOUD_ENABLED) {
+    ipcMain.handle('cloudcli-desktop:connect-cloud', async () => ({
+      ...getDesktopState(),
+      connectUrl: await connectCloudAccount(),
+    }));
+    ipcMain.handle('cloudcli-desktop:open-cloud-dashboard', async () => openCloudDashboard());
+    ipcMain.handle('cloudcli-desktop:run-active-environment-action', async (_event, action) => runActiveEnvironmentAction(action));
+    ipcMain.handle('cloudcli-desktop:open-environment', async (_event, environmentId) => {
+      const environment = cloud.findEnvironment(environmentId);
+      if (!environment) throw new Error('Environment not found. Refresh and try again.');
+      return openEnvironmentInDesktop(environment);
+    });
+    ipcMain.handle('cloudcli-desktop:refresh-environments', async () => {
+      await refreshCloudEnvironments({ showErrors: true });
+      return getDesktopState();
+    });
+    ipcMain.handle('cloudcli-desktop:disconnect-cloud', async () => clearCloudAccount());
+    ipcMain.handle('cloudcli-desktop:show-active-environment-actions-menu', async () => desktopWindow.showActiveEnvironmentActionsMenu());
+    ipcMain.handle('cloudcli-desktop:show-environment-actions-menu', async (_event, environmentId) => desktopWindow.showEnvironmentActionsMenu(environmentId));
+  }
 }
 
 function registerAppEvents() {
-  app.on('open-url', (event, url) => {
-    void diagnostics?.record('app.open-url', { url });
-    event.preventDefault();
-    void handleDeepLink(url);
-  });
+  if (CLOUD_ENABLED) {
+    app.on('open-url', (event, url) => {
+      void diagnostics?.record('app.open-url', { url });
+      event.preventDefault();
+      void handleDeepLink(url);
+    });
+  }
 
   app.on('activate', () => {
     void diagnostics?.record('app.activate');
@@ -846,6 +1008,7 @@ function registerAppEvents() {
   app.on('before-quit', () => {
     void diagnostics?.record('app.before-quit');
     desktopNotifications?.stop();
+    desktopUpdater?.stop();
   });
 
   app.on('before-quit', (event) => {
@@ -921,7 +1084,7 @@ function registerSingleInstance() {
   }
 
   app.on('second-instance', (_event, argv) => {
-    const deepLink = argv.find((arg) => arg.startsWith(`${CALLBACK_PROTOCOL}://`));
+    const deepLink = CLOUD_ENABLED ? argv.find((arg) => arg.startsWith(`${CALLBACK_PROTOCOL}://`)) : null;
     if (deepLink) {
       void handleDeepLink(deepLink);
     }
@@ -944,10 +1107,10 @@ async function bootstrap() {
 
   await app.whenReady();
   diagnostics = new DesktopDiagnostics({ directory: getDiagnosticsDirectory() });
-  buildId = readBuildId();
+  buildIdentity = readBuildIdentity();
   await diagnostics.record('app.bootstrap-start', {
-    version: app.getVersion(),
-    buildId,
+    version: buildIdentity.version,
+    buildId: buildIdentity.buildId,
     packaged: app.isPackaged,
     platform: process.platform,
     arch: process.arch,
@@ -973,18 +1136,18 @@ async function bootstrap() {
     resourcesRoot: app.isPackaged ? process.resourcesPath : getAppRoot(),
     settingsPath: getSettingsPath(),
     isPackaged: app.isPackaged,
-    appVersion: app.getVersion(),
-    buildId,
+    buildIdentity,
     onChange: syncDesktopState,
     onLog: (line) => diagnostics?.record('local-server.log', { line }),
   });
-  localAuth = new LocalAuthStore(getLocalAuthPath());
-  cloud = new CloudController({
-    storePath: getStorePath(),
-    controlPlaneUrl: CLOUDCLI_CONTROL_PLANE_URL,
-    callbackUrl: CALLBACK_URL,
-    onChange: syncDesktopState,
-  });
+  cloud = CLOUD_ENABLED
+    ? new CloudController({
+      storePath: getStorePath(),
+      controlPlaneUrl: CLOUDCLI_CONTROL_PLANE_URL,
+      callbackUrl: CALLBACK_URL,
+      onChange: syncDesktopState,
+    })
+    : createDisabledCloudController();
   desktopNotifications = new DesktopNotificationsController({
     settingsPath: getDesktopNotificationsSettingsPath(),
     appVersion: app.getVersion(),
@@ -998,18 +1161,49 @@ async function bootstrap() {
     openNotificationTarget,
     onChange: syncDesktopState,
   });
+  voiceSecureStorage = createVoiceSecureStorage({
+    storePath: getVoiceSecureStoragePath(),
+    safeStorage,
+  });
+
+  let electronAutoUpdater = null;
+  if (app.isPackaged) {
+    const updaterModule = await import('electron-updater');
+    electronAutoUpdater = updaterModule.autoUpdater || updaterModule.default?.autoUpdater;
+    if (!electronAutoUpdater) {
+      throw new Error('The packaged desktop updater could not be loaded.');
+    }
+  }
+  desktopUpdater = new DesktopUpdaterController({
+    updater: electronAutoUpdater,
+    isPackaged: app.isPackaged,
+    currentVersion: buildIdentity.version,
+    buildId: buildIdentity.buildId,
+    releasesUrl: `${productConfig.repositoryUrl}/releases`,
+    beforeInstall: createDesktopInstallPreparation({
+      hasOwnedServer: () => localServer.hasOwnedServer(),
+      notificationsEnabled: () => desktopNotifications?.getState().enabled === true,
+      stopNotifications: () => desktopNotifications?.stop(),
+      shutdownOwnedServer: () => localServer.shutdownOwnedServer(),
+      restoreWorkspace: () => openLocalInDesktop(),
+      restoreNotifications: () => desktopNotifications?.sync(),
+      onDiagnostic: (event, details) => diagnostics?.record(event, details),
+    }),
+    onStateChange: broadcastDesktopUpdaterState,
+    onDiagnostic: (event, details) => diagnostics?.record(event, details),
+  });
 
   await localServer.loadDesktopSettings();
-  await localAuth.load();
-  await cloud.loadCloudAccount();
+  if (CLOUD_ENABLED) await cloud.loadCloudAccount();
   await desktopNotifications.loadSettings();
 
   registerProtocolHandler();
   registerIpcHandlers();
   registerAppEvents();
   await createDesktopWindow();
+  desktopUpdater.start();
   await diagnostics.record('app.bootstrap-ready');
-  void refreshCloudEnvironments({ showErrors: false });
+  if (CLOUD_ENABLED) void refreshCloudEnvironments({ showErrors: false });
 }
 
 if (registerSingleInstance()) {

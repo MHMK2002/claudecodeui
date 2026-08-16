@@ -3,7 +3,7 @@ import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import ProviderLoginModal from '../../provider-auth/view/ProviderLoginModal';
-import { Button } from '../../../shared/view/ui';
+import { Button, Dialog, DialogContent, DialogTitle } from '../../../shared/view/ui';
 import SettingsSidebar from '../view/SettingsSidebar';
 import AgentsSettingsTab from '../view/tabs/agents-settings/AgentsSettingsTab';
 import AppearanceSettingsTab from '../view/tabs/AppearanceSettingsTab';
@@ -27,7 +27,7 @@ type DesktopNotificationsState = {
   lastError?: string | null;
 };
 
-function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: SettingsProps) {
+function Settings({ isOpen, onClose, projects = [], initialTab = 'appearance' }: SettingsProps) {
   const { t } = useTranslation('settings');
   const desktopNotificationsBridge = useMemo(() => (
     typeof window === 'undefined'
@@ -134,11 +134,17 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
   const isAuthenticated = Boolean(loginProvider && providerAuthStatus[loginProvider].authenticated);
 
   return (
-    <div className="modal-backdrop fixed inset-0 z-[9999] flex items-center justify-center bg-background/80 backdrop-blur-sm md:p-4">
-      <div className="flex h-full w-full flex-col overflow-hidden border border-border bg-background shadow-2xl md:h-[90vh] md:max-w-4xl md:rounded-xl">
+    <Dialog open={isOpen} onOpenChange={(nextOpen) => { if (!nextOpen) onClose(); }}>
+      <DialogContent
+        className="flex h-full max-w-none flex-col overflow-hidden rounded-none border-border bg-background p-0 md:h-[90vh] md:max-w-4xl md:rounded-xl"
+        wrapperClassName="z-[9999]"
+        aria-labelledby="settings-title"
+      >
         {/* Header */}
         <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-4 py-3 md:px-5">
-          <h2 className="text-base font-semibold text-foreground">{t('title')}</h2>
+          <DialogTitle id="settings-title" className="not-sr-only text-base font-semibold text-foreground">
+            {t('title')}
+          </DialogTitle>
           <div className="flex items-center gap-2">
             {saveStatus === 'success' && (
               <span className="animate-in fade-in text-xs text-muted-foreground">{t('saveStatus.success')}</span>
@@ -147,7 +153,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
               variant="ghost"
               size="sm"
               onClick={onClose}
-              className="h-10 w-10 touch-manipulation p-0 text-muted-foreground hover:text-foreground active:bg-accent/50"
+              aria-label={t('actions.close', { defaultValue: 'Close Settings' })}
+              className="h-11 w-11 touch-manipulation p-0 text-muted-foreground hover:text-foreground active:bg-accent/50"
             >
               <X className="h-5 w-5" />
             </Button>
@@ -219,7 +226,7 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
             </div>
           </main>
         </div>
-      </div>
+      </DialogContent>
 
       <ProviderLoginModal
         key={loginProvider || 'claude'}
@@ -230,7 +237,7 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
         isAuthenticated={isAuthenticated}
       />
 
-    </div>
+    </Dialog>
   );
 }
 
