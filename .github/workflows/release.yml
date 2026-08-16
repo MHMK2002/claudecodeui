@@ -88,7 +88,10 @@ jobs:
             --poll-seconds 5 \
             --max-pages 10
 
-      - run: npm ci
+      - name: Install locked dependencies
+        run: npm ci
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Release
         id: release
