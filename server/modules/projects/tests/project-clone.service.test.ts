@@ -29,9 +29,14 @@ function buildDependencies(overrides: Partial<NonNullable<TestDependencies>> = {
     isProjectRegistered: async () => false,
     reserveStagingPath: async (stagingPathPrefix) => ({
       path: `${stagingPathPrefix}server-random`,
-      identity: { device: 1, inode: 1 },
+      identity: { device: 1, inode: 1, changeTimeMs: 1, birthTimeMs: 1 },
     }),
-    readPathIdentity: async () => ({ device: 1, inode: 1 }),
+    readPathIdentity: async () => ({
+      device: 1,
+      inode: 1,
+      changeTimeMs: 1,
+      birthTimeMs: 1,
+    }),
     removePath: async () => undefined,
     finalizeClone: async () => ({ rollback: async () => undefined }),
     getGithubTokenById: async () => ({ github_token: 'token-value' }),
@@ -243,13 +248,23 @@ test('clone cleanup preserves a staging path replaced by another writer', async 
       const stats = statSync(clonePath);
       return {
         path: clonePath,
-        identity: { device: stats.dev, inode: stats.ino },
+        identity: {
+          device: stats.dev,
+          inode: stats.ino,
+          changeTimeMs: stats.ctimeMs,
+          birthTimeMs: stats.birthtimeMs,
+        },
       };
     },
     readPathIdentity: async (targetPath) => {
       if (!existsSync(targetPath)) return null;
       const stats = statSync(targetPath);
-      return { device: stats.dev, inode: stats.ino };
+      return {
+        device: stats.dev,
+        inode: stats.ino,
+        changeTimeMs: stats.ctimeMs,
+        birthTimeMs: stats.birthtimeMs,
+      };
     },
     spawnGitClone: (_repositoryUrl, clonePath) => {
       stagingPath = clonePath;
@@ -307,7 +322,12 @@ test('clone refuses to finalize staging whose ownership changed', async (t) => {
     repositoryUrl: 'https://github.com/example/repo.git',
     userId: 1,
   }, handlers, buildDependencies({
-    readPathIdentity: async () => ({ device: 2, inode: 2 }),
+    readPathIdentity: async () => ({
+      device: 2,
+      inode: 2,
+      changeTimeMs: 2,
+      birthTimeMs: 2,
+    }),
     spawnGitClone: () => gitProcess as never,
     finalizeClone: async () => {
       finalized = true;

@@ -148,9 +148,11 @@ const { version, buildId } = canonicalIdentity;
 const bundleName = `cloudcli-local-server-${version}-${platform}-${arch}.tar.gz`;
 const bundleRoot = path.join(rootDir, 'release', 'local-server');
 const stageDir = path.join(bundleRoot, `.stage-${version}-${platform}-${arch}`);
+const archiveStageDir = path.join(bundleRoot, `.archive-stage-${version}-${platform}-${arch}`);
 const archivePath = path.join(bundleRoot, bundleName);
 
 await fs.rm(stageDir, { recursive: true, force: true });
+await fs.rm(archiveStageDir, { recursive: true, force: true });
 await fs.mkdir(stageDir, { recursive: true });
 await fs.mkdir(bundleRoot, { recursive: true });
 
@@ -229,10 +231,16 @@ await fs.writeFile(
 );
 
 await fs.rm(archivePath, { force: true });
-// Dereference npm's internal links so the distributable contains only regular
-// files/directories; the installer rejects every link and special entry.
-const tarArgs = ['-chzf', archivePath, '-C', stageDir, '.'];
-await run('tar', tarArgs);
+// Copying through fs.cp dereferences symlinks and materializes hard-linked
+// native build outputs as independent files. Both GNU tar and bsdtar may emit
+// link entries for the original npm tree, while the installer deliberately
+// rejects every link and special entry.
+try {
+  await fs.cp(stageDir, archiveStageDir, { recursive: true, dereference: true });
+  await run('tar', ['-czf', archivePath, '-C', archiveStageDir, '.']);
+} finally {
+  await fs.rm(archiveStageDir, { recursive: true, force: true });
+}
 
 const digest = await sha256(archivePath);
 const checksumPath = `${archivePath}.sha256`;

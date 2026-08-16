@@ -66,6 +66,8 @@ type FinalizedClone = {
 type ClonePathIdentity = {
   device: number;
   inode: number;
+  changeTimeMs: number;
+  birthTimeMs: number;
 };
 
 type CloneStagingReservation = {
@@ -131,6 +133,16 @@ function readErrorCode(error: unknown): string | null {
   return typeof error === 'object' && error !== null && 'code' in error
     ? String(error.code)
     : null;
+}
+
+function clonePathIdentityMatches(
+  current: ClonePathIdentity,
+  expected: ClonePathIdentity,
+): boolean {
+  return current.device === expected.device
+    && current.inode === expected.inode
+    && current.changeTimeMs === expected.changeTimeMs
+    && current.birthTimeMs === expected.birthTimeMs;
 }
 
 function normalizeOwnerId(userId: number | string): string | null {
@@ -256,6 +268,8 @@ export async function reserveCloneStagingPath(
     lstat: (targetPath: string) => Promise<{
       dev: number;
       ino: number;
+      ctimeMs: number;
+      birthtimeMs: number;
       isDirectory: () => boolean;
       isSymbolicLink: () => boolean;
     }>;
@@ -274,7 +288,12 @@ export async function reserveCloneStagingPath(
     }
     return {
       path: stagingPath,
-      identity: { device: stagingStats.dev, inode: stagingStats.ino },
+      identity: {
+        device: stagingStats.dev,
+        inode: stagingStats.ino,
+        changeTimeMs: stagingStats.ctimeMs,
+        birthTimeMs: stagingStats.birthtimeMs,
+      },
     };
   } catch (error) {
     try {
@@ -309,7 +328,12 @@ const defaultDependencies: CloneProjectDependencies = {
   readPathIdentity: async (targetPath) => {
     try {
       const targetStats = await lstat(targetPath);
-      return { device: targetStats.dev, inode: targetStats.ino };
+      return {
+        device: targetStats.dev,
+        inode: targetStats.ino,
+        changeTimeMs: targetStats.ctimeMs,
+        birthTimeMs: targetStats.birthtimeMs,
+      };
     } catch (error) {
       if (readErrorCode(error) === 'ENOENT') return null;
       throw error;
@@ -450,10 +474,7 @@ async function cleanAttemptStaging(
   }
 
   if (!currentIdentity) return;
-  if (
-    currentIdentity.device !== expectedIdentity.device
-    || currentIdentity.inode !== expectedIdentity.inode
-  ) {
+  if (!clonePathIdentityMatches(currentIdentity, expectedIdentity)) {
     dependencies.logError(
       'Skipped clone staging cleanup because path ownership changed.',
       new Error(stagingPath),
@@ -483,11 +504,7 @@ async function assertStagingOwnership(
   dependencies: CloneProjectDependencies,
 ): Promise<void> {
   const currentIdentity = await dependencies.readPathIdentity(stagingPath);
-  if (
-    !currentIdentity
-    || currentIdentity.device !== expectedIdentity.device
-    || currentIdentity.inode !== expectedIdentity.inode
-  ) {
+  if (!currentIdentity || !clonePathIdentityMatches(currentIdentity, expectedIdentity)) {
     throw new AppError('Clone staging ownership changed before finalization.', {
       code: 'CLONE_STAGING_OWNERSHIP_LOST',
       statusCode: 409,
