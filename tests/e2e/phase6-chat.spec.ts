@@ -102,7 +102,15 @@ test('a malformed successful history envelope renders recovery instead of empty 
 
 test('empty Chat keeps its next-task affordance neutral beside the sole primary Send', async ({ page }) => {
   await installDesktopLocalMocks(page, { historyMode: 'empty', tasksMode: 'next' });
+  const taskStateReady = Promise.all([
+    '/api/taskmaster/installation-status',
+    '/api/projects/project-1/taskmaster',
+    '/api/taskmaster/tasks/project-1',
+  ].map((expectedPath) => page.waitForResponse((response) => (
+    new URL(response.url()).pathname === expectedPath && response.ok()
+  ))));
   await openExistingChat(page);
+  await taskStateReady;
 
   const startTask = page.getByRole('button', { name: 'Start Task' });
   await expect(startTask).toBeVisible();
