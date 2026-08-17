@@ -61,7 +61,11 @@ export async function verifyUpdateRelease({ assetsDir, metadataDir, version }) {
   if (!metadata.get('latest.yml').files.some((file) => file.url.endsWith('-win-x64.exe'))) {
     throw new Error('Windows metadata must include the signed x64 NSIS installer.');
   }
-  if (!metadata.get('latest-linux.yml').files.some((file) => file.url.endsWith('-linux-x64.AppImage'))) {
+  const linuxX64AppImageNames = new Set([
+    `cloudcli-desktop-${version}-linux-x64.AppImage`,
+    `cloudcli-desktop-${version}-linux-x86_64.AppImage`,
+  ]);
+  if (!metadata.get('latest-linux.yml').files.some((file) => linuxX64AppImageNames.has(file.url))) {
     throw new Error('Linux metadata must include the x64 AppImage.');
   }
 
@@ -70,11 +74,13 @@ export async function verifyUpdateRelease({ assetsDir, metadataDir, version }) {
     '-mac-x64.dmg',
     '-mac-arm64.dmg',
     '-win-x64.exe',
-    '-linux-x64.AppImage',
   ]) {
     if (!assetNames.some((name) => name === `cloudcli-desktop-${version}${expectedSuffix}`)) {
       throw new Error(`Required desktop release artifact is missing: *${expectedSuffix}`);
     }
+  }
+  if (!assetNames.some((name) => linuxX64AppImageNames.has(name))) {
+    throw new Error('Required desktop release artifact is missing: Linux x64 AppImage');
   }
   for (const expectedBundle of [
     `cloudcli-local-server-${version}-mac-x64.tar.gz`,

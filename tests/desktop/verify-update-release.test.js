@@ -33,7 +33,7 @@ test('release verification checks all platforms, server bundles, sizes, and hash
     macX64Zip: { name: `cloudcli-desktop-${VERSION}-mac-x64.zip`, content: Buffer.from('mac-x64-zip') },
     macArmZip: { name: `cloudcli-desktop-${VERSION}-mac-arm64.zip`, content: Buffer.from('mac-arm64-zip') },
     windows: { name: `cloudcli-desktop-${VERSION}-win-x64.exe`, content: Buffer.from('windows-exe') },
-    linux: { name: `cloudcli-desktop-${VERSION}-linux-x64.AppImage`, content: Buffer.from('linux-appimage') },
+    linux: { name: `cloudcli-desktop-${VERSION}-linux-x86_64.AppImage`, content: Buffer.from('linux-appimage') },
   };
 
   try {
