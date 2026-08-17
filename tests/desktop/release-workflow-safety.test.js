@@ -74,6 +74,10 @@ test('CI dispatch identity is required only for manual gates while push and PR j
   }
 });
 
+test('server tests avoid the Node 22 parallel worker serialization failure', () => {
+  assert.match(packageJson.scripts['test:server'], /--test-concurrency=1/);
+});
+
 test('release gates the final release SHA before dispatching pinned desktop builds', () => {
   const releaseIt = releaseWorkflow.indexOf('npx release-it');
   const finalSha = releaseWorkflow.indexOf('FINAL_SHA="$(git rev-parse');

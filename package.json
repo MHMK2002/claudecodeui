@@ -56,7 +56,7 @@
     "validate:build-identity": "node scripts/validate-build-identity.mjs",
     "ux:audit": "node scripts/ux-audit.mjs",
     "test": "npm run test:server",
-    "test:server": "tsx --tsconfig server/tsconfig.json --test \"server/**/*.test.ts\" \"server/**/*.test.js\"",
+    "test:server": "tsx --tsconfig server/tsconfig.json --test --test-concurrency=1 \"server/**/*.test.ts\" \"server/**/*.test.js\"",
     "test:frontend": "tsx --tsconfig tsconfig.json --test \"src/**/*.test.ts\" \"src/**/*.test.tsx\" \"src/**/*.test.js\" \"src/**/*.test.jsx\"",
     "pretest:desktop": "npm run build",
     "test:desktop": "node --test tests/desktop/*.test.js tests/product-config.test.js",
