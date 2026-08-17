@@ -252,59 +252,6 @@ jobs:
           sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$CERT_PATH"
           rm -f "$P12_PATH" "$CERT_PATH"
 
-      - name: Trust internal Windows signing certificate
-        if: matrix.signing == 'windows' && needs.resolve.outputs.release_mode == 'internal'
-        shell: pwsh
-        env:
-          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
-          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
-        run: |
-          Set-StrictMode -Version Latest
-          $ErrorActionPreference = 'Stop'
-          $pfxPath = Join-Path $env:RUNNER_TEMP 'cloudcli-internal-windows.pfx'
-          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_CSC_LINK))
-          $certificate = $null
-          try {
-            Write-Host 'Extracting internal Windows public certificate.'
-            $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
-              $pfxPath,
-              $env:WINDOWS_CSC_KEY_PASSWORD,
-              [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
-            )
-            if (-not $certificate.HasPrivateKey) {
-              throw 'Internal Windows signing certificate has no private key.'
-            }
-
-            $storeNames = @(
-              [System.Security.Cryptography.X509Certificates.StoreName]::Root,
-              [System.Security.Cryptography.X509Certificates.StoreName]::TrustedPublisher
-            )
-            foreach ($storeName in $storeNames) {
-              Write-Host "Trusting internal Windows certificate in $storeName."
-              $store = [System.Security.Cryptography.X509Certificates.X509Store]::new(
-                $storeName,
-                [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
-              )
-              try {
-                $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-                $store.Add($certificate)
-                $matches = $store.Certificates.Find(
-                  [System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
-                  $certificate.Thumbprint,
-                  $false
-                )
-                if ($matches.Count -eq 0) {
-                  throw "Failed to trust the internal Windows certificate in $storeName."
-                }
-              } finally {
-                if ($null -ne $store) { $store.Dispose() }
-              }
-            }
-          } finally {
-            if ($null -ne $certificate) { $certificate.Dispose() }
-            Remove-Item $pfxPath -Force -ErrorAction SilentlyContinue
-          }
-
       - name: Build signed desktop distribution
         shell: bash
         env:
@@ -341,14 +288,59 @@ jobs:
       - name: Verify Windows Authenticode signature
         if: matrix.signing == 'windows'
         shell: pwsh
+        env:
+          RELEASE_MODE: ${{ needs.resolve.outputs.release_mode }}
+          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
         run: |
-          $installers = Get-ChildItem release/desktop/*.exe
-          if ($installers.Count -eq 0) { throw "No Windows installer was produced." }
-          foreach ($installer in $installers) {
-            $signature = Get-AuthenticodeSignature $installer.FullName
-            if ($signature.Status -ne "Valid") {
-              throw "Invalid Authenticode signature for $($installer.Name): $($signature.Status)"
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $expectedCertificate = $null
+          try {
+            $expectedCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+              [Convert]::FromBase64String($env:WINDOWS_CSC_LINK),
+              $env:WINDOWS_CSC_KEY_PASSWORD,
+              [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
+            )
+            if (-not $expectedCertificate.HasPrivateKey) {
+              throw 'Internal Windows signing certificate has no private key.'
             }
+            $now = [DateTime]::UtcNow
+            if (
+              $now -lt $expectedCertificate.NotBefore.ToUniversalTime() -or
+              $now -gt $expectedCertificate.NotAfter.ToUniversalTime()
+            ) {
+              throw 'Windows signing certificate is outside its validity period.'
+            }
+
+            $allowedStatuses = if ($env:RELEASE_MODE -eq 'production') {
+              @('Valid')
+            } else {
+              @('Valid', 'NotTrusted', 'UnknownError')
+            }
+            $installers = @(Get-ChildItem release/desktop/*.exe)
+            if ($installers.Count -eq 0) { throw 'No Windows installer was produced.' }
+            foreach ($installer in $installers) {
+              $signature = Get-AuthenticodeSignature $installer.FullName
+              if ($null -eq $signature.SignerCertificate) {
+                throw "No Authenticode signer certificate for $($installer.Name)."
+              }
+              if (-not $signature.SignerCertificate.Thumbprint.Equals(
+                $expectedCertificate.Thumbprint,
+                [StringComparison]::OrdinalIgnoreCase
+              )) {
+                throw "Unexpected Authenticode signer for $($installer.Name)."
+              }
+              $status = $signature.Status.ToString()
+              if ($allowedStatuses -notcontains $status) {
+                throw "Invalid Authenticode signature for $($installer.Name): $status"
+              }
+              if ($status -ne 'Valid') {
+                Write-Host "Verified pinned internal Authenticode signature for $($installer.Name) with status $status."
+              }
+            }
+          } finally {
+            if ($null -ne $expectedCertificate) { $expectedCertificate.Dispose() }
           }
 
       - name: Smoke-test Linux AppImage

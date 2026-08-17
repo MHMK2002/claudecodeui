@@ -131,19 +131,19 @@ test('internal Desktop releases preserve production signing gates and publish tr
   assert.match(internalMacTrustStep[0], /openssl pkcs12 -in/);
   assert.doesNotMatch(internalMacTrustStep[0], /openssl pkcs12 -legacy/);
   assert.doesNotMatch(internalMacTrustStep[0], /login\.keychain-db/);
-  assert.match(desktopReleaseWorkflow, /Trust internal Windows signing certificate/);
-  const internalWindowsTrustStep = desktopReleaseWorkflow.match(
-    /- name: Trust internal Windows signing certificate[\s\S]*?(?=\n {6}- name:)/,
+  assert.doesNotMatch(desktopReleaseWorkflow, /Trust internal Windows signing certificate/);
+  const windowsVerificationStep = desktopReleaseWorkflow.match(
+    /- name: Verify Windows Authenticode signature[\s\S]*?(?=\n {6}- name:)/,
   );
-  assert.ok(internalWindowsTrustStep);
-  assert.match(internalWindowsTrustStep[0], /X509KeyStorageFlags\]::EphemeralKeySet/);
-  assert.match(internalWindowsTrustStep[0], /X509Store\]::new/);
-  assert.match(internalWindowsTrustStep[0], /StoreLocation\]::CurrentUser/);
-  assert.match(internalWindowsTrustStep[0], /StoreName\]::Root/);
-  assert.match(internalWindowsTrustStep[0], /StoreName\]::TrustedPublisher/);
-  assert.match(internalWindowsTrustStep[0], /FindByThumbprint/);
-  assert.doesNotMatch(internalWindowsTrustStep[0], /certutil(?:\.exe)?/i);
-  assert.doesNotMatch(internalWindowsTrustStep[0], /Import-(?:PfxCertificate|Certificate)/);
+  assert.ok(windowsVerificationStep);
+  assert.match(windowsVerificationStep[0], /WINDOWS_CSC_LINK: \$\{\{ secrets\.WINDOWS_CSC_LINK \}\}/);
+  assert.match(windowsVerificationStep[0], /RELEASE_MODE: \$\{\{ needs\.resolve\.outputs\.release_mode \}\}/);
+  assert.match(windowsVerificationStep[0], /X509KeyStorageFlags\]::EphemeralKeySet/);
+  assert.match(windowsVerificationStep[0], /SignerCertificate\.Thumbprint/);
+  assert.match(windowsVerificationStep[0], /expectedCertificate\.Thumbprint/);
+  assert.match(windowsVerificationStep[0], /@\('Valid', 'NotTrusted', 'UnknownError'\)/);
+  assert.match(windowsVerificationStep[0], /RELEASE_MODE -eq 'production'/);
+  assert.doesNotMatch(windowsVerificationStep[0], /X509Store|certutil|Import-(?:PfxCertificate|Certificate)/i);
   assert.match(desktopReleaseWorkflow, /needs\.resolve\.outputs\.release_mode == 'internal'/);
   assert.match(desktopReleaseWorkflow, /Add internal trust certificates and installation guide/);
   assert.match(desktopReleaseWorkflow, /cloudcli-internal-macos\.cer/);
