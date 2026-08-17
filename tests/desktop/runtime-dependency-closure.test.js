@@ -126,3 +126,19 @@ test('server bundle archives Windows drive paths without shell parsing', async (
   assert.ok(tarInvocation);
   assert.doesNotMatch(tarInvocation[0], /archivePath/);
 });
+
+test('server installer passes Windows archives to tar as local filenames', async () => {
+  const source = await readFile(
+    new URL('../../electron/serverInstaller.js', import.meta.url),
+    'utf8',
+  );
+  const tarInvocations = [...source.matchAll(/spawn\('tar',[\s\S]*?\n      \}\);/g)]
+    .map((match) => match[0]);
+
+  assert.equal(tarInvocations.length, 2);
+  for (const invocation of tarInvocations) {
+    assert.match(invocation, /path\.basename\(archivePath\)/);
+    assert.match(invocation, /cwd: path\.dirname\(archivePath\)/);
+    assert.doesNotMatch(invocation, /['", ]archivePath[,\]]/);
+  }
+});

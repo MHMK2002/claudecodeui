@@ -653,7 +653,8 @@ export class ServerInstaller {
 
   #extract(archivePath, destDir) {
     return new Promise((resolve, reject) => {
-      const child = spawn('tar', ['-xzf', archivePath, '-C', destDir], {
+      const child = spawn('tar', ['-xzf', path.basename(archivePath), '-C', destDir], {
+        cwd: path.dirname(archivePath),
         stdio: ['ignore', 'ignore', 'pipe'],
         windowsHide: true,
       });
@@ -669,7 +670,8 @@ export class ServerInstaller {
 
   #listArchive(archivePath, verbose = false) {
     return new Promise((resolve, reject) => {
-      const child = spawn('tar', [verbose ? '-tvzf' : '-tzf', archivePath], {
+      const child = spawn('tar', [verbose ? '-tvzf' : '-tzf', path.basename(archivePath)], {
+        cwd: path.dirname(archivePath),
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
       });
