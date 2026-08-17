@@ -120,6 +120,9 @@ test('server bundle archives Windows drive paths without shell parsing', async (
   );
   assert.match(
     source,
-    /await run\('tar', \['-czf', archivePath, '-C', archiveStageDir, '\.'\], \{ shell: false \}\)/,
+    /await run\('tar', \['-czf', bundleName, '-C', path\.basename\(archiveStageDir\), '\.'\], \{[\s\S]*?cwd: bundleRoot,[\s\S]*?shell: false,[\s\S]*?\}\)/,
   );
+  const tarInvocation = source.match(/await run\('tar',[\s\S]*?\n  \}\);/);
+  assert.ok(tarInvocation);
+  assert.doesNotMatch(tarInvocation[0], /archivePath/);
 });
