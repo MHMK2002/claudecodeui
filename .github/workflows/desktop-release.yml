@@ -248,7 +248,7 @@ jobs:
           P12_PATH="$RUNNER_TEMP/cloudcli-internal-macos.p12"
           CERT_PATH="$RUNNER_TEMP/cloudcli-internal-macos.pem"
           node -e 'require("node:fs").writeFileSync(process.argv[1], Buffer.from(process.env.MACOS_CSC_LINK, "base64"))' "$P12_PATH"
-          openssl pkcs12 -legacy -in "$P12_PATH" -clcerts -nokeys -passin env:MACOS_CSC_KEY_PASSWORD -out "$CERT_PATH"
+          openssl pkcs12 -in "$P12_PATH" -clcerts -nokeys -passin env:MACOS_CSC_KEY_PASSWORD -out "$CERT_PATH"
           security add-trusted-cert -r trustRoot -p codeSign -k "$HOME/Library/Keychains/login.keychain-db" "$CERT_PATH"
           rm -f "$P12_PATH" "$CERT_PATH"
 

@@ -118,6 +118,12 @@ test('internal Desktop releases preserve production signing gates and publish tr
 
   assert.match(desktopReleaseWorkflow, /Require macOS signing credentials[\s\S]*test -n "\$CSC_LINK"[\s\S]*if \[ "\$RELEASE_MODE" = "production" \]/);
   assert.match(desktopReleaseWorkflow, /Trust internal macOS signing certificate[\s\S]*security add-trusted-cert -r trustRoot -p codeSign/);
+  const internalMacTrustStep = desktopReleaseWorkflow.match(
+    /- name: Trust internal macOS signing certificate[\s\S]*?(?=\n {6}- name:)/,
+  );
+  assert.ok(internalMacTrustStep);
+  assert.match(internalMacTrustStep[0], /openssl pkcs12 -in/);
+  assert.doesNotMatch(internalMacTrustStep[0], /openssl pkcs12 -legacy/);
   assert.match(desktopReleaseWorkflow, /Trust internal Windows signing certificate/);
   assert.match(desktopReleaseWorkflow, /needs\.resolve\.outputs\.release_mode == 'internal'/);
   assert.match(desktopReleaseWorkflow, /Add internal trust certificates and installation guide/);
