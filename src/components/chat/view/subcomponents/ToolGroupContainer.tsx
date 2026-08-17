@@ -4,7 +4,8 @@ import { ChevronRight } from 'lucide-react';
 import type { ChatMessage, ClaudePermissionSuggestion, PermissionGrantResult, Provider } from '../../types/types';
 import type { Project } from '../../../../types/app';
 import type { ToolGroupItem } from '../../utils/toolGrouping';
-import { getToolConfig } from '../../tools';
+import { deriveToolGroupExecution, getToolConfig } from '../../tools';
+import { ToolExecutionMeta } from '../../tools/components';
 
 import MessageComponent from './MessageComponent';
 
@@ -76,6 +77,10 @@ export default function ToolGroupContainer({
   const borderClass = config.colorScheme?.border || 'border-border';
   const iconClass = config.colorScheme?.icon || 'text-muted-foreground';
   const icon = getToolGroupIcon(config.icon, group.toolName);
+  const groupExecution = useMemo(
+    () => deriveToolGroupExecution(group.messages),
+    [group.messages],
+  );
 
   const preview = useMemo(() => {
     const visiblePreviews = group.messages
@@ -97,7 +102,7 @@ export default function ToolGroupContainer({
     <div className="chat-message tool px-3 sm:px-0" data-message-timestamp={group.timestamp || undefined}>
       <button
         type="button"
-        className={`group flex w-full items-center gap-2 border-l-2 ${borderClass} rounded-r-md bg-muted/25 px-3 py-2 text-left transition-colors hover:bg-muted/40 dark:bg-muted/10 dark:hover:bg-muted/20`}
+        className={`group flex w-full flex-wrap items-center gap-x-2 gap-y-1 border-l-2 ${borderClass} rounded-r-md bg-muted/25 px-3 py-2 text-left transition-colors hover:bg-muted/40 dark:bg-muted/10 dark:hover:bg-muted/20`}
         onClick={() => setIsExpanded((current) => !current)}
         aria-expanded={isExpanded}
       >
@@ -115,9 +120,14 @@ export default function ToolGroupContainer({
         {preview && (
           <>
             <span className="text-[10px] text-muted-foreground/40">/</span>
-            <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{preview}</span>
+            <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">{preview}</span>
           </>
         )}
+        <ToolExecutionMeta
+          status={groupExecution.status === 'completed' ? undefined : groupExecution.status}
+          timestamp={groupExecution.timestamp ?? group.timestamp}
+          className="ml-auto"
+        />
       </button>
 
       {isExpanded && (

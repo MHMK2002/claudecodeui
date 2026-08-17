@@ -31,12 +31,18 @@ export function ToolStatusBadge({ status, className }: ToolStatusBadgeProps) {
   return (
     <span
       className={cn(
-        'inline-flex items-center rounded px-1.5 py-px text-[10px] font-medium',
+        'inline-flex items-center gap-1 rounded px-1.5 py-px text-[10px] font-medium',
         config.className,
         className,
       )}
     >
-      {config.label}
+      {status === 'running' && (
+        <span
+          className="h-2 w-2 animate-spin rounded-full border border-current border-r-transparent motion-reduce:animate-none"
+          aria-hidden="true"
+        />
+      )}
+      <span>{config.label}</span>
     </span>
   );
 }

@@ -2,12 +2,12 @@ import React, { memo, useMemo, useCallback } from 'react';
 
 import type { Project } from '../../../types/app';
 import type { SubagentChildTool } from '../types/types';
+import type { MessageTimestampValue } from '../utils/messageTimestamp';
 
 import { getToolConfig, isSubagentToolName } from './configs/toolConfigs';
-import { OneLineDisplay, BashCommandDisplay, CollapsibleDisplay, ToolDiffViewer, MarkdownContent, FileListContent, TodoListContent, TaskListContent, TextContent, QuestionAnswerContent, SubagentContainer } from './components';
+import { OneLineDisplay, BashCommandDisplay, CollapsibleDisplay, ToolDiffViewer, MarkdownContent, FileListContent, TodoListContent, TaskListContent, TextContent, QuestionAnswerContent, SubagentContainer, ToolExecutionMeta } from './components';
 import { PlanDisplay } from './components/PlanDisplay';
-import { ToolStatusBadge } from './components/ToolStatusBadge';
-import type { ToolStatus } from './components/ToolStatusBadge';
+import { deriveToolStatus } from './utils/toolStatus';
 
 type DiffLine = {
   type: string;
@@ -26,6 +26,7 @@ interface ToolRendererProps {
   selectedProject?: Project | null;
   showRawParameters?: boolean;
   rawToolInput?: string;
+  timestamp?: MessageTimestampValue;
   isSubagentContainer?: boolean;
   subagentState?: {
     childTools: SubagentChildTool[];
@@ -46,26 +47,6 @@ function getToolCategory(toolName: string): string {
   return 'default';
 }
 
-// Exact denial messages from the Claude runtime adapter — other providers can't reliably signal denial
-const CLAUDE_DENIAL_MESSAGES = [
-  'user denied tool use',
-  'tool disallowed by settings',
-  'permission request timed out',
-  'permission request cancelled',
-];
-
-function deriveToolStatus(toolResult: any): ToolStatus {
-  if (!toolResult) return 'running';
-  if (toolResult.isError) {
-    const content = String(toolResult.content || '').toLowerCase().trim();
-    if (CLAUDE_DENIAL_MESSAGES.some((msg) => content.includes(msg))) {
-      return 'denied';
-    }
-    return 'error';
-  }
-  return 'completed';
-}
-
 /**
  * Main tool renderer router
  * Routes to OneLineDisplay or CollapsibleDisplay based on tool config
@@ -81,6 +62,7 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
   selectedProject,
   showRawParameters = false,
   rawToolInput,
+  timestamp,
   isSubagentContainer,
   subagentState
 }) => {
@@ -101,6 +83,8 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
     () => mode === 'input' ? deriveToolStatus(toolResult) : undefined,
     [mode, toolResult],
   );
+  const visibleToolStatus = toolStatus === 'completed' ? undefined : toolStatus;
+  const executionTimestamp = mode === 'input' ? timestamp : undefined;
 
   const handleAction = useCallback(() => {
     if (displayConfig?.action === 'open-file' && onFileOpen) {
@@ -117,6 +101,8 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
         toolInput={toolInput}
         toolResult={toolResult}
         subagentState={subagentState}
+        status={visibleToolStatus}
+        timestamp={executionTimestamp}
       />
     );
   }
@@ -148,7 +134,8 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
         description={description}
         output={output}
         isError={Boolean(toolResult?.isError)}
-        status={toolStatus !== 'completed' ? toolStatus : undefined}
+        status={visibleToolStatus}
+        timestamp={executionTimestamp}
         // Commands stay collapsed by default — including failures; the status
         // badge marks errors and the output expands via the chevron.
         defaultOpen={false}
@@ -175,7 +162,8 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
         wrapText={displayConfig.wrapText}
         colorScheme={displayConfig.colorScheme}
         resultId={mode === 'input' ? `tool-result-${toolId}` : undefined}
-        status={toolStatus !== 'completed' ? toolStatus : undefined}
+        status={visibleToolStatus}
+        timestamp={executionTimestamp}
       />
     );
   }
@@ -203,6 +191,8 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
         rawContent={rawToolInput}
         toolName={toolName}
         toolId={toolId}
+        status={visibleToolStatus}
+        timestamp={executionTimestamp}
       />
     );
   }
@@ -305,7 +295,9 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
         })
       : undefined;
 
-    const badgeElement = toolStatus && toolStatus !== 'completed' ? <ToolStatusBadge status={toolStatus} /> : undefined;
+    const badgeElement = (
+      <ToolExecutionMeta status={visibleToolStatus} timestamp={executionTimestamp} />
+    );
 
     return (
       <CollapsibleDisplay

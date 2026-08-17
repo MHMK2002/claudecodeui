@@ -1,7 +1,12 @@
 import React from 'react';
+
 import type { SubagentChildTool } from '../../types/types';
-import { CollapsibleSection } from './CollapsibleSection';
+import type { MessageTimestampValue } from '../../utils/messageTimestamp';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '../../../../shared/view/ui';
+
+import { CollapsibleSection } from './CollapsibleSection';
+import { ToolExecutionMeta } from './ToolExecutionMeta';
+import type { ToolStatus } from './ToolStatusBadge';
 
 interface SubagentContainerProps {
   toolInput: unknown;
@@ -11,6 +16,8 @@ interface SubagentContainerProps {
     currentToolIndex: number;
     isComplete: boolean;
   };
+  status?: ToolStatus;
+  timestamp?: MessageTimestampValue;
 }
 
 const getCompactToolDisplay = (toolName: string, toolInput: unknown): string => {
@@ -45,6 +52,8 @@ export const SubagentContainer: React.FC<SubagentContainerProps> = ({
   toolInput,
   toolResult,
   subagentState,
+  status,
+  timestamp,
 }) => {
   const parsedInput = typeof toolInput === 'string' ? (() => {
     try { return JSON.parse(toolInput); } catch { return {}; }
@@ -64,6 +73,7 @@ export const SubagentContainer: React.FC<SubagentContainerProps> = ({
         title={title}
         toolName="Task"
         open={false}
+        badge={<ToolExecutionMeta status={status} timestamp={timestamp} />}
       >
         {/* Prompt/request to the subagent */}
         {prompt && (
@@ -75,7 +85,7 @@ export const SubagentContainer: React.FC<SubagentContainerProps> = ({
         {/* Current tool indicator (while running) */}
         {currentTool && !isComplete && (
           <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-            <span className="h-1.5 w-1.5 flex-shrink-0 animate-pulse rounded-full bg-purple-500 dark:bg-purple-400" />
+            <span className="h-1.5 w-1.5 flex-shrink-0 animate-pulse rounded-full bg-purple-500 motion-reduce:animate-none dark:bg-purple-400" />
             <span className="text-muted-foreground/60">Currently:</span>
             <span className="font-medium text-foreground">{currentTool.toolName}</span>
             {getCompactToolDisplay(currentTool.toolName, currentTool.toolInput) && (

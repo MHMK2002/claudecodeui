@@ -21,6 +21,7 @@ import ChatMessageFiles from './ChatMessageFiles';
 import { Markdown } from './Markdown';
 import MessageCopyControl from './MessageCopyControl';
 import MessageSpeakControl from './MessageSpeakControl';
+import MessageTimestamp from './MessageTimestamp';
 
 type DiffLine = {
   type: string;
@@ -129,8 +130,8 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
   );
 
 
-  const formattedTime = useMemo(() => new Date(message.timestamp).toLocaleTimeString(), [message.timestamp]);
   const shouldHideThinkingMessage = Boolean(message.isThinking && !showThinking);
+  const shouldShowRowTimestamp = !message.isToolUse && !message.isTaskNotification;
 
   if (shouldHideThinkingMessage) {
     return null;
@@ -212,13 +213,13 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
                       </span>
                     </button>
                   )}
-                  <span>{formattedTime}</span>
+                  <MessageTimestamp timestamp={message.timestamp} />
                 </div>
               </div>
             ) : (
               /* Attachment-only turn: no text bubble, but the timestamp still shows */
               <div className="flex items-center justify-end gap-1 text-xs text-muted-foreground">
-                <span>{formattedTime}</span>
+                <MessageTimestamp timestamp={message.timestamp} />
               </div>
             )}
           </div>
@@ -289,6 +290,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
                     toolResult={message.toolResult}
                     toolId={message.toolId}
                     mode="input"
+                    timestamp={message.timestamp}
                     onFileOpen={onFileOpen}
                     createDiff={createDiff}
                     selectedProject={selectedProject}
@@ -481,7 +483,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
               </div>
             )}
 
-            {(shouldShowAssistantCopyControl || !isGrouped) && (
+            {(shouldShowAssistantCopyControl || shouldShowRowTimestamp) && (
               <div className="mt-1 flex w-full items-center gap-2 text-[11px] text-muted-foreground">
                 {shouldShowAssistantCopyControl && (
                   <MessageCopyControl content={assistantCopyContent} messageType="assistant" />
@@ -489,7 +491,9 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
                 {shouldShowAssistantCopyControl && (
                   <MessageSpeakControl content={assistantCopyContent} />
                 )}
-                {!isGrouped && <span>{formattedTime}</span>}
+                {shouldShowRowTimestamp && (
+                  <MessageTimestamp timestamp={message.timestamp} className="ml-auto" />
+                )}
               </div>
             )}
           </div>

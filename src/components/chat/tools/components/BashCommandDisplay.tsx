@@ -4,8 +4,9 @@ import { ChevronRight, Copy, Check } from 'lucide-react';
 import { cn } from '../../../../lib/utils';
 import { copyTextToClipboard } from '../../../../utils/clipboard';
 import { getTextDirection } from '../../../../utils/textDirection';
+import type { MessageTimestampValue } from '../../utils/messageTimestamp';
 
-import { ToolStatusBadge } from './ToolStatusBadge';
+import { ToolExecutionMeta } from './ToolExecutionMeta';
 import type { ToolStatus } from './ToolStatusBadge';
 
 interface BashCommandDisplayProps {
@@ -15,6 +16,7 @@ interface BashCommandDisplayProps {
   output?: string;
   isError?: boolean;
   status?: ToolStatus;
+  timestamp?: MessageTimestampValue;
   defaultOpen?: boolean;
 }
 
@@ -31,6 +33,7 @@ export const BashCommandDisplay: React.FC<BashCommandDisplayProps> = ({
   output,
   isError = false,
   status,
+  timestamp,
   defaultOpen = false,
 }) => {
   const trimmedOutput = (output || '').replace(/\s+$/, '');
@@ -90,7 +93,7 @@ export const BashCommandDisplay: React.FC<BashCommandDisplayProps> = ({
           }
         }}
         className={cn(
-          'flex items-center gap-2 px-2.5 py-1.5 outline-none',
+          'flex flex-wrap items-center gap-2 px-2.5 py-1.5 outline-none',
           hasOutput && 'cursor-pointer focus-visible:ring-1 focus-visible:ring-ring',
         )}
       >
@@ -117,10 +120,7 @@ export const BashCommandDisplay: React.FC<BashCommandDisplayProps> = ({
           {command}
         </span>
 
-        {isRunning && (
-          <span className="h-2.5 w-2.5 flex-shrink-0 animate-spin rounded-full border-[1.5px] border-muted-foreground/30 border-t-emerald-400" />
-        )}
-        {status && status !== 'running' && <ToolStatusBadge status={status} className="flex-shrink-0" />}
+        <ToolExecutionMeta status={status} timestamp={timestamp} />
         {!open && hasOutput && !isRunning && (
           <span className="flex-shrink-0 text-[10px] tabular-nums text-muted-foreground/70 transition-opacity group-hover/cmd:opacity-0">
             {outputLineCount} {outputLineCount === 1 ? 'line' : 'lines'}

@@ -14,8 +14,11 @@ import {
   Shimmer,
 } from '../../../../shared/view/ui';
 import { usePermission } from '../../../../contexts/PermissionContext';
+import type { MessageTimestampValue } from '../../utils/messageTimestamp';
 
 import { MarkdownContent } from './ContentRenderers';
+import { ToolExecutionMeta } from './ToolExecutionMeta';
+import type { ToolStatus } from './ToolStatusBadge';
 
 interface PlanDisplayProps {
   title: string;
@@ -26,6 +29,8 @@ interface PlanDisplayProps {
   rawContent?: string;
   toolName: string;
   toolId?: string;
+  status?: ToolStatus;
+  timestamp?: MessageTimestampValue;
 }
 
 export const PlanDisplay: React.FC<PlanDisplayProps> = ({
@@ -36,6 +41,8 @@ export const PlanDisplay: React.FC<PlanDisplayProps> = ({
   showRawParameters = false,
   rawContent,
   toolName: _toolName,
+  status,
+  timestamp,
 }) => {
   const permissionCtx = usePermission();
 
@@ -62,17 +69,20 @@ export const PlanDisplay: React.FC<PlanDisplayProps> = ({
     <Collapsible defaultOpen={defaultOpen}>
       <Card className="my-1 flex flex-col shadow-none">
         {/* Header — always visible */}
-        <CardHeader className="flex flex-row items-start justify-between space-y-0 px-4 pb-0 pt-4">
-          <div className="flex items-center gap-2">
+        <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-2 space-y-0 px-4 pb-0 pt-4">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
             <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
-            <CardTitle className="text-sm font-semibold">
+            <CardTitle className="min-w-0 truncate text-sm font-semibold">
               {isStreaming ? <Shimmer>{title}</Shimmer> : title}
             </CardTitle>
           </div>
-          <CollapsibleTrigger className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground">
-            <ChevronsUpDown className="h-4 w-4" />
-            <span className="sr-only">Toggle plan</span>
-          </CollapsibleTrigger>
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            <ToolExecutionMeta status={status} timestamp={timestamp} />
+            <CollapsibleTrigger className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground">
+              <ChevronsUpDown className="h-4 w-4" />
+              <span className="sr-only">Toggle plan</span>
+            </CollapsibleTrigger>
+          </div>
         </CardHeader>
 
         {/* Collapsible content */}

@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
+
 import { copyTextToClipboard } from '../../../../utils/clipboard';
-import { ToolStatusBadge } from './ToolStatusBadge';
+import type { MessageTimestampValue } from '../../utils/messageTimestamp';
+
+import { ToolExecutionMeta } from './ToolExecutionMeta';
 import type { ToolStatus } from './ToolStatusBadge';
 
 type ActionType = 'copy' | 'open-file' | 'jump-to-results' | 'none';
@@ -26,6 +29,7 @@ interface OneLineDisplayProps {
   toolResult?: any;
   toolId?: string;
   status?: ToolStatus;
+  timestamp?: MessageTimestampValue;
 }
 
 /**
@@ -52,6 +56,7 @@ export const OneLineDisplay: React.FC<OneLineDisplayProps> = ({
   toolResult,
   toolId,
   status,
+  timestamp,
 }) => {
   const [copied, setCopied] = useState(false);
   const isTerminal = style === 'terminal';
@@ -96,13 +101,13 @@ export const OneLineDisplay: React.FC<OneLineDisplayProps> = ({
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
             </svg>
           </div>
-          <div className="flex min-w-0 flex-1 items-start gap-2">
+          <div className="flex min-w-0 flex-1 flex-wrap items-start gap-2">
             <div className="min-w-0 flex-1 rounded bg-gray-900 px-2.5 py-1 dark:bg-black">
               <code className={`font-mono text-xs text-green-400 ${wrapText ? 'whitespace-pre-wrap break-all' : 'block truncate'}`}>
                 <span className="select-none text-green-600 dark:text-green-500">$ </span>{value}
               </code>
             </div>
-            {status && <ToolStatusBadge status={status} className="mt-0.5" />}
+            <ToolExecutionMeta status={status} timestamp={timestamp} className="ml-auto mt-0.5" />
             {action === 'copy' && renderCopyButton()}
           </div>
         </div>
@@ -121,17 +126,17 @@ export const OneLineDisplay: React.FC<OneLineDisplayProps> = ({
   if (action === 'open-file') {
     const displayName = value.split('/').pop() || value;
     return (
-      <div className={`group flex items-center gap-1.5 border-l-2 ${colorScheme.border} my-0.5 py-0.5 pl-3`}>
+      <div className={`group flex flex-wrap items-center gap-1.5 border-l-2 ${colorScheme.border} my-0.5 py-0.5 pl-3`}>
         <span className="flex-shrink-0 text-xs text-muted-foreground">{label || toolName}</span>
         <span className="text-[10px] text-muted-foreground/40">/</span>
         <button
           onClick={handleAction}
-          className="truncate font-mono text-xs text-primary transition-colors hover:text-primary/80 hover:underline"
+          className="min-w-0 flex-1 truncate text-left font-mono text-xs text-primary transition-colors hover:text-primary/80 hover:underline"
           title={value}
         >
           {displayName}
         </button>
-        {status && <ToolStatusBadge status={status} className="ml-auto" />}
+        <ToolExecutionMeta status={status} timestamp={timestamp} className="ml-auto" />
       </div>
     );
   }
@@ -139,7 +144,7 @@ export const OneLineDisplay: React.FC<OneLineDisplayProps> = ({
   // Search / jump-to-results style
   if (action === 'jump-to-results') {
     return (
-      <div className={`group flex items-center gap-1.5 border-l-2 ${colorScheme.border} my-0.5 py-0.5 pl-3`}>
+      <div className={`group flex flex-wrap items-center gap-1.5 border-l-2 ${colorScheme.border} my-0.5 py-0.5 pl-3`}>
         <span className="flex-shrink-0 text-xs text-muted-foreground">{label || toolName}</span>
         <span className="text-[10px] text-muted-foreground/40">/</span>
         <span className={`min-w-0 flex-1 truncate font-mono text-xs ${colorScheme.primary}`}>
@@ -150,7 +155,7 @@ export const OneLineDisplay: React.FC<OneLineDisplayProps> = ({
             {secondary}
           </span>
         )}
-        {status && <ToolStatusBadge status={status} />}
+        <ToolExecutionMeta status={status} timestamp={timestamp} />
         {toolResult && (
           <a
             href={`#tool-result-${toolId}`}
@@ -167,7 +172,7 @@ export const OneLineDisplay: React.FC<OneLineDisplayProps> = ({
 
   // Default one-line style
   return (
-    <div className={`group flex items-center gap-1.5 ${colorScheme.background || ''} border-l-2 ${colorScheme.border} my-0.5 py-0.5 pl-3`}>
+    <div className={`group flex flex-wrap items-center gap-1.5 ${colorScheme.background || ''} border-l-2 ${colorScheme.border} my-0.5 py-0.5 pl-3`}>
       {icon && icon !== 'terminal' && (
         <span className={`${colorScheme.icon} flex-shrink-0 text-xs`}>{icon}</span>
       )}
@@ -185,7 +190,7 @@ export const OneLineDisplay: React.FC<OneLineDisplayProps> = ({
           {secondary}
         </span>
       )}
-      {status && <ToolStatusBadge status={status} />}
+      <ToolExecutionMeta status={status} timestamp={timestamp} />
       {action === 'copy' && renderCopyButton()}
     </div>
   );
