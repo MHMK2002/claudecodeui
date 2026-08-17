@@ -262,7 +262,6 @@ jobs:
           Set-StrictMode -Version Latest
           $ErrorActionPreference = 'Stop'
           $pfxPath = Join-Path $env:RUNNER_TEMP 'cloudcli-internal-windows.pfx'
-          $cerPath = Join-Path $env:RUNNER_TEMP 'cloudcli-internal-windows.cer'
           [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_CSC_LINK))
           $certificate = $null
           try {
@@ -275,19 +274,35 @@ jobs:
             if (-not $certificate.HasPrivateKey) {
               throw 'Internal Windows signing certificate has no private key.'
             }
-            [IO.File]::WriteAllBytes(
-              $cerPath,
-              $certificate.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
-            )
 
-            Write-Host 'Trusting internal Windows public certificate.'
-            & certutil.exe -user -f -addstore Root $cerPath | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw 'Failed to trust the internal Windows root certificate.' }
-            & certutil.exe -user -f -addstore TrustedPublisher $cerPath | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw 'Failed to trust the internal Windows publisher certificate.' }
+            $storeNames = @(
+              [System.Security.Cryptography.X509Certificates.StoreName]::Root,
+              [System.Security.Cryptography.X509Certificates.StoreName]::TrustedPublisher
+            )
+            foreach ($storeName in $storeNames) {
+              Write-Host "Trusting internal Windows certificate in $storeName."
+              $store = [System.Security.Cryptography.X509Certificates.X509Store]::new(
+                $storeName,
+                [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
+              )
+              try {
+                $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+                $store.Add($certificate)
+                $matches = $store.Certificates.Find(
+                  [System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
+                  $certificate.Thumbprint,
+                  $false
+                )
+                if ($matches.Count -eq 0) {
+                  throw "Failed to trust the internal Windows certificate in $storeName."
+                }
+              } finally {
+                if ($null -ne $store) { $store.Dispose() }
+              }
+            }
           } finally {
             if ($null -ne $certificate) { $certificate.Dispose() }
-            Remove-Item $pfxPath, $cerPath -Force -ErrorAction SilentlyContinue
+            Remove-Item $pfxPath -Force -ErrorAction SilentlyContinue
           }
 
       - name: Build signed desktop distribution

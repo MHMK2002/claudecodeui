@@ -137,8 +137,12 @@ test('internal Desktop releases preserve production signing gates and publish tr
   );
   assert.ok(internalWindowsTrustStep);
   assert.match(internalWindowsTrustStep[0], /X509KeyStorageFlags\]::EphemeralKeySet/);
-  assert.match(internalWindowsTrustStep[0], /certutil\.exe -user -f -addstore Root/);
-  assert.match(internalWindowsTrustStep[0], /certutil\.exe -user -f -addstore TrustedPublisher/);
+  assert.match(internalWindowsTrustStep[0], /X509Store\]::new/);
+  assert.match(internalWindowsTrustStep[0], /StoreLocation\]::CurrentUser/);
+  assert.match(internalWindowsTrustStep[0], /StoreName\]::Root/);
+  assert.match(internalWindowsTrustStep[0], /StoreName\]::TrustedPublisher/);
+  assert.match(internalWindowsTrustStep[0], /FindByThumbprint/);
+  assert.doesNotMatch(internalWindowsTrustStep[0], /certutil(?:\.exe)?/i);
   assert.doesNotMatch(internalWindowsTrustStep[0], /Import-(?:PfxCertificate|Certificate)/);
   assert.match(desktopReleaseWorkflow, /needs\.resolve\.outputs\.release_mode == 'internal'/);
   assert.match(desktopReleaseWorkflow, /Add internal trust certificates and installation guide/);
