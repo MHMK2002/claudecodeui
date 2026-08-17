@@ -126,6 +126,7 @@ function buildDesktopPackageJson(copiedOptionalDependencies) {
     build: {
       appId: packageJson.build.appId,
       productName: packageJson.build.productName,
+      executableName: packageJson.build.executableName,
       asar: packageJson.build.asar,
       artifactName: packageJson.build.artifactName,
       electronVersion: getElectronVersion(),

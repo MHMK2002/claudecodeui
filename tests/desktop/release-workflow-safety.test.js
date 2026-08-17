@@ -22,6 +22,9 @@ const ciGateScript = await readFile(
   new URL('../../scripts/release/require-ci-success.mjs', import.meta.url),
   'utf8',
 );
+const packageJson = JSON.parse(
+  await readFile(new URL('../../package.json', import.meta.url), 'utf8'),
+);
 
 test('release validates every publishing credential before release-it can mutate state', () => {
   const releaseItIndex = releaseWorkflow.indexOf('npx release-it');
@@ -117,13 +120,17 @@ test('internal Desktop releases preserve production signing gates and publish tr
   assert.match(desktopReleaseWorkflow, /CLOUDCLI_RELEASE_MODE: \$\{\{ needs\.resolve\.outputs\.release_mode \}\}/);
 
   assert.match(desktopReleaseWorkflow, /Require macOS signing credentials[\s\S]*test -n "\$CSC_LINK"[\s\S]*if \[ "\$RELEASE_MODE" = "production" \]/);
-  assert.match(desktopReleaseWorkflow, /Trust internal macOS signing certificate[\s\S]*security add-trusted-cert -r trustRoot -p codeSign/);
+  assert.match(
+    desktopReleaseWorkflow,
+    /Trust internal macOS signing certificate[\s\S]*sudo security add-trusted-cert -d -r trustRoot -p codeSign[\s\S]*\/Library\/Keychains\/System\.keychain/,
+  );
   const internalMacTrustStep = desktopReleaseWorkflow.match(
     /- name: Trust internal macOS signing certificate[\s\S]*?(?=\n {6}- name:)/,
   );
   assert.ok(internalMacTrustStep);
   assert.match(internalMacTrustStep[0], /openssl pkcs12 -in/);
   assert.doesNotMatch(internalMacTrustStep[0], /openssl pkcs12 -legacy/);
+  assert.doesNotMatch(internalMacTrustStep[0], /login\.keychain-db/);
   assert.match(desktopReleaseWorkflow, /Trust internal Windows signing certificate/);
   assert.match(desktopReleaseWorkflow, /needs\.resolve\.outputs\.release_mode == 'internal'/);
   assert.match(desktopReleaseWorkflow, /Add internal trust certificates and installation guide/);
@@ -135,6 +142,11 @@ test('internal Desktop releases preserve production signing gates and publish tr
   assert.match(desktopStageScript, /notarize: false/);
   assert.match(desktopStageScript, /identity: 'CloudCLI Internal'/);
   assert.match(releaseWorkflow, /-f "release_mode=production"/);
+});
+
+test('staged Desktop package exposes a portable executable name', () => {
+  assert.equal(packageJson.build.executableName, 'cloudcli-desktop');
+  assert.match(desktopStageScript, /executableName: packageJson\.build\.executableName/);
 });
 
 test('CI gate implementation never writes or embeds its token in output', () => {
