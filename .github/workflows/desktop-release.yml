@@ -264,13 +264,31 @@ jobs:
           $pfxPath = Join-Path $env:RUNNER_TEMP 'cloudcli-internal-windows.pfx'
           $cerPath = Join-Path $env:RUNNER_TEMP 'cloudcli-internal-windows.cer'
           [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_CSC_LINK))
-          $password = ConvertTo-SecureString $env:WINDOWS_CSC_KEY_PASSWORD -AsPlainText -Force
-          $certificate = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $password -Exportable
-          if (-not $certificate) { throw 'Internal Windows signing certificate import failed.' }
-          Export-Certificate -Cert $certificate -FilePath $cerPath -Force | Out-Null
-          Import-Certificate -FilePath $cerPath -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
-          Import-Certificate -FilePath $cerPath -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
-          Remove-Item $pfxPath -Force
+          $certificate = $null
+          try {
+            Write-Host 'Extracting internal Windows public certificate.'
+            $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+              $pfxPath,
+              $env:WINDOWS_CSC_KEY_PASSWORD,
+              [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
+            )
+            if (-not $certificate.HasPrivateKey) {
+              throw 'Internal Windows signing certificate has no private key.'
+            }
+            [IO.File]::WriteAllBytes(
+              $cerPath,
+              $certificate.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
+            )
+
+            Write-Host 'Trusting internal Windows public certificate.'
+            & certutil.exe -user -f -addstore Root $cerPath | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Failed to trust the internal Windows root certificate.' }
+            & certutil.exe -user -f -addstore TrustedPublisher $cerPath | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Failed to trust the internal Windows publisher certificate.' }
+          } finally {
+            if ($null -ne $certificate) { $certificate.Dispose() }
+            Remove-Item $pfxPath, $cerPath -Force -ErrorAction SilentlyContinue
+          }
 
       - name: Build signed desktop distribution
         shell: bash

@@ -132,6 +132,14 @@ test('internal Desktop releases preserve production signing gates and publish tr
   assert.doesNotMatch(internalMacTrustStep[0], /openssl pkcs12 -legacy/);
   assert.doesNotMatch(internalMacTrustStep[0], /login\.keychain-db/);
   assert.match(desktopReleaseWorkflow, /Trust internal Windows signing certificate/);
+  const internalWindowsTrustStep = desktopReleaseWorkflow.match(
+    /- name: Trust internal Windows signing certificate[\s\S]*?(?=\n {6}- name:)/,
+  );
+  assert.ok(internalWindowsTrustStep);
+  assert.match(internalWindowsTrustStep[0], /X509KeyStorageFlags\]::EphemeralKeySet/);
+  assert.match(internalWindowsTrustStep[0], /certutil\.exe -user -f -addstore Root/);
+  assert.match(internalWindowsTrustStep[0], /certutil\.exe -user -f -addstore TrustedPublisher/);
+  assert.doesNotMatch(internalWindowsTrustStep[0], /Import-(?:PfxCertificate|Certificate)/);
   assert.match(desktopReleaseWorkflow, /needs\.resolve\.outputs\.release_mode == 'internal'/);
   assert.match(desktopReleaseWorkflow, /Add internal trust certificates and installation guide/);
   assert.match(desktopReleaseWorkflow, /cloudcli-internal-macos\.cer/);
