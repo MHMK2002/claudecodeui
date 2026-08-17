@@ -334,7 +334,21 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
         throw createFileTreeError('Directory not accessible', 404, 'DIRECTORY_NOT_ACCESSIBLE');
       }
 
-      const fileTree = await buildFileTree(resolvedPath, 1);
+      // Folder browsing only lists the immediate children, so the tree is built
+      // without descending. Reading one level deeper would scan every child —
+      // including OS-protected folders such as macOS "~/.Trash" — and a single
+      // EPERM there would fail the whole listing for no rendered benefit.
+      let fileTree: FileTreeNode[] = [];
+      try {
+        fileTree = await buildFileTree(resolvedPath, 0);
+      } catch (error) {
+        mapFileSystemError(error, {
+          EACCES: { message: 'Permission denied while reading this folder', statusCode: 403 },
+          EPERM: { message: 'Permission denied while reading this folder', statusCode: 403 },
+          ENOENT: { message: 'Directory not accessible', statusCode: 404 },
+        });
+      }
+
       const directories = fileTree
         .filter((item) => item.type === 'directory')
         .map((item) => ({ path: item.path, name: item.name, type: 'directory' as const }))

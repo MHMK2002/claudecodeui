@@ -83,7 +83,7 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
     () => mode === 'input' ? deriveToolStatus(toolResult) : undefined,
     [mode, toolResult],
   );
-  const visibleToolStatus = toolStatus === 'completed' ? undefined : toolStatus;
+  const visibleToolStatus = toolStatus;
   const executionTimestamp = mode === 'input' ? timestamp : undefined;
 
   const handleAction = useCallback(() => {

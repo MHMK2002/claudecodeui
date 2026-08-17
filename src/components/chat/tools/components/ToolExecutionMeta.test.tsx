@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import React from 'react';
@@ -21,12 +22,12 @@ test('running metadata keeps textual status, motion-safe activity, and clock tim
   assert.match(html, /<time [^>]*dateTime="2026-08-16T10:02:00\.000Z"/);
 });
 
-test('successful metadata hides Completed while retaining the timestamp', () => {
+test('successful metadata shows Done beside the timestamp', () => {
   const html = renderToStaticMarkup(
-    <ToolExecutionMeta timestamp={TIMESTAMP} />,
+    <ToolExecutionMeta status="completed" timestamp={TIMESTAMP} />,
   );
 
-  assert.doesNotMatch(html, /Completed/);
+  assert.match(html, />Done</);
   assert.match(html, /<time /);
 });
 
@@ -69,4 +70,14 @@ test('grouped tools surface the highest-priority status and its own timestamp', 
     status: 'error',
     timestamp: '2026-08-16T10:03:00.000Z',
   });
+});
+
+test('grouped successful tools keep their Done status visible', () => {
+  const source = readFileSync(
+    'src/components/chat/view/subcomponents/ToolGroupContainer.tsx',
+    'utf8',
+  );
+
+  assert.match(source, /status=\{groupExecution\.status\}/);
+  assert.doesNotMatch(source, /groupExecution\.status === 'completed' \? undefined/);
 });

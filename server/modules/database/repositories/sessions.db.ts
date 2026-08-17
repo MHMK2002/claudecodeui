@@ -1,6 +1,9 @@
 import { getConnection } from '@/modules/database/connection.js';
 import { projectsDb } from '@/modules/database/repositories/projects.db.js';
-import { normalizeProjectPath } from '@/shared/utils.js';
+import {
+  isProviderTextCompletionTemporaryPath,
+  normalizeProjectPath,
+} from '@/shared/utils.js';
 
 type SessionRow = {
   session_id: string;
@@ -110,6 +113,16 @@ export const sessionsDb = {
     jsonlPath?: string | null
   ): string {
     const db = getConnection();
+    if (isProviderTextCompletionTemporaryPath(projectPath)) {
+      // Provider-native history stays owned by the provider. Remove only the
+      // derived application index row so Generator runs never enter Chat.
+      db.prepare(
+        `DELETE FROM sessions
+         WHERE provider = ? AND (session_id = ? OR provider_session_id = ?)
+           AND ${TOP_LEVEL_SESSION_CLAUSE}`
+      ).run(provider, providerSessionId, providerSessionId);
+      return providerSessionId;
+    }
     const createdAtValue = normalizeTimestamp(createdAt);
     const updatedAtValue = normalizeTimestamp(updatedAt);
     const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);

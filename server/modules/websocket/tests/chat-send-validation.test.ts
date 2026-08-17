@@ -62,10 +62,10 @@ const runtimeThatMustNotBeReached = {
   getPendingApprovalsForSession: () => [],
 };
 
-test('chat.send blocks a legacy Claude session before consuming fork context or starting a run', { concurrency: false }, async () => {
+test('chat.send blocks a disconnected profile-less Claude session before consuming fork context or starting a run', { concurrency: false }, async () => {
   await withIsolatedDatabase(async () => {
-    // A legacy row: Claude with no provider profile, carrying an unconsumed
-    // fork context so the test proves validation happens before consumption.
+    // A profile-less Claude row with no live CLI connection, carrying an
+    // unconsumed fork context so the test proves validation happens first.
     sessionsDb.createAppSession('legacy-claude', 'claude', '/workspace/legacy', null, null);
     sessionsDb.setForkContext('legacy-claude', 'unconsumed handoff summary');
 
@@ -79,7 +79,7 @@ test('chat.send blocks a legacy Claude session before consuming fork context or 
 
     assert.equal(sent.length, 1);
     assert.equal(sent[0].kind, 'protocol_error');
-    assert.equal(sent[0].code, 'LEGACY_SESSION_PROFILE_REQUIRED');
+    assert.equal(sent[0].code, 'PROVIDER_NOT_CONNECTED');
     assert.equal(sent[0].sessionId, 'legacy-claude');
 
     // Fork context must remain unconsumed — validation fired first.

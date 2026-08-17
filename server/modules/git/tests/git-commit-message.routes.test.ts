@@ -16,13 +16,14 @@ import {
   GitCommitMessageError,
 } from '@/modules/git/git-commit-message.service.js';
 import { createGitRouter } from '@/modules/git/git.routes.js';
-import type { ResolvedProviderSelection } from '@/shared/types.js';
+import type { ProviderTextCompletionSelection } from '@/shared/types.js';
 
 const execFileAsync = promisify(execFile);
-const selection: ResolvedProviderSelection = {
+const selection: ProviderTextCompletionSelection = {
   provider: 'codex',
   providerProfileId: 12,
   model: 'gpt-test',
+  effort: 'low',
 };
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
@@ -65,7 +66,7 @@ function unexpectedSpawn() {
   return child;
 }
 
-test('generation validates the typed request, returns no-store, and reports the exact used selection', async () => {
+test('generation ignores client selection, returns no-store, and reports the server-configured selection', async () => {
   const calls: unknown[] = [];
   const service = {
     async generate(input: unknown) {
@@ -100,7 +101,7 @@ test('generation validates the typed request, returns no-store, and reports the 
       body: JSON.stringify({
         project: 'project-1',
         files: ['src/app.ts', 'src/view.tsx'],
-        selection,
+        selection: { provider: 'claude', providerProfileId: 99, model: 'attacker-model' },
       }),
     });
     assert.equal(response.status, 200);
@@ -120,7 +121,6 @@ test('generation validates the typed request, returns no-store, and reports the 
     assert.deepEqual(calls, [{
       projectId: 'project-1',
       expectedFiles: ['src/app.ts', 'src/view.tsx'],
-      selection,
       userId: 7,
       signal: (calls[0] as { signal: AbortSignal }).signal,
     }]);
@@ -159,7 +159,7 @@ test('generation maps staged conflicts and provider failures without fake succes
       const response = await fetch(`${app.baseUrl}/generate-commit-message`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ project: 'project-1', files: ['app.ts'], selection }),
+        body: JSON.stringify({ project: 'project-1', files: ['app.ts'] }),
       });
       const body = await response.json() as Record<string, unknown>;
       assert.equal(response.status, failure.statusCode);
@@ -173,7 +173,7 @@ test('generation maps staged conflicts and provider failures without fake succes
   }
 });
 
-test('generation rejects malformed project/files/provider/profile/model input before service execution', async () => {
+test('generation rejects malformed project/files input before service execution', async () => {
   let calls = 0;
   const service = {
     async generate() { calls += 1; throw new Error('unexpected'); },
@@ -187,11 +187,10 @@ test('generation rejects malformed project/files/provider/profile/model input be
   });
   const requests = [
     {},
-    { project: 'project-1', files: [], selection },
-    { project: 'project-1', files: ['app.ts', 'app.ts'], selection },
-    { project: 'project-1', files: ['app.ts'], selection: { ...selection, provider: 'other' } },
-    { project: 'project-1', files: ['app.ts'], selection: { ...selection, providerProfileId: '12' } },
-    { project: 'project-1', files: ['app.ts'], selection: { ...selection, model: '' } },
+    { project: 'project-1', files: [] },
+    { project: 'project-1', files: ['app.ts', 'app.ts'] },
+    { project: '', files: ['app.ts'] },
+    { project: 'project-1', files: [null] },
   ];
   try {
     for (const body of requests) {
@@ -244,7 +243,7 @@ test('client disconnect aborts the backend generation signal without writing a r
     const request = fetch(`${app.baseUrl}/generate-commit-message`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ project: 'project-1', files: ['app.ts'], selection }),
+      body: JSON.stringify({ project: 'project-1', files: ['app.ts'] }),
       signal: controller.signal,
     });
     await started;
@@ -269,6 +268,8 @@ test('commit never restages a mixed file and commits only the reviewed index', a
       spawnProcess: crossSpawn,
       resolveProjectPathById: () => cwd,
       textCompletion: { complete: async () => { throw new Error('unexpected generation'); } },
+      getCommitMessageGeneratorSettings: () => null,
+      resolveDefaultTextCompletionSelection: async () => selection,
     });
     const app = await startRouter({
       fileSystem: fs,
@@ -307,6 +308,8 @@ test('commit returns 409 and creates no commit when the generated snapshot is st
       spawnProcess: crossSpawn,
       resolveProjectPathById: () => cwd,
       textCompletion: { complete: async () => { throw new Error('unexpected generation'); } },
+      getCommitMessageGeneratorSettings: () => null,
+      resolveDefaultTextCompletionSelection: async () => selection,
     });
     const original = await commitMessageService.inspectSnapshot({
       projectId: 'project-1',

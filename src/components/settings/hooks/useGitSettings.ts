@@ -1,96 +1,181 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { authenticatedFetch } from '../../../utils/api';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
-type GitConfigResponse = {
-  gitName?: string;
-  gitEmail?: string;
-  error?: string;
-};
+import {
+  defaultProfileForEntry,
+  resolveCatalogModel,
+  useProviderSelectionCatalog,
+} from '../../../shared/hooks/useProviderSelectionCatalog';
+import {
+  decodeGitSettingsResponse,
+  lowestCommitMessageEffort,
+  validateCommitMessageGeneratorSettings,
+} from '../../../shared/gitSettings';
+import type { CommitMessageGeneratorSettings, LLMProvider } from '../../../types/app';
+import { authenticatedFetch } from '../../../utils/api';
 
 type SaveStatus = 'success' | 'error' | null;
 
+/** Owns the one global Settings → Git form and its provider-catalog validation. */
 export function useGitSettings() {
-  const [gitName, setGitName] = useState('');
-  const [gitEmail, setGitEmail] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
+  const catalogState = useProviderSelectionCatalog();
+  const [gitName, setGitNameState] = useState('');
+  const [gitEmail, setGitEmailState] = useState('');
+  const [commitMessage, setCommitMessageState] = useState<CommitMessageGeneratorSettings | null>(null);
+  const [defaultBasePrompt, setDefaultBasePrompt] = useState('');
+  const [basePromptMaxLength, setBasePromptMaxLength] = useState(800);
+  const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>(null);
-  const clearStatusTimerRef = useRef<number | null>(null);
 
   const clearSaveStatus = useCallback(() => {
-    if (clearStatusTimerRef.current !== null) {
-      window.clearTimeout(clearStatusTimerRef.current);
-      clearStatusTimerRef.current = null;
-    }
     setSaveStatus(null);
+    setSaveError(null);
   }, []);
 
   const loadGitConfig = useCallback(async () => {
+    setIsLoading(true);
+    setLoadError(null);
     try {
-      setIsLoading(true);
       const response = await authenticatedFetch('/api/user/git-config');
-      if (!response.ok) {
-        return;
-      }
-
-      const data = await response.json() as GitConfigResponse;
-      setGitName(data.gitName || '');
-      setGitEmail(data.gitEmail || '');
+      const data = await decodeGitSettingsResponse(response);
+      setGitNameState(data.gitName ?? '');
+      setGitEmailState(data.gitEmail ?? '');
+      setCommitMessageState(data.commitMessage);
+      setDefaultBasePrompt(data.defaultCommitMessageBasePrompt);
+      setBasePromptMaxLength(data.commitMessageBasePromptMaxLength);
     } catch (error) {
-      console.error('Error loading git config:', error);
+      setLoadError(error instanceof Error ? error.message : 'Failed to load Git settings.');
     } finally {
       setIsLoading(false);
     }
   }, []);
 
+  const updateCommitMessage = useCallback((
+    update: (current: CommitMessageGeneratorSettings) => CommitMessageGeneratorSettings,
+  ) => {
+    clearSaveStatus();
+    setCommitMessageState((current) => current ? update(current) : current);
+  }, [clearSaveStatus]);
+
+  const changeProvider = useCallback((provider: LLMProvider) => {
+    const entry = catalogState.getEntry(provider);
+    if (!entry?.available) return;
+    const model = resolveCatalogModel(entry, null);
+    const modelOption = entry.models.OPTIONS.find((option) => option.value === model) ?? null;
+    clearSaveStatus();
+    setCommitMessageState({
+      provider,
+      providerProfileId: defaultProfileForEntry(entry)?.id ?? null,
+      model: model ?? '',
+      effort: lowestCommitMessageEffort(modelOption),
+      basePrompt: commitMessage?.basePrompt ?? defaultBasePrompt,
+    });
+  }, [catalogState, clearSaveStatus, commitMessage?.basePrompt, defaultBasePrompt]);
+
+  const changeModel = useCallback((model: string) => {
+    updateCommitMessage((current) => {
+      const entry = catalogState.getEntry(current.provider);
+      const option = entry?.models.OPTIONS.find((candidate) => candidate.value === model) ?? null;
+      return { ...current, model, effort: lowestCommitMessageEffort(option) };
+    });
+  }, [catalogState, updateCommitMessage]);
+
+  const validationError = useMemo(() => {
+    if (isLoading || catalogState.loading) return null;
+    if (loadError) return loadError;
+    if (catalogState.error) return catalogState.error;
+    if (!gitName.trim() || !gitEmail.trim()) return 'Git name and email are required.';
+    return validateCommitMessageGeneratorSettings(
+      catalogState.catalog,
+      commitMessage,
+      basePromptMaxLength,
+    );
+  }, [
+    basePromptMaxLength,
+    catalogState.catalog,
+    catalogState.error,
+    catalogState.loading,
+    commitMessage,
+    gitEmail,
+    gitName,
+    isLoading,
+    loadError,
+  ]);
+
   const saveGitConfig = useCallback(async () => {
+    if (validationError || !commitMessage) {
+      setSaveStatus('error');
+      setSaveError(validationError ?? 'Choose an available provider before saving.');
+      return;
+    }
+    setIsSaving(true);
+    setSaveStatus(null);
+    setSaveError(null);
     try {
-      setIsSaving(true);
       const response = await authenticatedFetch('/api/user/git-config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ gitName, gitEmail }),
+        body: JSON.stringify({ gitName, gitEmail, commitMessage }),
       });
-
-      if (response.ok) {
-        setSaveStatus('success');
-        clearStatusTimerRef.current = window.setTimeout(() => {
-          setSaveStatus(null);
-          clearStatusTimerRef.current = null;
-        }, 3000);
-        return;
-      }
-
-      const data = await response.json() as GitConfigResponse;
-      console.error('Failed to save git config:', data.error);
-      setSaveStatus('error');
+      const data = await decodeGitSettingsResponse(response);
+      setCommitMessageState(data.commitMessage);
+      setDefaultBasePrompt(data.defaultCommitMessageBasePrompt);
+      setBasePromptMaxLength(data.commitMessageBasePromptMaxLength);
+      setSaveStatus('success');
     } catch (error) {
-      console.error('Error saving git config:', error);
       setSaveStatus('error');
+      setSaveError(error instanceof Error ? error.message : 'Failed to save Git settings.');
     } finally {
       setIsSaving(false);
     }
-  }, [gitEmail, gitName]);
+  }, [commitMessage, gitEmail, gitName, validationError]);
 
   useEffect(() => {
     void loadGitConfig();
   }, [loadGitConfig]);
 
-  useEffect(() => () => {
-    if (clearStatusTimerRef.current !== null) {
-      window.clearTimeout(clearStatusTimerRef.current);
-    }
-  }, []);
-
   return {
     gitName,
-    setGitName,
+    setGitName(value: string) {
+      clearSaveStatus();
+      setGitNameState(value);
+    },
     gitEmail,
-    setGitEmail,
+    setGitEmail(value: string) {
+      clearSaveStatus();
+      setGitEmailState(value);
+    },
+    commitMessage,
+    changeProvider,
+    changeProfile(providerProfileId: number | null) {
+      updateCommitMessage((current) => ({ ...current, providerProfileId }));
+    },
+    changeModel,
+    changeEffort(effort: string | null) {
+      updateCommitMessage((current) => ({ ...current, effort }));
+    },
+    changeBasePrompt(basePrompt: string) {
+      updateCommitMessage((current) => ({ ...current, basePrompt }));
+    },
+    restoreDefaultBasePrompt() {
+      updateCommitMessage((current) => ({ ...current, basePrompt: defaultBasePrompt }));
+    },
+    defaultBasePrompt,
+    basePromptMaxLength,
+    catalogState,
     isLoading,
     isSaving,
+    loadError,
+    saveError,
+    validationError,
     saveStatus,
     clearSaveStatus,
+    retryLoad() {
+      catalogState.reload();
+      void loadGitConfig();
+    },
     saveGitConfig,
   };
 }

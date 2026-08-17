@@ -46,6 +46,23 @@ test('Desktop launcher passes axe and touch-target smoke', async ({ page }) => {
   await expectVisibleTargetsAtLeast44(page);
 });
 
+test('optional Desktop first-run setup passes axe and touch-target smoke at 320 px', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 320, height: 720 });
+  await installDesktopLocalMocks(page, { firstRun: true });
+  await page.goto('/');
+
+  const dialog = page.getByRole('dialog', { name: 'First-run setup' });
+  await expect(dialog).toBeVisible();
+  await expectNoSeriousAxeViolations(page);
+  await expectVisibleTargetsAtLeast44(page, dialog);
+
+  await dialog.getByRole('button', { name: 'Skip provider' }).click();
+  await expect(dialog.getByText('Set up Soniox Voice')).toBeVisible();
+  await expectNoSeriousAxeViolations(page);
+  await expectVisibleTargetsAtLeast44(page, dialog);
+});
+
 test('workspace and Voice Settings pass serious axe, keyboard, focus-return, and target smoke', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.addInitScript(() => {
@@ -157,7 +174,9 @@ test('Project, Chat, Shell, Source Control, Tasks, and Schedules pass serious ax
               success: true,
               message: 'feat(git): add accessible suggestions',
               snapshotId: 'a'.repeat(64),
-              selection: { provider: 'codex', providerProfileId: 1, model: 'gpt-test' },
+              selection: {
+                provider: 'codex', providerProfileId: 1, model: 'gpt-test', effort: 'low',
+              },
               analysis: { totalStagedFiles: 1, sampledFiles: 1, recentSubjects: 4, truncated: false },
             }
           : { success: true };

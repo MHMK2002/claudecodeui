@@ -124,7 +124,7 @@ export default function ToolGroupContainer({
           </>
         )}
         <ToolExecutionMeta
-          status={groupExecution.status === 'completed' ? undefined : groupExecution.status}
+          status={groupExecution.status}
           timestamp={groupExecution.timestamp ?? group.timestamp}
           className="ml-auto"
         />

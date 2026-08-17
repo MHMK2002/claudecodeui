@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import test from 'node:test';
 
-import pty from 'node-pty';
+import * as pty from 'node-pty';
 import { WebSocket } from 'ws';
 
 import { handleShellConnection } from '@/modules/websocket/services/shell-websocket.service.js';
@@ -173,6 +173,24 @@ test('missing project, unavailable cwd, and unavailable shell have distinct reco
     assert.equal(error?.code, fixture.code);
     assert.equal(typeof error?.recovery, 'string');
   }
+});
+
+test('resize after a failed init does not replace the actionable shell error', () => {
+  const socket = createFakeSocket();
+  const fixture = createDependencies();
+  const dependencies = {
+    ...fixture.dependencies,
+    resolveProjectPath: () => null,
+  };
+
+  handleShellConnection(socket as never, dependencies);
+  socket.emit('message', initMessage(`missing-project-${Date.now()}`));
+  socket.emit('message', JSON.stringify({ type: 'resize', cols: 120, rows: 40 }));
+
+  const errors = socket.frames
+    .map((frame) => JSON.parse(frame) as Record<string, unknown>)
+    .filter((frame) => frame.type === 'error');
+  assert.deepEqual(errors.map((error) => error.code), ['PROJECT_MISSING']);
 });
 
 test('a stale socket close cannot detach the socket that replaced it', () => {

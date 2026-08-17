@@ -7,7 +7,11 @@ import {
   decodeProviderSelectionCatalogResponse,
   getProviderCatalogSendBlockReason,
   getProviderCatalogRetryEmphasis,
+  isDefaultProviderSelectionPendingCatalog,
   isChatSubmissionBlocked,
+  markDefaultProviderSelectionPendingCatalog,
+  clearDefaultProviderSelectionPendingCatalog,
+  setDefaultProviderSelection,
 } from '../providerSelectionCatalog';
 
 import {
@@ -20,6 +24,7 @@ const catalog: ProviderSelectionCatalog = {
     {
       provider: 'claude',
       available: true,
+      connectionAvailable: true,
       unavailableReason: null,
       profiles: [
         { id: 11, title: 'Work', isDefault: false },
@@ -30,6 +35,7 @@ const catalog: ProviderSelectionCatalog = {
     {
       provider: 'cursor',
       available: true,
+      connectionAvailable: true,
       unavailableReason: null,
       profiles: [],
       models: { OPTIONS: [{ value: 'auto', label: 'Auto' }], DEFAULT: 'auto' },
@@ -37,20 +43,33 @@ const catalog: ProviderSelectionCatalog = {
   ],
 };
 
-test('profile providers resolve their Settings default and never a Local CLI selection', () => {
+test('fresh profile selections remain marked until a current catalog validates them', () => {
+  markDefaultProviderSelectionPendingCatalog('claude', 44);
+  assert.equal(isDefaultProviderSelectionPendingCatalog('claude', 44), true);
+  assert.equal(isDefaultProviderSelectionPendingCatalog('codex', 44), false);
+  markDefaultProviderSelectionPendingCatalog('codex', 51);
+  assert.equal(isDefaultProviderSelectionPendingCatalog('claude', 44), false);
+  assert.equal(isDefaultProviderSelectionPendingCatalog('codex', 51), true);
+  clearDefaultProviderSelectionPendingCatalog();
+  assert.equal(isDefaultProviderSelectionPendingCatalog('claude', 44), false);
+});
+
+test('profile providers resolve their Settings default and permit a live CLI selection', () => {
   assert.deepEqual(resolveValidSelection(catalog, 'claude'), {
     provider: 'claude',
     providerProfileId: 12,
     model: 'sonnet',
   });
-  assert.match(
-    validateCatalogSelection(catalog, {
-      provider: 'claude',
-      providerProfileId: null,
-      model: 'sonnet',
-    }) ?? '',
-    /profile/i,
-  );
+  assert.equal(validateCatalogSelection(catalog, {
+    provider: 'claude',
+    providerProfileId: null,
+    model: 'sonnet',
+  }), null);
+  assert.deepEqual(resolveValidSelection(catalog, 'claude', { profileId: null }), {
+    provider: 'claude',
+    providerProfileId: null,
+    model: 'sonnet',
+  });
 });
 
 test('connection-backed providers keep a null profile and catalog model', () => {
@@ -111,6 +130,29 @@ test('preference parser rejects invalid provider/profile/model storage without c
     providerProfileId: null,
     model: null,
   });
+});
+
+test('successful connection writes the new-chat provider/profile preference', () => {
+  const values = new Map<string, string>();
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: { setItem: (key: string, value: string) => values.set(key, value) },
+  });
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { dispatchEvent: () => true },
+  });
+  try {
+    setDefaultProviderSelection('claude', null);
+    assert.equal(values.get('selected-provider'), 'claude');
+    assert.equal(values.get('claude-provider-profile-id'), 'local');
+    setDefaultProviderSelection('codex', 44);
+    assert.equal(values.get('selected-provider'), 'codex');
+    assert.equal(values.get('codex-provider-profile-id'), '44');
+  } finally {
+    Reflect.deleteProperty(globalThis, 'window');
+    Reflect.deleteProperty(globalThis, 'localStorage');
+  }
 });
 
 test('catalog decoder accepts application/problem+json and validates every nested field', async () => {

@@ -1,4 +1,4 @@
-import { scanStateDb } from '@/modules/database/index.js';
+import { scanStateDb, sessionsDb } from '@/modules/database/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import type { LLMProvider } from '@/shared/types.js';
 
@@ -65,10 +65,13 @@ export const sessionSynchronizerService = {
   ): Promise<{ provider: LLMProvider; indexed: boolean; sessionId: string | null }> {
     const resolvedProvider = providerRegistry.resolveProvider(provider);
     const sessionId = await resolvedProvider.sessionSynchronizer.synchronizeFile(filePath);
+    const indexedSessionId = sessionId && sessionsDb.getSessionById(sessionId)
+      ? sessionId
+      : null;
     return {
       provider,
-      indexed: Boolean(sessionId),
-      sessionId,
+      indexed: Boolean(indexedSessionId),
+      sessionId: indexedSessionId,
     };
   },
 };

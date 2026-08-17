@@ -7,6 +7,8 @@
  */
 
 import { getConnection } from '@/modules/database/connection.js';
+import type { CommitMessageGeneratorSettings, LLMProvider } from '@/shared/types.js';
+import { DEFAULT_COMMIT_MESSAGE_BASE_PROMPT } from '@/shared/utils.js';
 
 type UserRow = {
   id: number;
@@ -17,6 +19,11 @@ type UserRow = {
   is_active: number;
   git_name: string | null;
   git_email: string | null;
+  commit_message_provider: string | null;
+  commit_message_provider_profile_id: number | null;
+  commit_message_model: string | null;
+  commit_message_effort: string | null;
+  commit_message_base_prompt: string | null;
   has_completed_onboarding: number;
 };
 
@@ -26,6 +33,22 @@ type UserGitConfig = {
   git_name: string | null;
   git_email: string | null;
 };
+
+type UserCommitMessageGeneratorRow = Pick<
+  UserRow,
+  | 'commit_message_provider'
+  | 'commit_message_provider_profile_id'
+  | 'commit_message_model'
+  | 'commit_message_effort'
+  | 'commit_message_base_prompt'
+>;
+
+const COMMIT_MESSAGE_PROVIDERS = new Set<LLMProvider>([
+  'claude',
+  'codex',
+  'cursor',
+  'opencode',
+]);
 
 type CreateUserResult = {
   id: number | bigint;
@@ -107,11 +130,11 @@ export const userDb = {
       .get() as UserPublicRow | undefined;
   },
 
-  /** Stores the user's preferred git name and email. */
-  updateGitConfig(
+  /** Stores only Git identity, used by first-load system Git import. */
+  updateGitIdentity(
     userId: number,
-    gitName: string,
-    gitEmail: string
+    gitName: string | null,
+    gitEmail: string | null
   ): void {
     const db = getConnection();
     db.prepare('UPDATE users SET git_name = ?, git_email = ? WHERE id = ?').run(
@@ -121,12 +144,73 @@ export const userDb = {
     );
   },
 
+  /** Atomically stores Git identity and the global commit-message generator preference. */
+  updateGitConfig(
+    userId: number,
+    gitName: string,
+    gitEmail: string,
+    generator: CommitMessageGeneratorSettings,
+  ): void {
+    const db = getConnection();
+    db.prepare(`
+      UPDATE users
+      SET git_name = ?,
+          git_email = ?,
+          commit_message_provider = ?,
+          commit_message_provider_profile_id = ?,
+          commit_message_model = ?,
+          commit_message_effort = ?,
+          commit_message_base_prompt = ?
+      WHERE id = ?
+    `).run(
+      gitName,
+      gitEmail,
+      generator.provider,
+      generator.providerProfileId,
+      generator.model,
+      generator.effort,
+      generator.basePrompt === DEFAULT_COMMIT_MESSAGE_BASE_PROMPT
+        ? null
+        : generator.basePrompt,
+      userId,
+    );
+  },
+
   /** Retrieves the user's git identity (name + email). */
   getGitConfig(userId: number): UserGitConfig | undefined {
     const db = getConnection();
     return db
       .prepare('SELECT git_name, git_email FROM users WHERE id = ?')
       .get(userId) as UserGitConfig | undefined;
+  },
+
+  /** Retrieves a complete global generator preference, or null until the user saves one. */
+  getCommitMessageGeneratorSettings(userId: number): CommitMessageGeneratorSettings | null {
+    const db = getConnection();
+    const row = db.prepare(`
+      SELECT
+        commit_message_provider,
+        commit_message_provider_profile_id,
+        commit_message_model,
+        commit_message_effort,
+        commit_message_base_prompt
+      FROM users
+      WHERE id = ?
+    `).get(userId) as UserCommitMessageGeneratorRow | undefined;
+    if (
+      !row
+      || !COMMIT_MESSAGE_PROVIDERS.has(row.commit_message_provider as LLMProvider)
+      || !row.commit_message_model
+    ) {
+      return null;
+    }
+    return {
+      provider: row.commit_message_provider as LLMProvider,
+      providerProfileId: row.commit_message_provider_profile_id,
+      model: row.commit_message_model,
+      effort: row.commit_message_effort,
+      basePrompt: row.commit_message_base_prompt ?? DEFAULT_COMMIT_MESSAGE_BASE_PROMPT,
+    };
   },
 
   /** Marks onboarding as complete for the given user. */

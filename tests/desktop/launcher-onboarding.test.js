@@ -127,6 +127,35 @@ test('workspace startup renders the three truthful stages in order', () => {
   assert.doesNotMatch(launcherCss, /var\(--(?:accent|tx1)\)/);
 });
 
+test('healthy Desktop startup bypasses the launcher and guards one awaited local open', () => {
+  const createWindowStart = mainSource.indexOf('async function createDesktopWindow');
+  const createWindowEnd = mainSource.indexOf('function registerSingleInstance');
+  const createWindowSource = mainSource.slice(createWindowStart, createWindowEnd);
+  assert.match(
+    createWindowSource,
+    /localServer\.getRuntimeMode\(\) === 'desktop-local'[\s\S]*createWindow\(\{ showLauncher: !autoOpenLocalWorkspace \}\);[\s\S]*if \(!autoOpenLocalWorkspace\) return;[\s\S]*await openLocalInDesktop\(\);/,
+  );
+
+  const registerEventsStart = mainSource.indexOf('function registerAppEvents');
+  const registerEventsEnd = mainSource.indexOf('async function createDesktopWindow');
+  const registerEventsSource = mainSource.slice(registerEventsStart, registerEventsEnd);
+  assert.match(
+    registerEventsSource,
+    /app\.on\('activate'[\s\S]*localServer\.getRuntimeMode\(\) === 'desktop-local'[\s\S]*createWindow\(\{ showLauncher: !autoOpenLocalWorkspace \}\)[\s\S]*autoOpenLocalWorkspace \? openLocalInDesktop\(\) : undefined/,
+  );
+
+  const openLocalStart = mainSource.indexOf('async function openLocalInDesktop');
+  const openLocalEnd = mainSource.indexOf('async function openEnvironmentInDesktop');
+  const openLocalSource = mainSource.slice(openLocalStart, openLocalEnd);
+  const recoveryTry = openLocalSource.indexOf('try {');
+  assert.ok(recoveryTry < openLocalSource.indexOf("tabs.getTab('local')"));
+  assert.ok(recoveryTry < openLocalSource.indexOf("showStartupStage('starting-local-server')"));
+  assert.match(openLocalSource, /if \(localOpenInFlight\) return localOpenInFlight;/);
+  assert.match(openLocalSource, /localOpenInFlight = operation;/);
+  assert.match(openLocalSource, /if \(localOpenInFlight === operation\) localOpenInFlight = null;/);
+  assert.match(openLocalSource, /catch \(error\)[\s\S]*await desktopWindow\.showLauncher\(\);/);
+});
+
 test('LAN menu opens the credentialed setup flow instead of toggling a raw setting', () => {
   assert.match(desktopWindowSource, /Set Up LAN Access/);
   assert.match(desktopWindowSource, /this\.actions\.showLocalSettings\(\)/);

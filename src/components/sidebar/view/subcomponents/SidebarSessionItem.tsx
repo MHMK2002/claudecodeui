@@ -18,6 +18,7 @@ type SidebarSessionItemProps = {
   session: SessionWithProvider;
   selectedSession: ProjectSession | null;
   isProcessing: boolean;
+  isWaitingForInput: boolean;
   needsAttention: boolean;
   currentTime: Date;
   areAgentsExpanded: boolean;
@@ -83,6 +84,7 @@ export default function SidebarSessionItem({
   session,
   selectedSession,
   isProcessing,
+  isWaitingForInput,
   needsAttention,
   currentTime,
   areAgentsExpanded,
@@ -109,8 +111,14 @@ export default function SidebarSessionItem({
   const [copyState, setCopyState] = useState<CopyState>('idle');
   const [providerSessionId, setProviderSessionId] = useState<string | null>(null);
   const providerIdRequestRef = useRef(0);
-  const showAttentionIndicator = needsAttention && !isSelected;
-  const showRecentIndicator = !showAttentionIndicator && !isProcessing && sessionView.isActive;
+  const showWaitingIndicator = isWaitingForInput;
+  const showRunningIndicator = isProcessing && !showWaitingIndicator;
+  const showAttentionIndicator = showWaitingIndicator || (!showRunningIndicator && needsAttention);
+  const statusIndicatorLabel = showWaitingIndicator
+    ? t('tooltips.waitingForInputIndicator', { defaultValue: 'Waiting for your input' })
+    : showAttentionIndicator
+      ? t('tooltips.attentionRequiredIndicator', { defaultValue: 'Session needs attention' })
+      : t('tooltips.processingSessionIndicator', 'Processing session');
   // Sessions that never spawned an agent get no expand affordance, so the
   // chevron itself tells the user which runs delegated work.
   const agentCount = Number(session.agentCount ?? 0);
@@ -247,22 +255,18 @@ export default function SidebarSessionItem({
   return (
     <>
     <div className="group relative">
-      {(showAttentionIndicator || showRecentIndicator) && (
+      {(showAttentionIndicator || showRunningIndicator) && (
         <div className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2 transform">
           <Tooltip
-            content={showAttentionIndicator
-              ? t('tooltips.attentionRequiredIndicator', { defaultValue: 'Session needs attention' })
-              : t('tooltips.activeSessionIndicator')}
+            content={statusIndicatorLabel}
             position="right"
           >
             <div
               role="status"
-              aria-label={showAttentionIndicator
-                ? t('tooltips.attentionRequiredIndicator', { defaultValue: 'Session needs attention' })
-                : t('tooltips.activeSessionIndicator')}
+              aria-label={statusIndicatorLabel}
               className={cn(
-                'h-2 w-2 animate-pulse rounded-full',
-                showAttentionIndicator ? 'bg-amber-500' : 'bg-green-500',
+                'h-2 w-2 animate-pulse rounded-full motion-reduce:animate-none',
+                showAttentionIndicator ? 'bg-amber-500' : 'bg-primary',
               )}
             />
           </Tooltip>

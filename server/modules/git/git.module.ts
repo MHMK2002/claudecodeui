@@ -2,7 +2,8 @@ import * as fs from 'node:fs/promises';
 
 import spawn from 'cross-spawn';
 
-import { projectsDb } from '@/modules/database/index.js';
+import { projectsDb, userDb } from '@/modules/database/index.js';
+import { providerSelectionService } from '@/modules/providers/index.js';
 import type { ProviderTextCompletionService } from '@/shared/types.js';
 
 import { createGitCommitMessageService } from './git-commit-message.service.js';
@@ -19,6 +20,12 @@ export function createGitModule(externalDependencies: GitExternalDependencies) {
     spawnProcess: spawn,
     resolveProjectPathById,
     textCompletion: externalDependencies.textCompletion,
+    getCommitMessageGeneratorSettings: (userId) => (
+      userDb.getCommitMessageGeneratorSettings(userId)
+    ),
+    resolveDefaultTextCompletionSelection: (userId) => (
+      providerSelectionService.resolveDefaultTextCompletionSelection(userId)
+    ),
   });
   return createGitRouter({
     fileSystem: fs,

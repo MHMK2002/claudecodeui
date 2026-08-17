@@ -50,6 +50,7 @@ let diagnostics = null;
 let voiceSecureStorage = null;
 let buildIdentity = null;
 let localStartupFailure = null;
+let localOpenInFlight = null;
 let isQuitting = false;
 let isRefreshingCloud = false;
 let pendingCloudConnectStartedAt = 0;
@@ -677,51 +678,60 @@ async function runActiveEnvironmentAction(action) {
 }
 
 async function openLocalInDesktop({ repair = false } = {}) {
-  const existingTab = tabs.getTab('local');
-  if (!repair && existingTab && localServer.getLocalServerUrl()) {
-    await localServer.bootstrapLocalSession(session.defaultSession);
-    await desktopWindow.showTarget(await localServer.getResolvedTarget());
-    return getDesktopState();
-  }
+  if (localOpenInFlight) return localOpenInFlight;
+  const operation = (async () => {
+    try {
+      const existingTab = tabs.getTab('local');
+      if (!repair && existingTab && localServer.getLocalServerUrl()) {
+        await localServer.bootstrapLocalSession(session.defaultSession);
+        await desktopWindow.showTarget(await localServer.getResolvedTarget());
+        return getDesktopState();
+      }
 
-  localStartupFailure = null;
-  const pendingTarget = localServer.getPendingTarget();
-  tabs.upsertTarget(pendingTarget);
-  setActiveTarget(pendingTarget);
-  const showStartupStage = async (stage) => {
-    localServer.setStartupStage(stage);
-    await desktopWindow.showLocalStartupTarget(
-      pendingTarget,
-      localServer.getStartupLogs(),
-      stage,
-    );
-    desktopWindow.emitDesktopState();
-  };
-  await showStartupStage('starting-local-server');
+      localStartupFailure = null;
+      const pendingTarget = localServer.getPendingTarget();
+      tabs.upsertTarget(pendingTarget);
+      setActiveTarget(pendingTarget);
+      const showStartupStage = async (stage) => {
+        localServer.setStartupStage(stage);
+        await desktopWindow.showLocalStartupTarget(
+          pendingTarget,
+          localServer.getStartupLogs(),
+          stage,
+        );
+        desktopWindow.emitDesktopState();
+      };
+      await showStartupStage('starting-local-server');
 
-  try {
-    if (repair) {
-      await localServer.restartAndRepair();
-    } else {
-      await localServer.ensureLocalServer();
+      if (repair) {
+        await localServer.restartAndRepair();
+      } else {
+        await localServer.ensureLocalServer();
+      }
+      await showStartupStage('checking-compatibility');
+      const target = await localServer.getResolvedTarget();
+      await showStartupStage('opening-workspace');
+      await localServer.bootstrapLocalSession(session.defaultSession);
+      await desktopWindow.showTarget(target);
+      localServer.setStartupStage('idle');
+      desktopWindow.emitDesktopState();
+      return getDesktopState();
+    } catch (error) {
+      localServer.setStartupStage('failed');
+      localStartupFailure = {
+        kind: repair || error?.code === 'LOCAL_SERVER_COMPATIBILITY' ? 'compatibility' : 'startup',
+        message: String(redactDiagnosticValue(error?.message || String(error))),
+      };
+      await desktopWindow.showLauncher();
+      desktopWindow.emitDesktopState();
+      throw error;
     }
-    await showStartupStage('checking-compatibility');
-    const target = await localServer.getResolvedTarget();
-    await showStartupStage('opening-workspace');
-    await localServer.bootstrapLocalSession(session.defaultSession);
-    await desktopWindow.showTarget(target);
-    localServer.setStartupStage('idle');
-    desktopWindow.emitDesktopState();
-    return getDesktopState();
-  } catch (error) {
-    localServer.setStartupStage('failed');
-    localStartupFailure = {
-      kind: repair || error?.code === 'LOCAL_SERVER_COMPATIBILITY' ? 'compatibility' : 'startup',
-      message: String(redactDiagnosticValue(error?.message || String(error))),
-    };
-    await desktopWindow.showLauncher();
-    desktopWindow.emitDesktopState();
-    throw error;
+  })();
+  localOpenInFlight = operation;
+  try {
+    return await operation;
+  } finally {
+    if (localOpenInFlight === operation) localOpenInFlight = null;
   }
 }
 
@@ -991,7 +1001,12 @@ function registerAppEvents() {
     void diagnostics?.record('app.activate');
     if (BrowserWindow.getAllWindows().length === 0) {
       if (desktopWindow) {
-        void desktopWindow.createWindow();
+        const autoOpenLocalWorkspace = localServer.getRuntimeMode() === 'desktop-local';
+        void desktopWindow.createWindow({ showLauncher: !autoOpenLocalWorkspace })
+          .then(() => (autoOpenLocalWorkspace ? openLocalInDesktop() : undefined))
+          .catch((error) => diagnostics?.record('app.activate-local-open-failed', {
+            message: error?.message || String(error),
+          }));
       } else {
         void createDesktopWindow();
       }
@@ -1073,7 +1088,16 @@ async function createDesktopWindow() {
 
   desktopWindow.createTray();
   desktopWindow.configurePermissions();
-  await desktopWindow.createWindow();
+  const autoOpenLocalWorkspace = localServer.getRuntimeMode() === 'desktop-local';
+  await desktopWindow.createWindow({ showLauncher: !autoOpenLocalWorkspace });
+  if (!autoOpenLocalWorkspace) return;
+  try {
+    await openLocalInDesktop();
+  } catch (error) {
+    await diagnostics?.record('app.auto-open-local-failed', {
+      message: error?.message || String(error),
+    });
+  }
 }
 
 function registerSingleInstance() {

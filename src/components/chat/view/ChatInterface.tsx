@@ -19,7 +19,11 @@ import type { SessionRewindMode } from '../hooks/useChatSessionState';
 import { materializeChatImages } from '../utils/materializeChatImages';
 import { mergeCopiedMessageIntoDraft } from '../utils/copyToComposer';
 import { startTaskImplementation } from '../../task-master/workflow';
-import { getProviderCatalogSendBlockReason } from '../../../shared/providerSelectionCatalog';
+import {
+  clearDefaultProviderSelectionPendingCatalog,
+  getProviderCatalogSendBlockReason,
+  isDefaultProviderSelectionPendingCatalog,
+} from '../../../shared/providerSelectionCatalog';
 import {
   canRetryTaskStartForProject,
   isTaskStartAttemptCurrent,
@@ -210,6 +214,20 @@ function ChatInterface({
         : provider === 'codex'
           ? codexModel
           : opencodeModel;
+    const pendingCatalogValidation = isDefaultProviderSelectionPendingCatalog(
+      provider,
+      currentProfileId,
+    );
+    if (pendingCatalogValidation) {
+      const entry = providerSelectionCatalog.providers.find((candidate) => (
+        candidate.provider === provider
+      ));
+      const profileIsCurrent = currentProfileId === null
+        ? entry?.connectionAvailable === true
+        : entry?.profiles.some((profile) => profile.id === currentProfileId) === true;
+      if (!entry?.available || !profileIsCurrent) return;
+      clearDefaultProviderSelectionPendingCatalog();
+    }
     const resolved = resolveValidSelection(providerSelectionCatalog, provider, {
       profileId: currentProfileId,
       model: preferredModel,

@@ -16,6 +16,7 @@ export type CommitComposerProps = {
   suggestion: CommitMessageSuggestionController;
   onCommit: (message: string, expectedSnapshotId?: string) => Promise<GitCommitResult>;
   onOpenAgentSettings: () => void;
+  onOpenGitSettings: () => void;
   onReviewStagedChanges: () => void;
   onRequestConfirmation: (request: ConfirmationRequest) => void;
 };
@@ -49,6 +50,7 @@ export default function CommitComposer({
   suggestion,
   onCommit,
   onOpenAgentSettings,
+  onOpenGitSettings,
   onReviewStagedChanges,
   onRequestConfirmation,
 }: CommitComposerProps) {
@@ -282,6 +284,8 @@ export default function CommitComposer({
                   <div className="mt-3 flex flex-wrap gap-2">
                     {suggestion.state.error.action === 'OPEN_AGENT_SETTINGS' ? (
                       <NeutralAction onClick={onOpenAgentSettings}>Open Agent Settings</NeutralAction>
+                    ) : suggestion.state.error.action === 'OPEN_GIT_SETTINGS' ? (
+                      <NeutralAction onClick={onOpenGitSettings}>Open Git Settings</NeutralAction>
                     ) : suggestion.state.error.action === 'REVIEW_STAGED_CHANGES' ? (
                       <NeutralAction onClick={onReviewStagedChanges}>Review staged changes</NeutralAction>
                     ) : (

@@ -7,8 +7,69 @@ import type {
 } from '../types/app';
 
 const PROVIDERS = new Set<LLMProvider>(['claude', 'codex', 'cursor', 'opencode']);
+export const PROVIDER_SELECTION_PREFERENCE_EVENT = 'provider-selection-preference:changed';
+
+let pendingCatalogSelection: {
+  provider: LLMProvider;
+  providerProfileId: number | null;
+} | null = null;
+
+/** Protects a freshly verified profile from reconciliation against a stale catalog snapshot. */
+export function markDefaultProviderSelectionPendingCatalog(
+  provider: LLMProvider,
+  providerProfileId: number | null,
+): void {
+  pendingCatalogSelection = { provider, providerProfileId };
+}
+
+export function isDefaultProviderSelectionPendingCatalog(
+  provider: LLMProvider,
+  providerProfileId: number | null,
+): boolean {
+  return pendingCatalogSelection?.provider === provider
+    && pendingCatalogSelection.providerProfileId === providerProfileId;
+}
+
+export function clearDefaultProviderSelectionPendingCatalog(): void {
+  pendingCatalogSelection = null;
+}
 
 type StorageReader = Pick<Storage, 'getItem'>;
+
+/** Makes a successful connection the default for new chats and mounted pickers. */
+export function setDefaultProviderSelection(
+  provider: LLMProvider,
+  providerProfileId: number | null,
+): void {
+  persistDefaultProviderSelection(provider, providerProfileId);
+  notifyDefaultProviderSelection(provider, providerProfileId);
+}
+
+/** Persists a verified new-chat preference without notifying stale mounted pickers. */
+export function persistDefaultProviderSelection(
+  provider: LLMProvider,
+  providerProfileId: number | null,
+): void {
+  localStorage.setItem('selected-provider', provider);
+  const profileKey = provider === 'claude'
+    ? 'claude-provider-profile-id'
+    : provider === 'codex'
+      ? 'codex-provider-profile-id'
+      : null;
+  if (profileKey) {
+    localStorage.setItem(profileKey, providerProfileId === null ? 'local' : String(providerProfileId));
+  }
+}
+
+/** Notifies mounted Chat only after its catalog can validate the persisted selection. */
+export function notifyDefaultProviderSelection(
+  provider: LLMProvider,
+  providerProfileId: number | null,
+): void {
+  window.dispatchEvent(new CustomEvent(PROVIDER_SELECTION_PREFERENCE_EVENT, {
+    detail: { provider, providerProfileId },
+  }));
+}
 
 /**
  * Reads the complete persisted provider/profile/model preference used by
@@ -119,6 +180,7 @@ function parseEntry(value: unknown): ProviderSelectionCatalogEntry | null {
     !isRecord(value)
     || !PROVIDERS.has(value.provider as LLMProvider)
     || typeof value.available !== 'boolean'
+    || typeof value.connectionAvailable !== 'boolean'
     || (value.unavailableReason !== null && typeof value.unavailableReason !== 'string')
     || !Array.isArray(value.profiles)
     || !isRecord(value.models)
@@ -142,6 +204,7 @@ function parseEntry(value: unknown): ProviderSelectionCatalogEntry | null {
   return {
     provider: value.provider as LLMProvider,
     available: value.available,
+    connectionAvailable: value.connectionAvailable,
     unavailableReason: value.unavailableReason as string | null,
     profiles: profiles as ProviderSelectionCatalogProfile[],
     models: {

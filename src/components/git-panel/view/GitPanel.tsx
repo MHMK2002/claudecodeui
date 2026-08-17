@@ -253,6 +253,7 @@ export default function GitPanel({
               onUnstageFiles={unstageFiles}
               onCommitChanges={commitChanges}
               onOpenAgentSettings={() => onShowSettings?.('agents')}
+              onOpenGitSettings={() => onShowSettings?.('git')}
               onReviewStagedChanges={refreshAll}
               onRequestConfirmation={setConfirmAction}
               onExpandedFilesChange={setHasExpandedFiles}

@@ -14,6 +14,7 @@ type GitMockState = {
   fetchFailure: boolean;
   generationDelayMs: number;
   generationFailure: boolean;
+  generationProviderUnavailable: boolean;
   commitSnapshotConflict: boolean;
 };
 
@@ -39,6 +40,7 @@ async function installGitMocks(
     fetchFailure: false,
     generationDelayMs: 0,
     generationFailure: false,
+    generationProviderUnavailable: false,
     commitSnapshotConflict: false,
     ...initial,
   };
@@ -158,6 +160,16 @@ async function installGitMocks(
         }, 502);
         return;
       }
+      if (state.generationProviderUnavailable) {
+        await json(route, {
+          success: false,
+          code: 'PROVIDER_UNAVAILABLE',
+          error: 'Codex is unavailable.',
+          details: 'Connect Codex in Agent Settings.',
+          action: 'OPEN_AGENT_SETTINGS',
+        }, 409);
+        return;
+      }
       await json(route, {
         success: true,
         message: 'feat(git): add reviewed suggestions',
@@ -166,6 +178,7 @@ async function installGitMocks(
           provider: 'codex',
           providerProfileId: 1,
           model: 'gpt-test',
+          effort: 'low',
         },
         analysis: {
           totalStagedFiles: state.staged.length,
@@ -339,7 +352,6 @@ test('generates an editable staged suggestion and commits only with its server s
   expect(git.generationRequests[0]).toEqual({
     project: 'project-1',
     files: ['src/app.ts'],
-    selection: { provider: 'codex', providerProfileId: 1, model: 'gpt-test' },
   });
   expect(git.commitRequests).toHaveLength(1);
   expect(git.commitRequests[0]).toMatchObject({
@@ -428,21 +440,12 @@ test('Cancel restores the editable state and ignores a delayed success', async (
   await expect(page.getByText('Suggestion ready. Review before committing.')).toBeHidden();
 });
 
-test('unavailable selected provider preserves the manual commit path and opens Agent Settings', async ({ page }) => {
+test('unavailable globally configured provider preserves the manual commit path and opens Agent Settings', async ({ page }) => {
   await installDesktopLocalMocks(page);
-  await page.route('**/api/providers/selection-catalog', (route) => json(route, {
-    success: true,
-    data: {
-      providers: [{
-        provider: 'codex',
-        available: false,
-        unavailableReason: 'Connect Codex in Agent Settings.',
-        profiles: [],
-        models: { OPTIONS: [{ value: 'gpt-test', label: 'GPT Test' }], DEFAULT: 'gpt-test' },
-      }],
-    },
-  }));
-  const git = await installGitMocks(page, { staged: ['src/app.ts'] });
+  const git = await installGitMocks(page, {
+    staged: ['src/app.ts'],
+    generationProviderUnavailable: true,
+  });
   await openSourceControl(page);
 
   const textarea = page.getByLabel('Commit staged changes');

@@ -8,6 +8,8 @@ A user installs the app on a laptop and reaches a local workspace without creati
 
 Provider authentication for Claude, Codex, Cursor, or other agents is separate from product authentication and remains available only when an AI action needs it.
 
+Healthy Desktop startup opens the local workspace automatically. A fresh internal Desktop user may then complete or permanently dismiss one optional step-by-step setup dialog: Provider, Connect, Soniox Voice, and Summary. Existing upgraded users never receive this first-run interruption.
+
 ## Product boundaries
 
 - Desktop local use is passwordless and loopback-only.
@@ -78,8 +80,12 @@ The MCTA rules are release-blocking UX defects for changed surfaces.
 
 | Surface / state | Primary job | Primary CTA | Secondary actions |
 | --- | --- | --- | --- |
-| Desktop launcher | Enter the local workspace | `Open Local Workspace` | `Open in browser`, local settings |
+| Desktop launcher / recovery | Recover or manually reopen the local workspace | `Open Local Workspace` | `Open in browser`, local settings |
 | Launcher startup | Understand startup and wait or recover | Current stage; on failure `Retry` | `Copy diagnostics` |
+| Desktop first-run / Provider | Optionally choose one AI provider | `Continue` after a selection | `Skip provider`, `Set up later` |
+| Desktop first-run / Connect | Optionally connect the selected provider | `Start sign in`, `Check connection`, or `Verify & connect` | Back, `Skip provider` |
+| Desktop first-run / Soniox Voice | Optionally configure and test voice input | `Save and continue` | Back, `Skip Voice`, neutral test action |
+| Desktop first-run / Summary | Review what was configured | `Start working` | Close |
 | Compatibility failure | Repair the bundled local runtime | `Restart and repair` | `Copy diagnostics` |
 | Create Project / choose mode | Choose the source of a project | `Continue` after selecting `Open existing folder` or `Clone repository` | Cancel |
 | Create Project / local | Register an existing folder | `Review` then `Open project` | Browse, Back |
@@ -108,10 +114,16 @@ The MCTA rules are release-blocking UX defects for changed surfaces.
 
 - [x] Default build exposes no Cloud navigation, account, logout, hosted environment, or Cloud refresh surface.
 - [x] Title bar does not imply a CloudCLI product account is required.
-- [x] The only primary launcher CTA is `Open Local Workspace`.
+- [x] Healthy Desktop startup bypasses the launcher and opens the local workspace automatically.
+- [x] The recovery/manual launcher retains `Open Local Workspace` as its only primary CTA.
 - [x] Startup announces `Starting local server`, `Checking compatibility`, then `Opening workspace`.
 - [x] Failure offers `Retry` and neutral `Copy diagnostics` without losing startup logs.
-- [x] A fresh install reaches the workspace in no more than three interactions.
+- [x] A fresh install reaches the workspace without an `Open Local Workspace` interaction.
+- [x] Only a fresh internal Desktop principal sees the optional Provider → Connect → Soniox Voice → Summary dialog; upgraded users do not.
+- [x] Close, Escape, and `Set up later` permanently dismiss the optional first-run dialog; unconfirmed Provider and Voice drafts remain unchanged.
+- [x] Every provider supports interactive sign-in; only Claude and Codex additionally offer token setup.
+- [x] A verified Claude or Codex token is stored in the existing encrypted provider vault as the active default profile titled exactly `Default Main`.
+- [x] Soniox testing uses an unpersisted secure draft; only `Save and continue` commits Voice settings.
 - [x] Navigation with more than seven destinations is grouped.
 
 ### Compatibility repair
@@ -191,6 +203,7 @@ The MCTA rules are release-blocking UX defects for changed surfaces.
 - [x] Suggestions analyze only a bounded server-derived staged-index snapshot, disclose the selected provider and sent data categories, and remain linked to that snapshot until committed or explicitly converted to manual text.
 - [x] Existing or concurrently edited draft text is never overwritten; provider/catalog failures preserve it and recover through `Retry`, `Review staged changes`, or `Open Agent Settings` in context.
 - [x] Generation is cancellable, ignores late responses, exposes partial analysis, and never stages, edits, commits, pushes, publishes, or creates a visible Chat session.
+- [x] Generation reuses one hidden provider session per project/selection and uses bounded low-effort prompts to limit token consumption.
 
 ### Project drawer
 
@@ -226,6 +239,9 @@ The MCTA rules are release-blocking UX defects for changed surfaces.
 ### Settings and Voice
 
 - [x] Settings groups are General (Appearance, Notifications, Voice), AI & integrations (Agents, API Tokens, Browser, Plugins), Project tools (Git, Tasks), and System (About), with at most four items each.
+- [x] Git Settings has one global commit-message Generator card for provider, applicable profile, model, model-supported effort, and an editable bounded base prompt with neutral `Restore default`.
+- [x] Git identity and Generator settings share one primary Save action; loading, catalog/config failure, validation, saved, and failed-retry states stay in context at desktop and 320 px widths.
+- [x] Generator prompt customization is explicitly style-only; immutable server safety guards, bounded staged data, isolated no-tool execution, and no-visible-Chat behavior remain disclosed and enforced.
 - [x] Voice Basic contains Enable, microphone, permission, hold-to-talk, read-aloud, language, and `Test voice input`.
 - [x] Test flow visibly moves Listening → Transcribing → Sample result.
 - [x] Advanced contains provider, URL, API key, STT/TTS, context, and cleanup, showing only fields relevant to the active provider.

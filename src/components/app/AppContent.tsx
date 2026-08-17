@@ -15,6 +15,9 @@ import { useProjectsState } from '../../hooks/useProjectsState';
 import { useQueuedMessageAutoSend } from '../../hooks/useQueuedMessageAutoSend';
 import { api } from '../../utils/api';
 import type { ScheduleWorkspaceRequest } from '../../types/scheduledRuns';
+import { useAuth } from '../auth/context/AuthContext';
+import DesktopFirstRunSetup from '../onboarding/view/DesktopFirstRunSetup';
+import { shouldShowDesktopFirstRunSetup } from '../onboarding/desktopFirstRunModel';
 
 type RunningSessionApiItem = {
   sessionId?: unknown;
@@ -61,6 +64,7 @@ function AppContentInner() {
   const { t } = useTranslation('common');
   const { isMobile } = useDeviceSettings({ trackPWA: false });
   const { ws, sendMessage, subscribe } = useWebSocket();
+  const auth = useAuth();
   const [taskWorkspaceRequest, setTaskWorkspaceRequest] = useState(0);
   const [scheduleWorkspaceRequest, setScheduleWorkspaceRequest] = useState<ScheduleWorkspaceRequest | null>(null);
 
@@ -329,6 +333,8 @@ function AppContentInner() {
         onOpenSettings={() => openSettings()}
         onShowTab={setActiveTab}
       />
+
+      {shouldShowDesktopFirstRunSetup(auth) && <DesktopFirstRunSetup />}
 
     </div>
   );

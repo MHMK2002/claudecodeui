@@ -1,6 +1,19 @@
 # Commit message generator: requirements and implementation plan
 
-Status: ready for implementation handoff. No implementation is included in this document.
+Status: implemented and verified on 2026-08-17. The original plan below is supplemented by the accepted global-settings amendment.
+
+## Accepted global-settings amendment (2026-08-17)
+
+This amendment supersedes any conflicting provider-selection or no-migration text later in this document:
+
+- Commit-message generation uses one authenticated-user setting shared by every project, not Chat/localStorage selection.
+- Settings → Git contains one polished card for provider, Claude/Codex profile, model, model-supported effort, and a free-form base prompt.
+- The base prompt has a visible length budget and a neutral `Restore default` action. The page retains one primary Save action for Git identity and generator settings together.
+- The server validates provider/profile/model/effort against the shared catalog before persistence and again before execution. Invalid or unavailable saved selections fail visibly and never switch provider silently.
+- The editable prompt controls style and format only. Fixed server instructions, untrusted-data delimiters, no-tool/read-only execution, bounded input, output normalization, and all other safety guards cannot be replaced by user text.
+- The backend, not the generation request, resolves the saved selection and prompt. `POST /api/git/generate-commit-message` accepts only the project id and expected staged files.
+- New users receive a low-token default: the first available catalog selection, the lowest supported effort (prefer `minimal`, then `low`), and the built-in concise style prompt. Existing users require a small additive database migration for the global fields.
+- Generation continues to reuse one hidden provider-native conversation per project and selection, while creating no CloudCLI Chat row and opening no Chat UI.
 
 ## Executor brief
 
@@ -49,8 +62,8 @@ The implementation must replace this behavior, not expose it unchanged.
 | D3 | Generation is explicit. Staging files never auto-generates a message. |
 | D4 | The server-side Git index is the source of truth. Only `git diff --cached` data may inform a suggestion. |
 | D5 | Generation supports every provider in the shared catalog: Claude, Codex, Cursor, and OpenCode. |
-| D6 | The generator uses the current complete selection: provider, provider profile where applicable, and model. It may reconcile an invalid model/profile to a valid default within the same provider, but must never silently switch to another provider. |
-| D7 | Provider/format/language selectors are not added to the main journey. An unavailable provider recovers through `Open Agent Settings`. |
+| D6 | The generator uses the globally saved complete selection: provider, provider profile where applicable, model, and effort. The server never trusts a per-request selection and never silently switches provider. |
+| D7 | Provider/profile/model/effort and the style base prompt live only in Settings → Git, not in the Source Control journey. An unavailable saved selection recovers through Settings. |
 | D8 | Inline disclosure states that a bounded staged snapshot and recent commit subjects are sent to the selected provider. No first-use modal is added. |
 | D9 | With enough repository history, the model follows the repository's recent message style and language. Otherwise it falls back to an English Conventional Commit. |
 | D10 | A generated message is always a draft. The user may edit, dismiss, replace, or keep it. There is no automatic commit or push. |

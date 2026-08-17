@@ -139,6 +139,7 @@ export default function SidebarProjectSessions({
               session={session}
               selectedSession={selectedSession}
               isProcessing={activeSessions.has(session.id)}
+              isWaitingForInput={activeSessions.get(session.id)?.requiresUserInput === true}
               needsAttention={attentionSessionIds.has(session.id)}
               currentTime={currentTime}
               areAgentsExpanded={expandedSessions.has(session.id)}

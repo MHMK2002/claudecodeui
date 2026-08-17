@@ -17,6 +17,10 @@ import {
   FALLBACK_PROVIDER_EFFORT_VALUES,
   toProviderEffortOptions,
 } from '../constants/providerEffort';
+import {
+  isDefaultProviderSelectionPendingCatalog,
+  PROVIDER_SELECTION_PREFERENCE_EVENT,
+} from '../../../shared/providerSelectionCatalog';
 
 const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
   claude: 'default',
@@ -162,6 +166,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const [selectedCodexProfileId, setSelectedCodexProfileIdState] = useState<number | null>(
     readStoredCodexProfileId,
   );
+  const claudeProfilesRequestIdRef = useRef(0);
+  const codexProfilesRequestIdRef = useRef(0);
 
   /**
    * Backend-owned capability matrix keyed by provider. Drives the permission
@@ -201,35 +207,71 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     );
   }, []);
 
+  useEffect(() => {
+    const applyPreference = (event: Event) => {
+      if (selectedSession?.id) return;
+      const detail = (event as CustomEvent<{
+        provider?: unknown;
+        providerProfileId?: unknown;
+      }>).detail;
+      if (!detail || !PROVIDERS.includes(detail.provider as LLMProvider)) return;
+      const nextProvider = detail.provider as LLMProvider;
+      const nextProfileId = typeof detail.providerProfileId === 'number'
+        ? detail.providerProfileId
+        : null;
+      setProvider(nextProvider);
+      if (nextProvider === 'claude') setSelectedClaudeProfileId(nextProfileId);
+      if (nextProvider === 'codex') setSelectedCodexProfileId(nextProfileId);
+    };
+    window.addEventListener(PROVIDER_SELECTION_PREFERENCE_EVENT, applyPreference);
+    return () => window.removeEventListener(PROVIDER_SELECTION_PREFERENCE_EVENT, applyPreference);
+  }, [selectedSession?.id, setSelectedClaudeProfileId, setSelectedCodexProfileId]);
+
   const loadClaudeProfiles = useCallback(async () => {
+    const requestId = ++claudeProfilesRequestIdRef.current;
     try {
       setClaudeProfilesLoading(true);
       const response = await authenticatedFetch('/api/providers/claude/profiles');
       const body = (await response.json()) as ClaudeProviderProfilesApiResponse;
-      if (!response.ok || !body.success) {
-        return;
+      if (requestId !== claudeProfilesRequestIdRef.current || !response.ok || !body.success) {
+        return null;
       }
-      setClaudeProfiles(body.data?.profiles ?? []);
+      const profiles = body.data?.profiles ?? [];
+      setClaudeProfiles(profiles);
+      return profiles;
     } catch (error) {
-      console.error('Error loading Claude provider profiles:', error);
+      if (requestId === claudeProfilesRequestIdRef.current) {
+        console.error('Error loading Claude provider profiles:', error);
+      }
+      return null;
     } finally {
-      setClaudeProfilesLoading(false);
+      if (requestId === claudeProfilesRequestIdRef.current) {
+        setClaudeProfilesLoading(false);
+      }
     }
   }, []);
 
   const loadCodexProfiles = useCallback(async () => {
+    const requestId = ++codexProfilesRequestIdRef.current;
     try {
       setCodexProfilesLoading(true);
       const response = await authenticatedFetch('/api/providers/codex/profiles');
       const body = (await response.json()) as CodexProviderProfilesApiResponse;
-      if (!response.ok || !body.success) {
-        return;
+      if (requestId !== codexProfilesRequestIdRef.current || !response.ok || !body.success) {
+        return null;
       }
-      setCodexProfiles(body.data?.profiles ?? []);
+      const profiles = body.data?.profiles ?? [];
+      setCodexProfiles(profiles);
+      return profiles;
     } catch (error) {
-      console.error('Error loading Codex provider profiles:', error);
+      if (requestId === codexProfilesRequestIdRef.current) {
+        console.error('Error loading Codex provider profiles:', error);
+      }
+      return null;
     } finally {
-      setCodexProfilesLoading(false);
+      if (requestId === codexProfilesRequestIdRef.current) {
+        setCodexProfilesLoading(false);
+      }
     }
   }, []);
 
@@ -281,6 +323,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
     const selectedProfile = claudeProfiles.find((profile) => profile.id === selectedClaudeProfileId);
     if (!selectedProfile || !selectedProfile.isActive) {
+      if (isDefaultProviderSelectionPendingCatalog('claude', selectedClaudeProfileId)) {
+        return;
+      }
       // Same guard: never null out a claude pick that belongs to an open
       // claude session whose metadata put it there.
       if (
@@ -309,6 +354,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
     const selectedProfile = codexProfiles.find((profile) => profile.id === selectedCodexProfileId);
     if (!selectedProfile || !selectedProfile.isActive) {
+      if (isDefaultProviderSelectionPendingCatalog('codex', selectedCodexProfileId)) {
+        return;
+      }
       if (
         selectedSession?.__provider === 'codex'
         && selectedSession.__providerProfileId === selectedCodexProfileId

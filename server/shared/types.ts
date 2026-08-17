@@ -192,14 +192,16 @@ export type ProviderSelectionCatalogProfile = {
 /**
  * One provider entry inside the public selection catalog.
  *
- * `available` is true when the provider can be selected right now: for
- * Claude/Codex it requires at least one active profile; for Cursor/OpenCode it
- * requires the local connection (CLI installed and authenticated). Models stay
+ * `available` is true when at least one connection or profile can run now.
+ * `connectionAvailable` identifies the authenticated local CLI path; Claude
+ * and Codex can expose that alongside encrypted profiles. Models stay
  * provider-level (the whole catalog of the provider), not per-profile.
  */
 export type ProviderSelectionCatalogEntry = {
   provider: LLMProvider;
   available: boolean;
+  /** True when the local provider CLI is installed and authenticated. */
+  connectionAvailable: boolean;
   /** Human-readable unavailability reason, present only when available is false. */
   unavailableReason: string | null;
   /** Active profiles; empty for Cursor/OpenCode, which never use profiles. */
@@ -224,8 +226,8 @@ export type ProviderSelectionCatalog = {
  * A fully-resolved provider selection: which provider, which runtime profile,
  * and which model a new session or fork will run with.
  *
- * For connection-backed providers (cursor, opencode) `providerProfileId` is
- * always null — that is their natural architecture, not a legacy state.
+ * `providerProfileId` is null for an authenticated local CLI connection and a
+ * positive id for an encrypted Claude/Codex profile.
  */
 export type ResolvedProviderSelection = {
   provider: LLMProvider;
@@ -236,6 +238,27 @@ export type ResolvedProviderSelection = {
 // ---------------------------
 //----------------- PROVIDER TEXT COMPLETION TYPES ------------
 /**
+ * Provider selection for short, non-interactive completions.
+ *
+ * Unlike Chat selection, this includes the model-supported reasoning effort.
+ * `null` is valid only when the selected model exposes no effort choices.
+ */
+export type ProviderTextCompletionSelection = ResolvedProviderSelection & {
+  effort: string | null;
+};
+
+/**
+ * Authenticated user's global commit-message generator preference.
+ *
+ * The selection applies across every project. `basePrompt` is only a trusted
+ * style/format instruction; Git still wraps it with immutable safety rules and
+ * bounded untrusted staged data before invoking a provider.
+ */
+export type CommitMessageGeneratorSettings = ProviderTextCompletionSelection & {
+  basePrompt: string;
+};
+
+/**
  * Provider-neutral input for a bounded, non-interactive text completion.
  *
  * The Providers module validates `selection` for `userId`, runs only `prompt`
@@ -245,8 +268,13 @@ export type ResolvedProviderSelection = {
  */
 export type ProviderTextCompletionInput = {
   userId: number;
-  selection: ResolvedProviderSelection;
+  selection: ProviderTextCompletionSelection;
   prompt: string;
+  /**
+   * Opaque consumer-owned scope used to resume one hidden provider session.
+   * Git supplies its project id; filesystem paths and credentials are forbidden.
+   */
+  conversationKey?: string;
   signal?: AbortSignal;
 };
 
@@ -259,7 +287,7 @@ export type ProviderTextCompletionInput = {
  */
 export type ProviderTextCompletionResult = {
   text: string;
-  selection: ResolvedProviderSelection;
+  selection: ProviderTextCompletionSelection;
 };
 
 /**

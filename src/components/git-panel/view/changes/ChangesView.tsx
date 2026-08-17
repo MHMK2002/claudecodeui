@@ -37,6 +37,7 @@ type ChangesViewProps = {
     expectedSnapshotId?: string,
   ) => Promise<GitCommitResult>;
   onOpenAgentSettings: () => void;
+  onOpenGitSettings: () => void;
   onReviewStagedChanges: () => void;
   onRequestConfirmation: (request: ConfirmationRequest) => void;
   onExpandedFilesChange: (hasExpandedFiles: boolean) => void;
@@ -144,6 +145,7 @@ export default function ChangesView({
   onUnstageFiles,
   onCommitChanges,
   onOpenAgentSettings,
+  onOpenGitSettings,
   onReviewStagedChanges,
   onRequestConfirmation,
   onExpandedFilesChange,
@@ -297,6 +299,7 @@ export default function ChangesView({
           suggestion={commitMessageSuggestion}
           onCommit={commitSelectedFiles}
           onOpenAgentSettings={onOpenAgentSettings}
+          onOpenGitSettings={onOpenGitSettings}
           onReviewStagedChanges={onReviewStagedChanges}
           onRequestConfirmation={onRequestConfirmation}
         />

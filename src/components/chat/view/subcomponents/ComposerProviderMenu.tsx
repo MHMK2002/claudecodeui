@@ -54,14 +54,17 @@ export default function ComposerProviderMenu({
       return brandLabel;
     }
     const profile = currentEntry?.profiles.find((entry) => entry.id === currentProfileId);
-    return profile ? `${brandLabel} · ${profile.title}` : brandLabel;
+    return profile
+      ? `${brandLabel} · ${profile.title}`
+      : currentEntry?.connectionAvailable
+        ? `${brandLabel} · CLI`
+        : brandLabel;
   }, [currentProvider, currentEntry, currentProfileId]);
 
-  // Count of distinct selectable targets (a profile provider contributes one
-  // row per active profile; connection providers contribute one row).
+  // Count every live CLI connection and every active encrypted profile.
   const selectableOptions = useMemo(
     () => availableEntries.reduce(
-      (count, entry) => count + (isProfileProvider(entry.provider) ? entry.profiles.length : 1),
+      (count, entry) => count + entry.profiles.length + (entry.connectionAvailable ? 1 : 0),
       0,
     ),
     [availableEntries],
@@ -159,16 +162,30 @@ export default function ComposerProviderMenu({
               );
             }
 
-            return entry.profiles.map((profile) => (
-              <ComposerMenuItem
-                key={`${entry.provider}-${profile.id}`}
-                label={`${providerLabel} · ${profile.title}`}
-                isSelected={
-                  entry.provider === currentProvider && currentProfileId === profile.id
-                }
-                onSelect={() => handlePick(entry.provider, profile.id)}
-              />
-            ));
+            return (
+              <div key={entry.provider} role="none">
+                {entry.connectionAvailable && (
+                  <ComposerMenuItem
+                    label={`${providerLabel} · CLI`}
+                    description={t('composer.providerLocalConnection', {
+                      defaultValue: 'Signed in on this device',
+                    })}
+                    isSelected={entry.provider === currentProvider && currentProfileId === null}
+                    onSelect={() => handlePick(entry.provider, null)}
+                  />
+                )}
+                {entry.profiles.map((profile) => (
+                  <ComposerMenuItem
+                    key={`${entry.provider}-${profile.id}`}
+                    label={`${providerLabel} · ${profile.title}`}
+                    isSelected={
+                      entry.provider === currentProvider && currentProfileId === profile.id
+                    }
+                    onSelect={() => handlePick(entry.provider, profile.id)}
+                  />
+                ))}
+              </div>
+            );
           })}
         </ComposerMenuSurface>,
         document.body,

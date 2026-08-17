@@ -105,6 +105,7 @@ export class DesktopWindowManager {
   async showLocalStartupTarget(target, logs, stage) {
     const tabId = this.tabs.getTabIdForTarget(target);
     await this.viewHost.showLocalStartupTarget(tabId, target, logs, stage);
+    this.mainWindow?.show();
   }
 
   async showContentTarget(target) {
@@ -199,6 +200,7 @@ export class DesktopWindowManager {
     this.buildAppMenu();
     this.mainWindow.setTitle(`${this.appName} - ${target.name}`);
     const finalUrl = await this.showContentTarget(target);
+    this.mainWindow.show();
     this.emitDesktopState();
     return finalUrl;
   }
@@ -218,6 +220,7 @@ export class DesktopWindowManager {
     } else {
       this.emitDesktopState();
     }
+    this.mainWindow.show();
   }
 
   async switchDesktopTab(tabId) {
@@ -730,7 +733,7 @@ export class DesktopWindowManager {
     this.buildTrayMenu();
   }
 
-  async createWindow() {
+  async createWindow({ showLauncher = true } = {}) {
     this.mainWindow = new BrowserWindow({
       width: 1440,
       height: 960,
@@ -760,7 +763,7 @@ export class DesktopWindowManager {
 
     this.mainWindow.once('ready-to-show', () => {
       this.onDiagnostic?.('window.main-ready-to-show');
-      this.mainWindow?.show();
+      if (showLauncher) this.mainWindow?.show();
     });
 
     this.viewHost.configureChildWebContents(this.mainWindow.webContents);
@@ -785,6 +788,6 @@ export class DesktopWindowManager {
     });
 
     this.buildAppMenu();
-    await this.showLauncher();
+    if (showLauncher) await this.showLauncher();
   }
 }

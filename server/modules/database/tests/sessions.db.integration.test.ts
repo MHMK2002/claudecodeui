@@ -71,6 +71,39 @@ test('createSession reactivates archived rows when the session becomes active ag
   });
 });
 
+test('provider synchronizers cannot expose isolated commit-message sessions', async () => {
+  await withIsolatedDatabase(() => {
+    const hiddenProjectPath = path.join(tmpdir(), 'cloudcli-commit-message-hidden-test');
+    const similarlyNamedProjectPath = path.join(
+      path.parse(tmpdir()).root,
+      'workspace',
+      'cloudcli-commit-message-real-project',
+    );
+
+    sessionsDb.createSession(
+      'hidden-native-session',
+      'codex',
+      hiddenProjectPath,
+      'Generated commit message',
+    );
+
+    assert.equal(sessionsDb.getSessionById('hidden-native-session'), null);
+    assert.deepEqual(sessionsDb.getAllSessions(), []);
+
+    sessionsDb.createSession(
+      'visible-native-session',
+      'codex',
+      similarlyNamedProjectPath,
+      'Real project session',
+    );
+
+    assert.equal(
+      sessionsDb.getSessionById('visible-native-session')?.project_path,
+      similarlyNamedProjectPath,
+    );
+  });
+});
+
 test('sub-agent rows stay out of every session listing but remain addressable', async () => {
   await withIsolatedDatabase(() => {
     const projectPath = '/workspace/demo-project';

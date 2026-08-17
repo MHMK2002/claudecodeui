@@ -121,6 +121,58 @@ test('Settings groups Voice Basic and loads cleanup catalogs only after Advanced
   await expect(page.getByLabel('Speech-to-text model')).toHaveCount(0);
 });
 
+test('Git Settings edits one global low-token generator card at 320 px', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 760 });
+  await installDesktopLocalMocks(page);
+  let savedPayload: Record<string, unknown> | null = null;
+  page.on('request', (request) => {
+    if (
+      request.method() === 'POST'
+      && new URL(request.url()).pathname === '/api/user/git-config'
+    ) {
+      savedPayload = request.postDataJSON() as Record<string, unknown>;
+    }
+  });
+
+  await page.goto('/session/session-1');
+  await page.getByRole('button', { name: 'Open menu' }).click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('combobox', { name: 'Settings' }).selectOption({ label: 'Git' });
+
+  await expect(page.getByRole('heading', { name: 'Commit message generator' })).toBeVisible();
+  await expect(page.getByText('Global · all projects')).toBeVisible();
+  await expect(page.getByLabel('Provider', { exact: true })).toHaveValue('codex');
+  await expect(page.getByLabel('Profile', { exact: true })).toHaveValue('1');
+  await expect(page.getByLabel('Model', { exact: true })).toHaveValue('gpt-test');
+  await expect(page.getByLabel('Effort', { exact: true })).toHaveValue('low');
+
+  const prompt = page.getByLabel('Base prompt');
+  await prompt.fill('Use concise Persian commit subjects.');
+  const restore = page.getByRole('button', { name: 'Restore default' });
+  await expect(restore).toBeEnabled();
+  await expect(restore).toHaveClass(/border/);
+  await restore.click();
+  await expect(prompt).toHaveValue('Write one concise Conventional Commit message.');
+
+  const save = page.getByRole('button', { name: 'Save Configuration' });
+  await expect(save).toHaveClass(/bg-primary/);
+  await save.click();
+  await expect(page.getByText('Saved successfully')).toBeVisible();
+  expect(savedPayload).toMatchObject({
+    gitName: 'Local User',
+    gitEmail: 'local@example.com',
+    commitMessage: {
+      provider: 'codex',
+      providerProfileId: 1,
+      model: 'gpt-test',
+      effort: 'low',
+    },
+  });
+
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  expect(overflow).toBeLessThanOrEqual(1);
+});
+
 test('Voice test shows Listening, Transcribing, and a sample result', async ({ page }) => {
   await installMicrophoneMock(page);
   await installDesktopLocalMocks(page);

@@ -471,3 +471,55 @@ test('storeUploadedFiles rejects a symlinked destination parent before copying',
 
   assert.deepEqual(copiedDestinations, []);
 });
+
+test('browseWorkspace lists folders without descending into protected children', async () => {
+  const workspaceRoot = path.resolve('file-tree-browse-workspace');
+  const trashDirectory = path.join(workspaceRoot, '.Trash');
+  const readDirectories: string[] = [];
+  const fileSystem = createFakeFileSystem({
+    access: async () => undefined,
+    stat: async () => createStats(true, 0o755),
+    realpath: async (candidatePath) => candidatePath,
+    readdir: async (directoryPath) => {
+      readDirectories.push(directoryPath);
+      if (directoryPath === workspaceRoot) {
+        return [
+          createDirectoryEntry('.Trash', true),
+          createDirectoryEntry('notes.md', false),
+          createDirectoryEntry('Projects', true),
+        ];
+      }
+      throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+    },
+    lstat: async (candidatePath) => createStats(candidatePath !== path.join(workspaceRoot, 'notes.md'), 0o700),
+  });
+  const service = createFileTreeService(createDependencies(fileSystem, workspaceRoot));
+
+  const result = await service.browseWorkspace('~');
+
+  assert.equal(result.path, workspaceRoot);
+  assert.deepEqual(result.suggestions.map((entry) => entry.name), ['Projects', '.Trash']);
+  assert.deepEqual(readDirectories, [workspaceRoot]);
+  assert.equal(readDirectories.includes(trashDirectory), false);
+});
+
+test('browseWorkspace reports a permission failure for an unreadable folder', async () => {
+  const workspaceRoot = path.resolve('file-tree-browse-permission-workspace');
+  const fileSystem = createFakeFileSystem({
+    access: async () => undefined,
+    stat: async () => createStats(true, 0o700),
+    realpath: async (candidatePath) => candidatePath,
+    readdir: async () => {
+      throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+    },
+  });
+  const service = createFileTreeService(createDependencies(fileSystem, workspaceRoot));
+
+  await assert.rejects(service.browseWorkspace(path.join(workspaceRoot, '.Trash')), (error: unknown) => {
+    assert.ok(error instanceof AppError);
+    assert.equal(error.statusCode, 403);
+    assert.equal(error.code, 'EPERM');
+    assert.match(error.message, /Permission denied/);
+    return true;
+  });
+});

@@ -1,9 +1,12 @@
 import { AppError } from '@/shared/utils.js';
 import type { RuntimeMode } from '@/shared/types.js';
 
+import { INTERNAL_DESKTOP_USERNAME } from './desktop-session.service.js';
+
 type AuthUser = {
   id: number | bigint;
   username: string;
+  [key: string]: unknown;
 };
 
 type AuthLoginUser = AuthUser & { password_hash: string };
@@ -143,7 +146,21 @@ export function createAuthService(dependencies: AuthDependencies) {
     },
 
     getCurrentUser(user: unknown) {
-      return { user };
+      if (
+        typeof user !== 'object'
+        || user === null
+        || !('username' in user)
+        || typeof user.username !== 'string'
+      ) {
+        return { user };
+      }
+      return {
+        user: {
+          ...user,
+          internal: dependencies.runtimeMode === 'desktop-local'
+            && user.username === INTERNAL_DESKTOP_USERNAME,
+        },
+      };
     },
 
     refreshSession(user: unknown) {

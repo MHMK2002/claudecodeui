@@ -9,7 +9,8 @@ import {
 
 import { isDesktopSessionNonce } from '../../../shared/local-session.js';
 
-const INTERNAL_USERNAME = '__cloudcli_desktop_local__';
+/** Auth service uses this identity to expose fresh Desktop setup eligibility. */
+export const INTERNAL_DESKTOP_USERNAME = '__cloudcli_desktop_local__';
 const HANDOFF_TTL_MS = 60_000;
 const MAX_TRACKED_NONCES = 512;
 
@@ -129,8 +130,7 @@ export function createDesktopSessionService(dependencies: DesktopSessionDependen
           dependencies.transaction.commit();
           return concurrentExisting;
         }
-        const created = dependencies.users.createUser(INTERNAL_USERNAME, passwordHash);
-        dependencies.users.completeOnboarding(numericUserId(created.id));
+        const created = dependencies.users.createUser(INTERNAL_DESKTOP_USERNAME, passwordHash);
         dependencies.transaction.commit();
         return created;
       } catch (error) {
@@ -151,7 +151,7 @@ export function createDesktopSessionService(dependencies: DesktopSessionDependen
       user: {
         id: principal.id,
         username: principal.username,
-        internal: principal.username === INTERNAL_USERNAME,
+        internal: principal.username === INTERNAL_DESKTOP_USERNAME,
       },
     };
   };
@@ -200,7 +200,7 @@ export function createDesktopSessionService(dependencies: DesktopSessionDependen
       consumeChallenge(options.providedSecret, options.nonce, options.remoteAddress);
       const username = typeof options.username === 'string' ? options.username.trim() : '';
       const password = typeof options.password === 'string' ? options.password : '';
-      if (username.length < 3 || username === INTERNAL_USERNAME) {
+      if (username.length < 3 || username === INTERNAL_DESKTOP_USERNAME) {
         throw new AppError('LAN username must contain at least 3 characters.', {
           code: 'DESKTOP_LAN_USERNAME_INVALID',
           statusCode: 400,

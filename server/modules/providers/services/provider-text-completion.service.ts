@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -16,9 +16,13 @@ import type {
   ProviderTextCompletionResult,
   ProviderTextCompletionService,
 } from '@/shared/types.js';
-import { AppError } from '@/shared/utils.js';
+import {
+  AppError,
+  PROVIDER_TEXT_COMPLETION_TEMPORARY_DIRECTORY_PREFIX,
+} from '@/shared/utils.js';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
+const MAX_REUSABLE_PROVIDER_SESSIONS = 100;
 const PROFILE_PROVIDERS = new Set<LLMProvider>(['claude', 'codex']);
 const CLAUDE_NON_INTERACTIVE_TOOLS = [
   'AskUserQuestion',
@@ -66,6 +70,7 @@ type ProviderTextCompletionDependencies = {
   timeoutMs?: number;
   createRuntimeId?: () => string;
   createTemporaryDirectory?: () => Promise<string>;
+  ensureTemporaryDirectory?: (directoryPath: string) => Promise<void>;
   removeTemporaryDirectory?: (directoryPath: string) => Promise<void>;
   logger?: CompletionLogger;
 };
@@ -153,6 +158,9 @@ function mapSelectionError(error: AppError): ProviderTextCompletionError {
       );
     case 'MODEL_REQUIRED':
     case 'MODEL_NOT_AVAILABLE':
+    case 'EFFORT_REQUIRED':
+    case 'EFFORT_UNSUPPORTED':
+    case 'EFFORT_NOT_AVAILABLE':
       return new ProviderTextCompletionError(
         'MODEL_UNAVAILABLE',
         'The selected model is unavailable.',
@@ -178,11 +186,14 @@ function completionRuntimeOptions(input: {
   provider: LLMProvider;
   model: string;
   runtimeId: string;
+  providerSessionId: string | undefined;
   temporaryDirectory: string;
   profile: ProviderProfileRuntime | null;
+  effort: string | null;
 }): AnyRecord {
   const options: AnyRecord = {
     sessionId: input.runtimeId,
+    providerSessionId: input.providerSessionId,
     cwd: input.temporaryDirectory,
     model: input.model,
     permissionMode: 'plan',
@@ -197,6 +208,9 @@ function completionRuntimeOptions(input: {
       skipPermissions: false,
     },
   };
+  if (input.effort !== null) {
+    options.effort = input.effort;
+  }
   if (input.provider === 'claude' && input.profile) {
     options.claudeProviderProfile = input.profile;
   }
@@ -222,10 +236,32 @@ export function createProviderTextCompletionService(
   const createRuntimeId = dependencyOverrides.createRuntimeId
     ?? (() => `commit-message-${randomUUID()}`);
   const createTemporaryDirectory = dependencyOverrides.createTemporaryDirectory
-    ?? (() => mkdtemp(join(tmpdir(), 'cloudcli-commit-message-')));
+    ?? (() => mkdtemp(join(tmpdir(), PROVIDER_TEXT_COMPLETION_TEMPORARY_DIRECTORY_PREFIX)));
   const removeTemporaryDirectory = dependencyOverrides.removeTemporaryDirectory
     ?? ((directoryPath) => rm(directoryPath, { recursive: true, force: true }));
+  const ensureTemporaryDirectory = dependencyOverrides.ensureTemporaryDirectory
+    ?? (async (directoryPath) => {
+      await mkdir(directoryPath, { recursive: true });
+    });
   const logger = dependencyOverrides.logger ?? defaultLogger;
+  const reusableProviderSessions = new Map<string, {
+    providerSessionId: string;
+    temporaryDirectory: string;
+  }>();
+
+  const rememberProviderSession = (
+    cacheKey: string,
+    providerSessionId: string,
+    temporaryDirectory: string,
+  ): void => {
+    reusableProviderSessions.delete(cacheKey);
+    reusableProviderSessions.set(cacheKey, { providerSessionId, temporaryDirectory });
+    while (reusableProviderSessions.size > MAX_REUSABLE_PROVIDER_SESSIONS) {
+      const oldestKey = reusableProviderSessions.keys().next().value as string | undefined;
+      if (!oldestKey) break;
+      reusableProviderSessions.delete(oldestKey);
+    }
+  };
 
   return {
     async complete(input: ProviderTextCompletionInput): Promise<ProviderTextCompletionResult> {
@@ -233,7 +269,22 @@ export function createProviderTextCompletionService(
       // runtime → sessions → websocket → Providers initialization cycle.
       const runtime = runtimeOverride ?? providerRuntimeService;
       const startedAt = Date.now();
-      const { provider, providerProfileId, model } = input.selection;
+      const { provider, providerProfileId, model, effort } = input.selection;
+      const conversationKey = input.conversationKey?.trim();
+      const providerSessionCacheKey = conversationKey
+        ? JSON.stringify([
+          input.userId,
+          conversationKey,
+          provider,
+          providerProfileId,
+          model,
+          effort,
+        ])
+        : null;
+      const reusableProviderSession = providerSessionCacheKey
+        ? reusableProviderSessions.get(providerSessionCacheKey)
+        : undefined;
+      const providerSessionId = reusableProviderSession?.providerSessionId;
       if (input.signal?.aborted) {
         throw new ProviderTextCompletionError(
           'GENERATION_CANCELLED',
@@ -248,6 +299,7 @@ export function createProviderTextCompletionService(
           provider,
           providerProfileId,
           model,
+          effort,
         });
       } catch (error) {
         if (error instanceof AppError) throw mapSelectionError(error);
@@ -290,7 +342,11 @@ export function createProviderTextCompletionService(
       }
 
       const runtimeId = createRuntimeId();
-      const temporaryDirectory = await createTemporaryDirectory();
+      const temporaryDirectory = reusableProviderSession?.temporaryDirectory
+        ?? await createTemporaryDirectory();
+      if (reusableProviderSession) {
+        await ensureTemporaryDirectory(temporaryDirectory);
+      }
       const assistantParts: string[] = [];
       const streamParts: string[] = [];
       let terminalFailed = false;
@@ -321,7 +377,15 @@ export function createProviderTextCompletionService(
 
       const writer: ProviderRuntimeWriter = {
         userId: null,
-        setSessionId: () => undefined,
+        setSessionId(nextProviderSessionId) {
+          if (providerSessionCacheKey && nextProviderSessionId.trim()) {
+            rememberProviderSession(
+              providerSessionCacheKey,
+              nextProviderSessionId,
+              temporaryDirectory,
+            );
+          }
+        },
         send(value) {
           const event = asRecord(value);
           if (!event) return;
@@ -362,8 +426,10 @@ export function createProviderTextCompletionService(
               provider,
               model,
               runtimeId,
+              providerSessionId,
               temporaryDirectory,
               profile,
+              effort,
             }),
             writer,
           ),
@@ -402,6 +468,15 @@ export function createProviderTextCompletionService(
             'The selected provider could not generate a commit message.',
             502,
           );
+        if (
+          mapped.code === 'GENERATION_FAILED'
+          && providerSessionCacheKey
+          && providerSessionId
+          && reusableProviderSessions.get(providerSessionCacheKey)?.providerSessionId
+            === providerSessionId
+        ) {
+          reusableProviderSessions.delete(providerSessionCacheKey);
+        }
         logger.warn('provider_text_completion_finished', {
           runtimeId,
           provider,

@@ -111,3 +111,21 @@ test('desktop-local status suppresses setup and credential authentication', asyn
       && error.code === 'AUTH_CREDENTIAL_LOGIN_UNAVAILABLE',
   );
 });
+
+test('desktop-local current user identifies only the internal Desktop principal', () => {
+  const service = createAuthService(createDependencies({ runtimeMode: 'desktop-local' }));
+
+  assert.deepEqual(service.getCurrentUser({
+    id: 1,
+    username: '__cloudcli_desktop_local__',
+  }), {
+    user: {
+      id: 1,
+      username: '__cloudcli_desktop_local__',
+      internal: true,
+    },
+  });
+  assert.deepEqual(service.getCurrentUser({ id: 2, username: 'existing-owner' }), {
+    user: { id: 2, username: 'existing-owner', internal: false },
+  });
+});

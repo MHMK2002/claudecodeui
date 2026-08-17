@@ -8,7 +8,7 @@ import {
   getVoiceStreamWebSocketUrl,
   transcribeVoice,
 } from '../../../lib/voiceApi';
-import { readVoiceConfig } from '../../../hooks/useVoiceConfig';
+import { readVoiceConfig, type VoiceConfig } from '../../../hooks/useVoiceConfig';
 import { useAuth } from '../../auth/context/AuthContext';
 import {
   AUTH_LOCAL_SESSION_UNAVAILABLE_EVENT,
@@ -87,6 +87,11 @@ async function isRecordingSilent(blob: Blob): Promise<boolean> {
 
 export type VoiceInputState = 'idle' | 'recording' | 'transcribing';
 
+type VoiceInputOptions = {
+  /** First-run Voice test supplies an unpersisted draft through this seam. */
+  getConfig?: () => VoiceConfig;
+};
+
 /**
  * Push-to-talk dictation. Records the mic, uploads to /api/voice/transcribe
  * (an OpenAI-compatible speech-to-text backend via the Express proxy), and
@@ -108,6 +113,7 @@ export function useVoiceInput(
   ) => void | Promise<void>,
   onError?: (msg: string) => void,
   onInterim?: (text: string | null) => void,
+  options: VoiceInputOptions = {},
 ) {
   const { runtimeMode } = useAuth();
   const [state, setState] = useState<VoiceInputState>('idle');
@@ -137,6 +143,7 @@ export function useVoiceInput(
   // identity on every consumer re-render.
   const onInterimRef = useRef(onInterim);
   onInterimRef.current = onInterim;
+  const getConfig = options.getConfig ?? readVoiceConfig;
 
   const stopTracks = () => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -173,7 +180,8 @@ export function useVoiceInput(
       // Record from the user's chosen input device (Voice settings), read fresh each
       // time so a settings change applies to the next recording with no prop
       // threading. Empty id = system default.
-      const micDeviceId = readVoiceConfig().micDeviceId;
+      const voiceConfig = getConfig();
+      const micDeviceId = voiceConfig.micDeviceId;
       // autoGainControl helps quiet/headset mics reach a usable level.
       const audio: MediaTrackConstraints = {
         echoCancellation: true,
@@ -224,7 +232,7 @@ export function useVoiceInput(
         if (isCurrent()) onInterimRef.current?.(null);
       };
 
-      const isSoniox = readVoiceConfig().sttProvider === 'soniox';
+      const isSoniox = voiceConfig.sttProvider === 'soniox';
       if (isSoniox && runtimeMode === 'desktop-local') {
         const renewed = await renewDesktopLocalSession();
         if (renewed === false) {
@@ -270,7 +278,6 @@ export function useVoiceInput(
           };
 
           socket.onopen = () => {
-            const voiceConfig = readVoiceConfig();
             socket.send(
               JSON.stringify({
                 apiKey: voiceConfig.sonioxApiKey,
@@ -494,7 +501,7 @@ export function useVoiceInput(
     } finally {
       if (startAttemptRef.current === startAttempt) startingRef.current = false;
     }
-  }, [onTranscript, onError, runtimeMode]);
+  }, [getConfig, onTranscript, onError, runtimeMode]);
 
   // Stop recording. Pass { send: true } to auto-send the transcript once it's ready,
   // and { origin } to bind the eventual transcript to the session it was committed in

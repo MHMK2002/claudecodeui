@@ -1,13 +1,7 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 
-import type { LLMProvider } from '../../../types/app';
-import {
-  readStoredProviderSelectionPreferences,
-} from '../../../shared/providerSelectionCatalog';
-import {
-  loadProviderSelectionCatalog,
-  resolveValidSelection,
-} from '../../../shared/hooks/useProviderSelectionCatalog';
+import type { CommitMessageProviderSelection, LLMProvider } from '../../../types/app';
+import { decodeGitSettingsResponse } from '../../../shared/gitSettings';
 import { authenticatedFetch } from '../../../utils/api';
 import type {
   CommitMessageDraftCacheEntry,
@@ -35,7 +29,11 @@ type SuggestionEvent =
     stagedKey: string;
     mode: 'generate' | 'update';
   }
-  | { type: 'provider-resolved'; requestId: number }
+  | {
+    type: 'provider-resolved';
+    requestId: number;
+    selection: CommitMessageProviderSelection;
+  }
   | {
     type: 'request-succeeded';
     requestId: number;
@@ -129,7 +127,7 @@ export function commitMessageSuggestionReducer(
       };
     case 'provider-resolved':
       return state.requestId === event.requestId
-        ? { ...state, status: 'generating' }
+        ? { ...state, status: 'generating', selection: event.selection }
         : state;
     case 'request-succeeded': {
       if (!responseMatchesActiveRequest(state, event)) return state;
@@ -356,7 +354,9 @@ async function decodeGenerationResponse(response: Response): Promise<CommitMessa
       details: typeof failure.details === 'string' && failure.details.trim()
         ? failure.details
         : 'Try generating the suggestion again.',
-      action: failure.action === 'OPEN_AGENT_SETTINGS' || failure.action === 'REVIEW_STAGED_CHANGES'
+      action: failure.action === 'OPEN_AGENT_SETTINGS'
+        || failure.action === 'OPEN_GIT_SETTINGS'
+        || failure.action === 'REVIEW_STAGED_CHANGES'
         ? failure.action
         : 'RETRY',
     } satisfies CommitMessageGenerationError;
@@ -374,6 +374,7 @@ async function decodeGenerationResponse(response: Response): Promise<CommitMessa
     || !(selection.providerProfileId === null || Number.isInteger(selection.providerProfileId))
     || typeof selection.model !== 'string'
     || !selection.model.trim()
+    || !(selection.effort === null || (typeof selection.effort === 'string' && selection.effort.trim()))
     || !analysis
     || !Number.isInteger(analysis.totalStagedFiles)
     || !Number.isInteger(analysis.sampledFiles)
@@ -432,6 +433,7 @@ export function useCommitMessageSuggestion({
     createCommitMessageSuggestionState,
   );
   const stateRef = useRef(state);
+  const [configuredProvider, setConfiguredProvider] = useState<LLMProvider | null>(null);
   const requestSequenceRef = useRef(0);
   const activeRequestRef = useRef<{
     requestId: number;
@@ -474,6 +476,19 @@ export function useCommitMessageSuggestion({
     activeRequestRef.current = null;
   }, [projectId]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    void authenticatedFetch('/api/user/git-config', { signal: controller.signal })
+      .then(decodeGitSettingsResponse)
+      .then((settings) => {
+        if (!controller.signal.aborted) {
+          setConfiguredProvider(settings.commitMessage?.provider ?? null);
+        }
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, []);
+
   const startRequest = useCallback((mode: 'generate' | 'update') => {
     if (stagedFiles.length === 0 || hasPendingStageOperations) return;
     activeRequestRef.current?.controller.abort();
@@ -497,44 +512,34 @@ export function useCommitMessageSuggestion({
 
     void (async () => {
       try {
-        const catalog = await raceWithAbortSignal(
-          loadProviderSelectionCatalog(),
+        const settings = await raceWithAbortSignal(
+          authenticatedFetch('/api/user/git-config', { signal: controller.signal })
+            .then(decodeGitSettingsResponse),
           controller.signal,
         );
         if (activeRequestRef.current?.requestId !== requestId) return;
-        const preferences = readStoredProviderSelectionPreferences();
-        const resolved = resolveValidSelection(catalog, preferences.provider, {
-          profileId: preferences.providerProfileId,
-          model: preferences.model,
-        });
+        const resolved = settings.commitMessage;
         if (!resolved) {
-          const entry = catalog.providers.find((candidate) => candidate.provider === preferences.provider);
           throw {
             code: 'PROVIDER_UNAVAILABLE',
-            error: `${PROVIDER_LABELS[preferences.provider]} is unavailable.`,
-            details: entry?.unavailableReason ?? 'Connect this provider in Agent Settings.',
+            error: 'No commit-message provider is configured.',
+            details: 'Choose an available provider in Git Settings.',
             action: 'OPEN_AGENT_SETTINGS',
           } satisfies CommitMessageGenerationError;
         }
-        dispatch({ type: 'provider-resolved', requestId });
+        setConfiguredProvider(resolved.provider);
+        dispatch({ type: 'provider-resolved', requestId, selection: resolved });
         const response = await authenticatedFetch('/api/git/generate-commit-message', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             project: projectId,
             files: [...stagedFiles].sort((left, right) => left.localeCompare(right)),
-            selection: resolved,
           }),
           signal: controller.signal,
         });
         const result = await decodeGenerationResponse(response);
-        if (
-          result.selection.provider !== resolved.provider
-          || result.selection.providerProfileId !== resolved.providerProfileId
-          || result.selection.model !== resolved.model
-        ) {
-          throw fallbackGenerationError('The server used a different provider selection.');
-        }
+        setConfiguredProvider(result.selection.provider);
         dispatch({
           type: 'request-succeeded',
           requestId,
@@ -593,7 +598,8 @@ export function useCommitMessageSuggestion({
   }, []);
 
   const selectedProvider = state.selection?.provider
-    ?? readStoredProviderSelectionPreferences().provider;
+    ?? configuredProvider
+    ?? 'claude';
   const isBusy = state.status === 'checking-provider' || state.status === 'generating';
   const generateDisabledReason = hasPendingStageOperations
     ? 'Wait for staging to finish.'

@@ -83,7 +83,18 @@ function createHarness(): Harness {
     },
     getProviderModels: async (provider) => ({
       models: {
-        OPTIONS: (modelsByProvider[provider] ?? []).map((value) => ({ value, label: value })),
+        OPTIONS: (modelsByProvider[provider] ?? []).map((value) => ({
+          value,
+          label: value,
+          ...(value === 'claude-sonnet' || value === 'gpt-5'
+            ? {
+                effort: {
+                  default: 'high',
+                  values: [{ value: 'low' }, { value: 'high' }],
+                },
+              }
+            : {}),
+        })),
         DEFAULT: (modelsByProvider[provider] ?? [])[0] ?? 'default',
       },
     }),
@@ -110,6 +121,7 @@ test('catalog returns only public data: profiles without credential fields, no s
   const claudeEntry = catalog.providers.find((entry) => entry.provider === 'claude');
   assert.ok(claudeEntry);
   assert.equal(claudeEntry.available, true);
+  assert.equal(claudeEntry.connectionAvailable, false);
   assert.deepEqual(
     claudeEntry.profiles.map((profile) => ({ ...profile })),
     [
@@ -151,6 +163,19 @@ test('catalog marks Claude/Codex unavailable when they have no active profiles',
   assert.equal(codexEntry.available, false);
 });
 
+test('catalog exposes an authenticated Claude CLI alongside optional profiles', async () => {
+  const { service, authStates, profilesByProvider } = createHarness();
+  profilesByProvider.claude = [];
+  authStates.claude = { installed: true, authenticated: true };
+
+  const catalog = await service.getPublicSelectionCatalog(1);
+  const claudeEntry = catalog.providers.find((entry) => entry.provider === 'claude');
+  assert.ok(claudeEntry);
+  assert.equal(claudeEntry.available, true);
+  assert.equal(claudeEntry.connectionAvailable, true);
+  assert.deepEqual(claudeEntry.profiles, []);
+});
+
 test('catalog drops disconnected Cursor/OpenCode with a reason', async () => {
   const { service, authStates } = createHarness();
   authStates.cursor = { installed: true, authenticated: false, error: 'Not logged in' };
@@ -173,16 +198,64 @@ test('validateSelection accepts a valid Claude profile + catalog model', async (
   });
 });
 
-test('validateSelection rejects Claude/Codex without a profile', async () => {
+test('text-completion selection validates effort and defaults to the lowest supported value', async () => {
   const { service } = createHarness();
+  assert.deepEqual(await service.resolveDefaultTextCompletionSelection(1), {
+    provider: 'claude',
+    providerProfileId: 1,
+    model: 'claude-sonnet',
+    effort: 'low',
+  });
+
+  await service.validateSelection({
+    userId: 1,
+    provider: 'claude',
+    providerProfileId: 1,
+    model: 'claude-sonnet',
+    effort: 'low',
+  });
+  await assert.rejects(
+    service.validateSelection({
+      userId: 1,
+      provider: 'claude',
+      providerProfileId: 1,
+      model: 'claude-sonnet',
+      effort: 'max',
+    }),
+    expectAppError('EFFORT_NOT_AVAILABLE'),
+  );
+  await assert.rejects(
+    service.validateSelection({
+      userId: 1,
+      provider: 'claude',
+      providerProfileId: 1,
+      model: 'claude-opus',
+      effort: 'low',
+    }),
+    expectAppError('EFFORT_UNSUPPORTED'),
+  );
+});
+
+test('validateSelection accepts profile-less Claude/Codex only with a live CLI connection', async () => {
+  const { service, authStates } = createHarness();
   await assert.rejects(
     service.validateSelection({ userId: 1, provider: 'claude', providerProfileId: null, model: 'claude-sonnet' }),
-    expectAppError('PROVIDER_PROFILE_REQUIRED'),
+    expectAppError('PROVIDER_NOT_CONNECTED'),
   );
-  await assert.rejects(
-    service.validateSelection({ userId: 1, provider: 'codex', providerProfileId: null, model: 'gpt-5' }),
-    expectAppError('PROVIDER_PROFILE_REQUIRED'),
-  );
+  authStates.claude = { installed: true, authenticated: true };
+  authStates.codex = { installed: true, authenticated: true };
+  await service.validateSelection({
+    userId: 1,
+    provider: 'claude',
+    providerProfileId: null,
+    model: 'claude-sonnet',
+  });
+  await service.validateSelection({
+    userId: 1,
+    provider: 'codex',
+    providerProfileId: null,
+    model: 'gpt-5',
+  });
 });
 
 test('validateSelection rejects an inactive or missing profile', async () => {
@@ -232,14 +305,16 @@ test('validateSelection rejects a model outside the provider catalog and a missi
   );
 });
 
-test('validateSessionExecution blocks a legacy profile-less Claude session', async () => {
-  const { service, sessions } = createHarness();
+test('validateSessionExecution gates a profile-less Claude session on live CLI auth', async () => {
+  const { service, sessions, authStates } = createHarness();
   sessions.set('legacy', { provider: 'claude', provider_profile_id: null });
 
   await assert.rejects(
     service.validateSessionExecution({ userId: 1, sessionId: 'legacy' }),
-    expectAppError('LEGACY_SESSION_PROFILE_REQUIRED'),
+    expectAppError('PROVIDER_NOT_CONNECTED'),
   );
+  authStates.claude = { installed: true, authenticated: true };
+  await service.validateSessionExecution({ userId: 1, sessionId: 'legacy' });
 });
 
 test('validateSessionExecution blocks a session whose profile was deactivated and requires a user', async () => {

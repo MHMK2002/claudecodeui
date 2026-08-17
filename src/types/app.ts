@@ -64,14 +64,14 @@ export type ProviderSelectionCatalogProfile = {
 /**
  * One provider entry inside the public selection catalog.
  *
- * `available` is false when the provider cannot be selected right now (no
- * active profile for Claude/Codex, disconnected CLI for Cursor/OpenCode);
- * `unavailableReason` explains why for disabled pickers. Models stay
- * provider-level — per-profile model discovery is out of scope.
+ * `available` is false when neither a live local CLI connection nor an active
+ * profile can run. `connectionAvailable` lets pickers expose the CLI alongside
+ * Claude/Codex profiles. Models stay provider-level.
  */
 export type ProviderSelectionCatalogEntry = {
   provider: LLMProvider;
   available: boolean;
+  connectionAvailable: boolean;
   unavailableReason: string | null;
   /** Active profiles; empty for Cursor/OpenCode, which never use profiles. */
   profiles: ProviderSelectionCatalogProfile[];
@@ -91,13 +91,23 @@ export type ProviderSelectionCatalog = {
  * A fully-resolved provider selection: which provider, which runtime profile,
  * and which model a new session or fork will run with.
  *
- * For connection-backed providers (cursor, opencode) `providerProfileId` is
- * always null — that is their natural architecture, not a legacy state.
+ * `providerProfileId` is null for an authenticated local CLI connection and a
+ * positive id for an encrypted Claude/Codex profile.
  */
 export type ResolvedProviderSelection = {
   provider: LLMProvider;
   providerProfileId: number | null;
   model: string;
+};
+
+/** Global Settings-backed selection used only by short commit-message completions. */
+export type CommitMessageProviderSelection = ResolvedProviderSelection & {
+  effort: string | null;
+};
+
+/** Editable global commit-message generator preference shared by all projects. */
+export type CommitMessageGeneratorSettings = CommitMessageProviderSelection & {
+  basePrompt: string;
 };
 
 export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'schedules' | 'browser' | `plugin:${string}`;

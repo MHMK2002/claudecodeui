@@ -54,6 +54,7 @@ type UpdateCodexProfileInput = Partial<Omit<CreateCodexProfileInput, 'secretValu
 
 const CLAUDE_PROVIDER = 'claude';
 const CODEX_PROVIDER = 'codex';
+const DEFAULT_MAIN_PROFILE_TITLE = 'Default Main';
 
 function toAuthType(value: string): ProviderProfileAuthType {
   return value === 'api_key' ? 'api_key' : 'auth_token';
@@ -288,6 +289,71 @@ export const providerProfilesDb = {
       CODEX_PROVIDER,
       normalizeCodexInput(input),
     ) as CodexProviderProfilePublic;
+  },
+
+  upsertDefaultMainProviderProfile(
+    userId: number,
+    provider: ProviderProfileProvider,
+    input: {
+      baseUrl: string | null;
+      authType: ProviderProfileAuthType;
+      secretValue: string;
+    },
+  ): ProviderProfilePublic {
+    const db = getConnection();
+    const upsert = db.transaction(() => {
+      const encryptedSecret = normalizeSecret(input.secretValue);
+      const existing = db
+        .prepare(
+          `SELECT id
+           FROM provider_profiles
+           WHERE user_id = ? AND provider = ? AND title = ?
+           ORDER BY id ASC
+           LIMIT 1`,
+        )
+        .get(userId, provider, DEFAULT_MAIN_PROFILE_TITLE) as { id: number } | undefined;
+
+      db.prepare(
+        'UPDATE provider_profiles SET is_default = 0, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND provider = ?',
+      ).run(userId, provider);
+
+      if (existing) {
+        db.prepare(
+          `UPDATE provider_profiles
+           SET base_url = ?, auth_type = ?, secret_value = ?, is_default = 1,
+               is_active = 1, updated_at = CURRENT_TIMESTAMP
+           WHERE id = ? AND user_id = ? AND provider = ?`,
+        ).run(
+          input.baseUrl,
+          input.authType,
+          encryptedSecret,
+          existing.id,
+          userId,
+          provider,
+        );
+        return Number(existing.id);
+      }
+
+      const result = db.prepare(
+        `INSERT INTO provider_profiles (
+           user_id, provider, title, base_url, auth_type, secret_value,
+           is_default, is_active, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+      ).run(
+        userId,
+        provider,
+        DEFAULT_MAIN_PROFILE_TITLE,
+        input.baseUrl,
+        input.authType,
+        encryptedSecret,
+      );
+      return Number(result.lastInsertRowid);
+    });
+
+    const profileId = upsert();
+    const row = fetchProfileRow(userId, profileId, provider);
+    if (!row) throw new Error('Default Main provider profile could not be loaded.');
+    return toPublicProfile(row);
   },
 
   updateProviderProfile(

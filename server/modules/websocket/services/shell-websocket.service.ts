@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import pty, { type IPty } from 'node-pty';
+import * as pty from 'node-pty';
+import type { IPty } from 'node-pty';
 import { WebSocket, type RawData } from 'ws';
 
 import { parseIncomingJsonObject, resolveSystemLoginShell } from '@/shared/utils.js';
@@ -323,7 +324,8 @@ export function handleShellConnection(
         return;
       }
 
-      if (message.type === 'resize' && shellProcess) {
+      if (message.type === 'resize') {
+        if (!shellProcess) return;
         shellProcess.resize(
           readDimension(message.cols, 80, MAX_TERMINAL_COLUMNS),
           readDimension(message.rows, 24, MAX_TERMINAL_ROWS),

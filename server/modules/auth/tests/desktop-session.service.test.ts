@@ -54,7 +54,7 @@ function createHarness(options: {
   return { service, calls, getFirstUser: () => firstUser };
 }
 
-test('fresh Desktop bootstrap creates one completed hidden principal', async () => {
+test('fresh Desktop bootstrap creates one incomplete hidden principal for optional setup', async () => {
   const { service, calls, getFirstUser } = createHarness();
 
   const result = await service.bootstrap({
@@ -72,7 +72,7 @@ test('fresh Desktop bootstrap creates one completed hidden principal', async () 
     },
   });
   assert.equal(getFirstUser()?.username, '__cloudcli_desktop_local__');
-  assert.deepEqual(calls.completeOnboarding, [41]);
+  assert.deepEqual(calls.completeOnboarding, []);
   assert.deepEqual(calls.updateLastLogin, [41]);
   assert.equal(calls.create, 1);
   assert.equal(calls.begin, 1);

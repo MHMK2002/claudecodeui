@@ -8,7 +8,7 @@ const STATUS_CONFIG: Record<ToolStatus, { label: string; className: string }> = 
     className: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
   },
   completed: {
-    label: 'Completed',
+    label: 'Done',
     className: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300',
   },
   error: {

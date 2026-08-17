@@ -179,7 +179,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         setUser(userPayload.user);
         setToken(null);
         clearStoredToken();
-        setHasCompletedOnboarding(true);
+        await checkOnboardingStatus();
         setLocalBootstrapReady(true);
         return;
       }

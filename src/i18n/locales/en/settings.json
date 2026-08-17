@@ -283,7 +283,11 @@
   },
   "git": {
     "title": "Git Configuration",
-    "description": "Configure your git identity for commits. These settings will be applied globally via git config --global",
+    "description": "Configure your global Git identity and commit-message generator.",
+    "identity": {
+      "title": "Commit identity",
+      "description": "Used by Git for commits on this device."
+    },
     "name": {
       "label": "Git Name",
       "help": "Your name for git commits"
@@ -291,6 +295,30 @@
     "email": {
       "label": "Git Email",
       "help": "Your email for git commits"
+    },
+    "generator": {
+      "title": "Commit message generator",
+      "globalBadge": "Global · all projects",
+      "description": "Choose the provider used for fast, isolated suggestions. Low effort is selected by default to reduce token usage.",
+      "loading": "Loading generator settings…",
+      "retry": "Retry loading settings",
+      "provider": "Provider",
+      "profile": "Profile",
+      "profileNotRequired": "Not required for this provider",
+      "chooseProfile": "Choose a profile",
+      "model": "Model",
+      "chooseModel": "Choose a model",
+      "effort": "Effort",
+      "effortUnsupported": "Not supported by this model",
+      "effortHelp": "Lower effort is faster and uses fewer provider tokens.",
+      "basePrompt": "Base prompt",
+      "basePromptHelp": "Controls style and format only. Fixed safety rules always remain active.",
+      "restoreDefault": "Restore default",
+      "basePromptPlaceholder": "Describe the commit-message style you prefer…",
+      "styleOnly": "Style-only instruction",
+      "characterCount": "Character count",
+      "securityNote": "Generation remains isolated and read-only. Staged data is bounded, treated as untrusted, and never creates a visible Chat.",
+      "noProvider": "Connect a provider in Agent Settings, then retry."
     },
     "actions": {
       "save": "Save Configuration",

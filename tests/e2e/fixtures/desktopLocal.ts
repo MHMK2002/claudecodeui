@@ -20,10 +20,21 @@ type DesktopLocalMockOptions = {
   zipMode?: ZipMode;
   tasksMode?: TasksMode;
   updateAvailable?: boolean;
+  firstRun?: boolean;
+  catalogRefreshAfterTokenFails?: boolean;
+  profileRefreshAfterTokenFails?: boolean;
+  claudeProfileRefreshDelayMs?: number;
+  codexInitialProfileDelayMs?: number;
+  onboardingStatusRefreshFails?: boolean;
+  tokenVerification?: 'success' | 'invalid' | 'unavailable';
 };
 
 const modelDefinition = {
-  OPTIONS: [{ value: 'gpt-test', label: 'GPT Test' }],
+  OPTIONS: [{
+    value: 'gpt-test',
+    label: 'GPT Test',
+    effort: { default: 'high', values: [{ value: 'low' }, { value: 'high' }] },
+  }],
   DEFAULT: 'gpt-test',
 };
 
@@ -32,6 +43,7 @@ const catalog = {
     {
       provider: 'codex',
       available: true,
+      connectionAvailable: false,
       unavailableReason: null,
       profiles: [{ id: 1, title: 'Local Codex', isDefault: true }],
       models: modelDefinition,
@@ -39,7 +51,24 @@ const catalog = {
     {
       provider: 'claude',
       available: false,
+      connectionAvailable: false,
       unavailableReason: 'Claude is not connected.',
+      profiles: [],
+      models: modelDefinition,
+    },
+    {
+      provider: 'cursor',
+      available: false,
+      connectionAvailable: false,
+      unavailableReason: 'Cursor is not connected.',
+      profiles: [],
+      models: modelDefinition,
+    },
+    {
+      provider: 'opencode',
+      available: false,
+      connectionAvailable: false,
+      unavailableReason: 'OpenCode is not connected.',
       profiles: [],
       models: modelDefinition,
     },
@@ -134,12 +163,23 @@ export async function installDesktopLocalMocks(
   let zipMode = options.zipMode ?? 'valid';
   const tasksMode = options.tasksMode ?? 'disabled';
   const updateAvailable = options.updateAvailable ?? false;
+  let onboardingCompleted = options.firstRun !== true;
+  let onboardingProfile: { provider: 'claude' | 'codex'; id: number } | null = null;
+  let delayedInitialCodexProfile = false;
   const historyDelayMs = options.historyDelayMs ?? 0;
   const validZipBody = await createValidZipBody();
 
   await page.addInitScript(({ tasksEnabled }) => {
     window.cloudcliDesktopLocalSession = {
       renew: async () => ({ success: true }),
+    };
+    let voiceSecrets = { apiKey: '', sonioxApiKey: '' };
+    window.cloudcliDesktopVoiceSecrets = {
+      get: async () => ({ ...voiceSecrets }),
+      set: async (patch) => {
+        voiceSecrets = { ...voiceSecrets, ...patch };
+        return { ...voiceSecrets };
+      },
     };
     localStorage.setItem('selected-provider', 'codex');
     localStorage.setItem('codex-provider-profile-id', '1');
@@ -168,7 +208,22 @@ export async function installDesktopLocalMocks(
       return;
     }
     if (path === '/api/auth/user') {
-      await json(route, { user: { id: 1, username: 'local-user' } });
+      await json(route, options.firstRun
+        ? { user: { id: 1, username: '__cloudcli_desktop_local__', internal: true } }
+        : { user: { id: 1, username: 'local-user', internal: false } });
+      return;
+    }
+    if (path === '/api/user/onboarding-status') {
+      if (onboardingCompleted && options.onboardingStatusRefreshFails) {
+        await json(route, { success: false, error: 'Onboarding status unavailable.' }, 503);
+        return;
+      }
+      await json(route, { success: true, hasCompletedOnboarding: onboardingCompleted });
+      return;
+    }
+    if (path === '/api/user/complete-onboarding') {
+      onboardingCompleted = true;
+      await json(route, { success: true });
       return;
     }
     if (path === '/api/projects') {
@@ -219,7 +274,28 @@ export async function installDesktopLocalMocks(
       await json(route, { success: true, data: { settings: { enabled: false } } });
       return;
     }
+    if (path === '/api/user/git-config') {
+      await json(route, {
+        success: true,
+        gitName: 'Local User',
+        gitEmail: 'local@example.com',
+        commitMessage: {
+          provider: 'codex',
+          providerProfileId: 1,
+          model: 'gpt-test',
+          effort: 'low',
+          basePrompt: 'Write one concise Conventional Commit message.',
+        },
+        defaultCommitMessageBasePrompt: 'Write one concise Conventional Commit message.',
+        commitMessageBasePromptMaxLength: 800,
+      });
+      return;
+    }
     if (path === '/api/providers/selection-catalog') {
+      if (onboardingProfile && options.catalogRefreshAfterTokenFails) {
+        await json(route, { success: false, error: 'Provider catalog unavailable.' }, 503);
+        return;
+      }
       if (catalogMode === 'html') {
         await route.fulfill({
           status: 502,
@@ -227,8 +303,74 @@ export async function installDesktopLocalMocks(
           body: '<!doctype html><title>Proxy failure</title>',
         });
       } else {
-        await json(route, { success: true, data: catalog });
+        const savedProfile = onboardingProfile;
+        await json(route, {
+          success: true,
+          data: {
+            providers: catalog.providers.map((entry) => (
+              entry.provider === savedProfile?.provider
+                ? {
+                    ...entry,
+                    available: true,
+                    unavailableReason: null,
+                    profiles: [{
+                      id: savedProfile.id,
+                      title: 'Default Main',
+                      isDefault: true,
+                    }],
+                  }
+                : entry
+            )),
+          },
+        });
       }
+      return;
+    }
+    if (/\/api\/providers\/(claude|codex)\/onboarding-token$/.test(path)) {
+      const provider = path.includes('/claude/') ? 'claude' : 'codex';
+      if (options.tokenVerification === 'invalid') {
+        await json(route, {
+          success: false,
+          error: { code: 'INVALID_PROVIDER_TOKEN', message: 'The provider rejected this token.' },
+        }, 400);
+        return;
+      }
+      if (options.tokenVerification === 'unavailable') {
+        await json(route, {
+          success: false,
+          error: {
+            code: 'PROVIDER_VERIFICATION_UNAVAILABLE',
+            message: 'The provider could not be reached. Check your connection and retry.',
+          },
+        }, 503);
+        return;
+      }
+      onboardingProfile = { provider, id: 9 };
+      await json(route, {
+        success: true,
+        data: {
+          provider,
+          profile: {
+            id: 9,
+            provider,
+            title: 'Default Main',
+            baseUrl: provider === 'codex' ? 'https://api.openai.com/v1' : null,
+            authType: 'api_key',
+            isDefault: true,
+            isActive: true,
+            hasSecret: true,
+            createdAt: '2026-08-17T00:00:00.000Z',
+            updatedAt: '2026-08-17T00:00:00.000Z',
+          },
+        },
+      });
+      return;
+    }
+    if (/\/api\/providers\/(claude|codex|cursor|opencode)\/auth\/status$/.test(path)) {
+      await json(route, {
+        success: true,
+        data: { authenticated: true, installed: true, error: null },
+      });
       return;
     }
     if (/\/api\/providers\/sessions\/session-1\/messages$/.test(path)) {
@@ -307,9 +449,53 @@ export async function installDesktopLocalMocks(
     }
     if (/\/api\/providers\/(claude|codex)\/profiles$/.test(path)) {
       const provider = path.includes('/claude/') ? 'claude' : 'codex';
+      const refreshesOnboardingProfile = onboardingProfile?.provider === provider;
+      const savedProfileAtRequest = refreshesOnboardingProfile
+        ? { ...onboardingProfile }
+        : null;
+      if (refreshesOnboardingProfile && options.profileRefreshAfterTokenFails) {
+        await json(route, { success: false, error: 'Provider profiles unavailable.' }, 503);
+        return;
+      }
+      if (
+        provider === 'codex'
+        && !savedProfileAtRequest
+        && !delayedInitialCodexProfile
+        && options.codexInitialProfileDelayMs
+      ) {
+        delayedInitialCodexProfile = true;
+        await new Promise((resolve) => setTimeout(resolve, options.codexInitialProfileDelayMs));
+      }
+      if (
+        refreshesOnboardingProfile
+        && provider === 'claude'
+        && options.claudeProfileRefreshDelayMs
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, options.claudeProfileRefreshDelayMs));
+      }
+      const savedProfile = savedProfileAtRequest
+        ? [{
+            id: savedProfileAtRequest.id,
+            provider,
+            title: 'Default Main',
+            baseUrl: provider === 'codex' ? 'https://api.openai.com/v1' : null,
+            authType: 'api_key',
+            isDefault: true,
+            isActive: true,
+            hasSecret: true,
+            createdAt: '2026-08-17T00:00:00.000Z',
+            updatedAt: '2026-08-17T00:00:00.000Z',
+          }]
+        : null;
       await json(route, {
         success: true,
-        data: { provider, profiles: provider === 'codex' ? [{ id: 1, title: 'Local Codex', isDefault: true }] : [] },
+        data: {
+          provider,
+          profiles: savedProfile
+            ?? (provider === 'codex'
+              ? [{ id: 1, title: 'Local Codex', isDefault: true, isActive: true }]
+              : []),
+        },
       });
       return;
     }

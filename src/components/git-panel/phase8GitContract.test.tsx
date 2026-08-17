@@ -147,6 +147,7 @@ const generatedResponse = {
     provider: 'codex' as const,
     providerProfileId: 12,
     model: 'gpt-test',
+    effort: 'low',
   },
   analysis: {
     totalStagedFiles: 1,

@@ -13,7 +13,7 @@ type ProviderLoginModalProps = {
   isAuthenticated?: boolean;
 };
 
-const getProviderCommand = ({
+export const getProviderLoginCommand = ({
   provider,
   customCommand,
   isAuthenticated: _isAuthenticated,
@@ -45,7 +45,7 @@ const getProviderCommand = ({
   return 'claude --dangerously-skip-permissions /login';
 };
 
-const getProviderTitle = (provider: LLMProvider) => {
+export const getProviderLoginTitle = (provider: LLMProvider) => {
   if (provider === 'claude') return 'Claude CLI Login';
   if (provider === 'cursor') return 'Cursor CLI Login';
   if (provider === 'codex') return 'Codex CLI Login';
@@ -65,8 +65,8 @@ export default function ProviderLoginModal({
     return null;
   }
 
-  const command = getProviderCommand({ provider, customCommand, isAuthenticated });
-  const title = getProviderTitle(provider);
+  const command = getProviderLoginCommand({ provider, customCommand, isAuthenticated });
+  const title = getProviderLoginTitle(provider);
 
   const handleComplete = (exitCode: number) => {
     onComplete?.(exitCode);

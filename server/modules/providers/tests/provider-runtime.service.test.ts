@@ -115,6 +115,21 @@ test('dispatches runs and aborts through the runtime owned by providerRegistry',
   ]);
 });
 
+test('uses an explicit hidden provider session id without changing the transient abort id', async () => {
+  const runtime = createRuntime({
+    async run(_command, options, _writer, context) {
+      assert.equal(options.sessionId, 'transient-runtime');
+      assert.equal(context.resolveProviderSessionId('transient-runtime'), 'hidden-native-session');
+    },
+  });
+  const service = createService([createProvider('codex', runtime)]);
+
+  await service.getRunner('codex')('prompt', {
+    sessionId: 'transient-runtime',
+    providerSessionId: 'hidden-native-session',
+  }, { send() {} });
+});
+
 test('routes permission decisions through provider-owned runtime capabilities', () => {
   const decisions: unknown[][] = [];
   const claudeRuntime = createRuntime({

@@ -8,6 +8,11 @@ CREATE TABLE IF NOT EXISTS users (
     is_active BOOLEAN DEFAULT 1,
     git_name TEXT,
     git_email TEXT,
+    commit_message_provider TEXT,
+    commit_message_provider_profile_id INTEGER,
+    commit_message_model TEXT,
+    commit_message_effort TEXT,
+    commit_message_base_prompt TEXT,
     has_completed_onboarding BOOLEAN DEFAULT 0
 );
 `;

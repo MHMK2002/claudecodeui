@@ -76,6 +76,37 @@ export function validateServerRuntimeHost(host: string): string {
 
 // ---------------------------
 
+//----------------- PROVIDER TEXT COMPLETION ISOLATION ------------
+/**
+ * Temporary-directory prefix shared by Providers and Database so isolated
+ * commit-message runs never surface as Chat sessions after provider indexing.
+ */
+export const PROVIDER_TEXT_COMPLETION_TEMPORARY_DIRECTORY_PREFIX =
+  'cloudcli-commit-message-';
+
+/**
+ * Identifies only the isolated working directories owned by provider text
+ * completion. Database uses this to discard derived provider-session rows;
+ * Providers uses the same prefix when creating those directories.
+ */
+export function isProviderTextCompletionTemporaryPath(value: string): boolean {
+  const comparablePath = (candidate: string): string => {
+    const resolved = path.resolve(candidate);
+    const macOsAliasNormalized = process.platform === 'darwin'
+      ? resolved.replace(/^\/private(?=\/var(?:\/|$))/, '')
+      : resolved;
+    return process.platform === 'win32'
+      ? macOsAliasNormalized.toLowerCase()
+      : macOsAliasNormalized;
+  };
+  const resolvedValue = path.resolve(value);
+  return path.basename(resolvedValue).startsWith(
+    PROVIDER_TEXT_COMPLETION_TEMPORARY_DIRECTORY_PREFIX,
+  ) && comparablePath(path.dirname(resolvedValue)) === comparablePath(os.tmpdir());
+}
+
+// ---------------------------
+
 //----------------- LOCAL SESSION SECURITY ------------
 /** Host-only HttpOnly cookie shared by Auth REST and WebSocket authentication. */
 export const SESSION_COOKIE_NAME = LOCAL_SESSION_COOKIE_NAME;
@@ -1304,6 +1335,27 @@ export function flattenPromptForWindowsShell(prompt: string): string {
   }
   return prompt.replace(/\s*\r?\n\s*/g, ' ').trim();
 }
+
+// ---------------------------
+//----------------- COMMIT MESSAGE GENERATOR POLICY ------------
+/**
+ * Concise default style instruction for the global commit-message generator.
+ *
+ * Settings exposes this value for Restore default. Git places it inside a
+ * style-only section; immutable safety and output guards are added separately.
+ */
+export const DEFAULT_COMMIT_MESSAGE_BASE_PROMPT = [
+  'Follow the prevailing format, tone, scope convention, and language in recent commit subjects when at least three usable examples exist.',
+  'Otherwise use an English Conventional Commit: type(scope): subject, with an imperative subject under 72 characters and a body only when useful.',
+].join(' ');
+
+/**
+ * Maximum editable style-prompt length accepted by Settings and Git.
+ *
+ * The small bound keeps every generation token-efficient and prevents a user
+ * preference from crowding out the fixed safety rules or staged snapshot.
+ */
+export const COMMIT_MESSAGE_BASE_PROMPT_MAX_LENGTH = 800;
 
 // ---------------------------
 //----------------- TERMINAL OUTPUT UTILITIES ------------

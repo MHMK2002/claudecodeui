@@ -1,7 +1,7 @@
 import type {
+  CommitMessageProviderSelection,
   LLMProvider,
   Project,
-  ResolvedProviderSelection,
 } from '../../../types/app';
 import type { SettingsMainTab } from '../../settings/types/types';
 
@@ -39,6 +39,7 @@ export type CommitMessageGenerationErrorCode =
 
 export type CommitMessageGenerationRecoveryAction =
   | 'OPEN_AGENT_SETTINGS'
+  | 'OPEN_GIT_SETTINGS'
   | 'RETRY'
   | 'REVIEW_STAGED_CHANGES';
 
@@ -60,7 +61,7 @@ export type CommitMessageGenerationResponse = {
   success: true;
   message: string;
   snapshotId: string;
-  selection: ResolvedProviderSelection;
+  selection: CommitMessageProviderSelection;
   analysis: CommitMessageGenerationAnalysis;
 };
 
@@ -89,7 +90,7 @@ export type CommitMessageSuggestionCandidate = {
   message: string;
   snapshotId: string;
   stagedKey: string;
-  selection: ResolvedProviderSelection;
+  selection: CommitMessageProviderSelection;
   analysis: CommitMessageGenerationAnalysis;
 };
 
@@ -101,7 +102,7 @@ export type CommitMessageSuggestionState = {
   snapshotId: string | null;
   generatedMessage: string | null;
   generatedStagedKey: string | null;
-  selection: ResolvedProviderSelection | null;
+  selection: CommitMessageProviderSelection | null;
   analysis: CommitMessageGenerationAnalysis | null;
   candidate: CommitMessageSuggestionCandidate | null;
   error: CommitMessageGenerationError | null;

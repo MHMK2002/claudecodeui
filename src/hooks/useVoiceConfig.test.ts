@@ -10,6 +10,7 @@ import {
   normalizeSttTerms,
   readVoiceConfig,
   resetVoiceSecretStateForTests,
+  saveVoiceConfigPatch,
 } from './useVoiceConfig';
 
 class MemoryStorage {
@@ -146,6 +147,42 @@ test('keeps legacy secrets when secure read-back does not match', async () => {
     await assert.rejects(initializeVoiceSecrets(), /read-back failed/i);
     const stored = JSON.parse(localStorage.getItem('voiceConfig') ?? '{}') as Record<string, unknown>;
     assert.equal(stored.apiKey, 'do-not-lose-me');
+  } finally {
+    Reflect.deleteProperty(globalThis, 'window');
+    resetVoiceSecretStateForTests();
+  }
+});
+
+test('explicit Voice draft commit stores Soniox only after secure read-back', async () => {
+  resetVoiceSecretStateForTests();
+  installStorage({ sttProvider: 'openai', micDeviceId: 'old-mic' });
+  let secure = { apiKey: '', sonioxApiKey: '' };
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      cloudcliDesktopVoiceSecrets: {
+        get: async () => ({ ...secure }),
+        set: async (patch: Partial<typeof secure>) => {
+          secure = { ...secure, ...patch };
+          return { ...secure };
+        },
+      },
+      dispatchEvent: () => true,
+    },
+  });
+  try {
+    await saveVoiceConfigPatch({
+      sttProvider: 'soniox',
+      sonioxApiKey: 'soniox-secret',
+      micDeviceId: 'new-mic',
+      sttLanguages: ['FA'],
+    });
+    assert.deepEqual(secure, { apiKey: '', sonioxApiKey: 'soniox-secret' });
+    const stored = JSON.parse(localStorage.getItem('voiceConfig') ?? '{}') as Record<string, unknown>;
+    assert.equal(stored.sttProvider, 'soniox');
+    assert.equal(stored.micDeviceId, 'new-mic');
+    assert.deepEqual(stored.sttLanguages, ['fa']);
+    assert.equal('sonioxApiKey' in stored, false);
   } finally {
     Reflect.deleteProperty(globalThis, 'window');
     resetVoiceSecretStateForTests();

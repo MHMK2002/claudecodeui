@@ -28,3 +28,9 @@ For every task that creates, modifies, refactors, or reviews backend code under 
 - Run schedules only while Desktop or its local server is active; mark missed runs without automatic replay.
 - Ship internally built macOS, Linux, and Windows desktop releases with in-app automatic updates.
 - Use the user's GitHub repository as the canonical source and release host.
+- Minimize provider token usage for commit-message generation.
+- Open the local Desktop workspace automatically; do not require an `Open Local Workspace` click.
+- Keep first-run Provider credentials and Soniox setup optional and non-blocking.
+- Present optional first-run Provider and Soniox setup as a step-by-step modal flow.
+- Let first-run Provider connection use either interactive sign-in or a provider token.
+- Limit first-run Provider tokens to Claude and Codex; store them as encrypted profiles titled `Default Main`.

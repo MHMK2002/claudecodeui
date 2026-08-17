@@ -75,9 +75,8 @@ export type ProviderSelectionCatalogState = {
 };
 
 /**
- * True for providers whose execution requires a user-managed provider profile.
- * A null providerProfileId is invalid for these (legacy Local CLI), while it is
- * the natural architecture for connection-backed providers.
+ * True for providers that may use encrypted profiles. They may also use a null
+ * profile id when the catalog reports an authenticated local CLI connection.
  */
 export function isProfileProvider(provider: LLMProvider): provider is 'claude' | 'codex' {
   return provider === 'claude' || provider === 'codex';
@@ -182,7 +181,7 @@ export function catalogHasProfile(
     return false;
   }
   if (profileId === null) {
-    return !isProfileProvider(entry.provider);
+    return entry.connectionAvailable;
   }
   return entry.profiles.some((profile) => profile.id === profileId);
 }
@@ -268,8 +267,7 @@ export function resolveProfileAfterProviderChange(
 
 /**
  * A complete, catalog-valid selection for one provider, or null when the
- * provider cannot produce a valid selection right now (unavailable, or a
- * profile provider with no active profile). `preferredModel`/
+ * provider cannot produce a valid selection right now. `preferredModel`/
  * `preferredProfileId` win when still valid; otherwise defaults are used.
  */
 export function resolveValidSelection(
@@ -283,10 +281,15 @@ export function resolveValidSelection(
   }
 
   if (isProfileProvider(provider)) {
+    const explicitlyPrefersConnection = preferences !== undefined
+      && Object.prototype.hasOwnProperty.call(preferences, 'profileId')
+      && preferences.profileId === null;
     const preferredProfile = preferences?.profileId != null && entry.profiles.some((profile) => profile.id === preferences.profileId)
       ? preferences.profileId
-      : defaultProfileForEntry(entry)?.id ?? null;
-    if (preferredProfile == null) {
+      : explicitlyPrefersConnection && entry.connectionAvailable
+        ? null
+        : defaultProfileForEntry(entry)?.id ?? null;
+    if (preferredProfile == null && !entry.connectionAvailable) {
       return null;
     }
     const model = resolveCatalogModel(entry, preferences?.model ?? null);

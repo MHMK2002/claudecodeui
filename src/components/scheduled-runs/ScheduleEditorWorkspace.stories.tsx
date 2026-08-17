@@ -10,6 +10,7 @@ const catalog: ProviderSelectionCatalog = {
     {
       provider: 'claude',
       available: true,
+      connectionAvailable: false,
       unavailableReason: null,
       profiles: [{ id: 1, title: 'Local Claude', isDefault: true }],
       models: {
@@ -20,6 +21,7 @@ const catalog: ProviderSelectionCatalog = {
     {
       provider: 'codex',
       available: false,
+      connectionAvailable: false,
       unavailableReason: 'Connect a Codex profile in Agent Settings.',
       profiles: [],
       models: { DEFAULT: 'gpt-5.4', OPTIONS: [{ value: 'gpt-5.4', label: 'GPT-5.4' }] },

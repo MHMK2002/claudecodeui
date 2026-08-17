@@ -17,6 +17,7 @@ test('status and stream evidence keep one running activity across reconnect', ()
   assert.deepEqual(activities.get('session-a'), {
     statusText: 'Reading files',
     canInterrupt: true,
+    requiresUserInput: false,
     startedAt: 100,
   });
 });
@@ -33,4 +34,17 @@ test('complete and abort both return the session to idle while stale reconnect i
   assert.equal(applySessionIdle(running, 'session-a').has('session-a'), false);
   const restarted = applySessionProcessing(new Map(), 'session-a', {}, 300);
   assert.equal(applySessionIdle(restarted, 'session-a').has('session-a'), false);
+});
+
+test('waiting for user input persists until provider work explicitly resumes', () => {
+  let activities = applySessionProcessing(new Map(), 'session-a', {
+    requiresUserInput: true,
+  }, 100);
+  activities = applySessionProcessing(activities, 'session-a');
+  assert.equal(activities.get('session-a')?.requiresUserInput, true);
+
+  activities = applySessionProcessing(activities, 'session-a', {
+    requiresUserInput: false,
+  });
+  assert.equal(activities.get('session-a')?.requiresUserInput, false);
 });

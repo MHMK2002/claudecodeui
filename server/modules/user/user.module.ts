@@ -1,6 +1,7 @@
 import spawn from 'cross-spawn';
 
 import { userDb } from '@/modules/database/index.js';
+import { providerSelectionService } from '@/modules/providers/index.js';
 
 import { createUserRouter } from './user.routes.js';
 import { createUserService } from './user.service.js';
@@ -37,14 +38,18 @@ async function readSystemGitConfig() {
 const userService = createUserService({
   users: {
     getGitConfig: (userId) => userDb.getGitConfig(userId),
-    updateGitConfig: (userId, gitName, gitEmail) => userDb.updateGitConfig(
-      userId,
-      gitName ?? '',
-      gitEmail ?? '',
+    updateGitIdentity: (userId, gitName, gitEmail) => userDb.updateGitIdentity(userId, gitName, gitEmail),
+    getCommitMessageGeneratorSettings: (userId) => userDb.getCommitMessageGeneratorSettings(userId),
+    updateGitConfig: (userId, gitName, gitEmail, generator) => userDb.updateGitConfig(
+      userId, gitName, gitEmail, generator,
     ),
     completeOnboarding: (userId) => userDb.completeOnboarding(userId),
     hasCompletedOnboarding: (userId) => userDb.hasCompletedOnboarding(userId),
   },
+  resolveDefaultTextCompletionSelection: (userId) => (
+    providerSelectionService.resolveDefaultTextCompletionSelection(userId)
+  ),
+  validateProviderSelection: (input) => providerSelectionService.validateSelection(input),
   readSystemGitConfig,
   applyGlobalGitConfig: async (gitName, gitEmail) => {
     await runGit(['config', '--global', 'user.name', gitName]);

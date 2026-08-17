@@ -3,7 +3,6 @@ import path from 'path';
 
 import express from 'express';
 
-import type { LLMProvider } from '@/shared/types.js';
 import { AppError, readAuthenticatedUserId } from '@/shared/utils.js';
 
 // cross-spawn: drop-in spawn with Windows .cmd/PATHEXT resolution.
@@ -993,22 +992,11 @@ router.get('/commit-diff', async (req, res) => {
 router.post('/generate-commit-message', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const body = req.body && typeof req.body === 'object' ? req.body : {};
-  const selection = body.selection && typeof body.selection === 'object'
-    ? body.selection
-    : null;
-  const provider = selection?.provider;
-  const providerProfileId = selection?.providerProfileId;
-  const model = selection?.model;
   const filesAreValid = Array.isArray(body.files)
     && body.files.length > 0
     && body.files.every((file) => typeof file === 'string' && file.length > 0)
     && new Set(body.files).size === body.files.length;
-  const selectionIsValid = (['claude', 'codex', 'cursor', 'opencode'] as LLMProvider[]).includes(provider)
-    && (providerProfileId === null || (Number.isInteger(providerProfileId) && providerProfileId > 0))
-    && typeof model === 'string'
-    && Boolean(model.trim());
-
-  if (typeof body.project !== 'string' || !body.project.trim() || !filesAreValid || !selectionIsValid) {
+  if (typeof body.project !== 'string' || !body.project.trim() || !filesAreValid) {
     return res.status(400).json({
       success: false,
       code: 'INVALID_GENERATION_REQUEST',
@@ -1030,11 +1018,6 @@ router.post('/generate-commit-message', async (req, res) => {
     const result = await commitMessageService.generate({
       projectId: body.project,
       expectedFiles: body.files,
-      selection: {
-        provider,
-        providerProfileId,
-        model: model.trim(),
-      },
       userId: readAuthenticatedUserId(req),
       signal: controller.signal,
     });

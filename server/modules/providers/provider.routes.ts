@@ -5,6 +5,7 @@ import { providerAuthService } from '@/modules/providers/services/provider-auth.
 import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
 import { providerMcpService } from '@/modules/providers/services/mcp.service.js';
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
+import { providerOnboardingService } from '@/modules/providers/services/provider-onboarding.service.js';
 import { providerSelectionService } from '@/modules/providers/services/provider-selection.service.js';
 import { providerTokenUsageService } from '@/modules/providers/services/provider-token-usage.service.js';
 import { providerSkillsService } from '@/modules/providers/services/skills.service.js';
@@ -647,7 +648,13 @@ router.get(
     const status = await providerAuthService.getProviderAuthStatus(provider, {
       forceRefresh: req.query.force === '1' || req.query.force === 'true',
     });
-    if (isProfileProvider(provider) && status.installed && !status.authenticated) {
+    const connectionOnly = parseOptionalBooleanQuery(req.query.connectionOnly, 'connectionOnly') ?? false;
+    if (
+      !connectionOnly
+      && isProfileProvider(provider)
+      && status.installed
+      && !status.authenticated
+    ) {
       const userId = readAuthenticatedUserId(req);
       if (providerProfilesDb.countActiveProviderProfiles(userId, provider) > 0) {
         res.json(createApiSuccessResponse({
@@ -661,6 +668,23 @@ router.get(
       }
     }
     res.json(createApiSuccessResponse(status));
+  }),
+);
+
+router.post(
+  '/:provider/onboarding-token',
+  asyncHandler(async (req: Request, res: Response) => {
+    const provider = parseProfileProvider(req.params.provider);
+    const token = readOptionalBodyString(
+      req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {},
+      'token',
+    );
+    const profile = await providerOnboardingService.connectToken({
+      userId: readAuthenticatedUserId(req),
+      provider,
+      token: token ?? '',
+    });
+    res.json(createApiSuccessResponse({ provider, profile }));
   }),
 );
 

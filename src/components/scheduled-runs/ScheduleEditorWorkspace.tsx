@@ -174,7 +174,9 @@ export function ScheduleEditorWorkspaceView({
   const profileRequired = isProfileProvider(provider);
   const profileValid = !profileRequired
     ? providerProfileId === null
-    : Boolean(providerEntry?.profiles.some((profile) => profile.id === providerProfileId));
+    : providerProfileId === null
+      ? Boolean(providerEntry?.connectionAvailable)
+      : Boolean(providerEntry?.profiles.some((profile) => profile.id === providerProfileId));
   const modelValid = Boolean(providerEntry?.models.OPTIONS.some((option) => option.value === model));
   const catalog = catalogState.catalog;
   const getCatalogEntry = catalogState.getEntry;
@@ -457,8 +459,12 @@ export function ScheduleEditorWorkspaceView({
                   </Field>
                   {profileRequired && (
                     <Field label="Profile" htmlFor="schedule-profile">
-                      <select id="schedule-profile" value={providerProfileId ?? ''} onChange={(event) => setProviderProfileId(Number(event.target.value))} className={inputClass}>
-                        <option value="" disabled>Choose a profile</option>
+                      <select id="schedule-profile" value={providerProfileId ?? ''} onChange={(event) => setProviderProfileId(event.target.value ? Number(event.target.value) : null)} className={inputClass}>
+                        {providerEntry?.connectionAvailable ? (
+                          <option value="">Local CLI</option>
+                        ) : (
+                          <option value="" disabled>Choose a profile</option>
+                        )}
                         {providerEntry?.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.title}</option>)}
                       </select>
                     </Field>

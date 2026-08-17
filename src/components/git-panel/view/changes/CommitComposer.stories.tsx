@@ -9,7 +9,12 @@ import type {
 import CommitComposer from './CommitComposer';
 
 const noOp = () => undefined;
-const selection = { provider: 'codex' as const, providerProfileId: 12, model: 'gpt-5.4' };
+const selection = {
+  provider: 'codex' as const,
+  providerProfileId: 12,
+  model: 'gpt-5.4',
+  effort: 'low',
+};
 const analysis = {
   totalStagedFiles: 3,
   sampledFiles: 3,
@@ -58,6 +63,7 @@ const meta = {
     suggestion: controller(createCommitMessageSuggestionState()),
     onCommit: async () => ({ success: true }),
     onOpenAgentSettings: noOp,
+    onOpenGitSettings: noOp,
     onReviewStagedChanges: noOp,
     onRequestConfirmation: noOp,
   },

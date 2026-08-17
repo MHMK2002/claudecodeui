@@ -1,6 +1,7 @@
 import os from 'node:os';
 
-import pty, { type IPty } from 'node-pty';
+import * as pty from 'node-pty';
+import type { IPty } from 'node-pty';
 import { WebSocket, type RawData } from 'ws';
 
 import { parseIncomingJsonObject, resolveSystemLoginShell } from '@/shared/utils.js';

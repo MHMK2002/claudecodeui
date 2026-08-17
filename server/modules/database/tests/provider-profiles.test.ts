@@ -103,3 +103,45 @@ test('Codex provider profiles can be stored for app-created sessions', async () 
     assert.equal(session?.provider_profile_id, profile.id);
   });
 });
+
+test('Default Main upsert is encrypted, idempotent, active, and the sole default', async () => {
+  await withIsolatedDatabase((userId) => {
+    providerProfilesDb.createClaudeProfile(userId, {
+      title: 'Existing',
+      baseUrl: null,
+      authType: 'auth_token',
+      secretValue: 'existing-token',
+      isDefault: true,
+    });
+
+    const first = providerProfilesDb.upsertDefaultMainProviderProfile(userId, 'claude', {
+      baseUrl: null,
+      authType: 'api_key',
+      secretValue: 'first-secret',
+    });
+    const second = providerProfilesDb.upsertDefaultMainProviderProfile(userId, 'claude', {
+      baseUrl: null,
+      authType: 'api_key',
+      secretValue: 'rotated-secret',
+    });
+
+    assert.equal(first.id, second.id);
+    assert.equal(second.title, 'Default Main');
+    assert.equal(second.isDefault, true);
+    assert.equal(second.isActive, true);
+    assert.equal(providerProfilesDb.listClaudeProfiles(userId).length, 2);
+    assert.equal(
+      providerProfilesDb.listClaudeProfiles(userId).filter((profile) => profile.isDefault).length,
+      1,
+    );
+    assert.equal(
+      providerProfilesDb.getClaudeProfileForRuntime(userId, second.id)?.secretValue,
+      'rotated-secret',
+    );
+    const stored = getConnection()
+      .prepare('SELECT secret_value FROM provider_profiles WHERE id = ?')
+      .get(second.id) as { secret_value: string };
+    assert.match(stored.secret_value, /^enc:v1:/);
+    assert.doesNotMatch(stored.secret_value, /rotated-secret/);
+  });
+});

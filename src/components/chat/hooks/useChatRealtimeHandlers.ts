@@ -115,8 +115,13 @@ export function useChatRealtimeHandlers({
           // pending tool-permission prompts for the run.
           if (!sid) return;
 
-          if (msg.isProcessing) {
-            onSessionProcessing?.(sid);
+          const nextPendingPermissionRequests = Array.isArray(msg.pendingPermissions)
+            ? msg.pendingPermissions as PendingPermissionRequest[]
+            : [];
+          const requiresUserInput = hasActionablePermissionRequests(nextPendingPermissionRequests);
+
+          if (msg.isProcessing || requiresUserInput) {
+            onSessionProcessing?.(sid, { requiresUserInput });
           } else {
             // Idle ack: ignore it if a newer request started after the
             // subscribe was sent — the ack describes the older state.
@@ -127,14 +132,12 @@ export function useChatRealtimeHandlers({
 
           const isViewedSession = sid === activeViewSessionId;
           if (isViewedSession && Array.isArray(msg.pendingPermissions)) {
-            const nextPendingPermissionRequests = msg.pendingPermissions as PendingPermissionRequest[];
             const hadActionablePermissionRequests = hasActionablePermissionRequests(pendingPermissionRequestsRef.current);
-            const hasPendingActionablePermissionRequests = hasActionablePermissionRequests(nextPendingPermissionRequests);
 
             pendingPermissionRequestsRef.current = nextPendingPermissionRequests;
             setPendingPermissionRequests(nextPendingPermissionRequests);
 
-            if (hasPendingActionablePermissionRequests && !hadActionablePermissionRequests) {
+            if (requiresUserInput && !hadActionablePermissionRequests) {
               void playNotificationSound();
             }
           }
@@ -195,7 +198,7 @@ export function useChatRealtimeHandlers({
       ) {
         // Replayed/live activity can arrive before a reconnect subscribe ack.
         // Treat concrete provider work as authoritative running evidence.
-        onSessionProcessing?.(sid);
+        onSessionProcessing?.(sid, { requiresUserInput: false });
       }
 
       // --- Streaming: buffer for performance ---
@@ -317,7 +320,9 @@ export function useChatRealtimeHandlers({
             }
           }
           if (sid) {
-            onSessionProcessing?.(sid);
+            onSessionProcessing?.(sid, {
+              requiresUserInput: isActionablePermissionRequest({ toolName: msg.toolName }),
+            });
           }
           break;
         }
@@ -330,6 +335,9 @@ export function useChatRealtimeHandlers({
 
             pendingPermissionRequestsRef.current = nextPendingPermissionRequests;
             setPendingPermissionRequests(nextPendingPermissionRequests);
+          }
+          if (sid) {
+            onSessionProcessing?.(sid, { requiresUserInput: false });
           }
           break;
         }

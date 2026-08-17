@@ -85,6 +85,12 @@ export interface NormalizedMessage {
   context?: unknown;
   newSessionId?: string;
   status?: string;
+  /** Inline provider output carried by terminal tool events (notably Codex). */
+  output?: unknown;
+  /** Inline provider result carried by terminal MCP/tool events. */
+  result?: unknown;
+  /** Inline provider error carried by a failed terminal tool event. */
+  error?: unknown;
   summary?: string;
   exitCode?: number;
   actualSessionId?: string;

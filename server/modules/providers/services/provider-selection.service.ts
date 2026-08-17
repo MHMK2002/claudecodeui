@@ -10,11 +10,13 @@ import type {
   ProviderSelectionCatalog,
   ProviderSelectionCatalogEntry,
   ProviderSelectionCatalogProfile,
+  ProviderTextCompletionSelection,
 } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
 /** Providers whose execution requires a user-managed provider profile. */
 const PROFILE_PROVIDERS: readonly ProviderProfileProvider[] = ['claude', 'codex'];
+const LOW_TOKEN_EFFORT_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 
 /** Auth + registry surface the service needs, narrowed so tests can stub it. */
 type SelectionProviderAuth = {
@@ -96,6 +98,28 @@ export const createProviderSelectionService = (
       ? async (provider: LLMProvider) => resolveProvider(provider).auth.getStatus()
       : async (provider: LLMProvider) => providerAuthService.getProviderAuthStatus(provider));
 
+  const readConnectionStatus = async (provider: LLMProvider) => {
+    try {
+      return await getProviderAuthStatus(provider);
+    } catch {
+      return {
+        installed: false,
+        authenticated: false,
+        error: 'Provider status could not be checked. Try again from Settings.',
+      };
+    }
+  };
+
+  const requireConnection = async (provider: LLMProvider): Promise<void> => {
+    const status = await readConnectionStatus(provider);
+    if (!status.installed || !status.authenticated) {
+      throw new AppError(
+        status.error ?? `Provider "${provider}" is not connected.`,
+        { code: 'PROVIDER_NOT_CONNECTED', statusCode: 400 },
+      );
+    }
+  };
+
   return {
     /**
      * Builds the public selection catalog for one user.
@@ -111,19 +135,23 @@ export const createProviderSelectionService = (
       const providers: ProviderSelectionCatalogEntry[] = await Promise.all(
         listProviders().map(async (provider) => {
           const models = (await getProviderModels(provider.id)).models;
+          const status = await readConnectionStatus(provider.id);
+          const connectionAvailable = status.installed && status.authenticated;
 
           if (isProfileProvider(provider.id)) {
             const profileList = profiles
               .listProviderProfiles(userId, provider.id)
               .filter((profile) => profile.isActive)
               .map(toCatalogProfile);
-            const available = profileList.length > 0;
+            const available = connectionAvailable || profileList.length > 0;
             return {
               provider: provider.id,
               available,
+              connectionAvailable,
               unavailableReason: available
                 ? null
-                : `No active ${provider.id === 'claude' ? 'Claude' : 'Codex'} provider profile. Add one in Settings.`,
+                : status.error
+                  ?? `Connect ${provider.id === 'claude' ? 'Claude' : 'Codex'} or add an active provider profile.`,
               profiles: profileList,
               models,
             };
@@ -131,21 +159,11 @@ export const createProviderSelectionService = (
 
           // Cursor/OpenCode have no profiles; availability is the live local
           // connection (CLI installed and authenticated).
-          let status: { installed: boolean; authenticated: boolean; error?: string };
-          try {
-            status = await getProviderAuthStatus(provider.id);
-          } catch {
-            status = {
-              installed: false,
-              authenticated: false,
-              error: 'Provider status could not be checked. Try again from Settings.',
-            };
-          }
-          const available = status.installed && status.authenticated;
           return {
             provider: provider.id,
-            available,
-            unavailableReason: available ? null : status.error ?? 'Provider is not connected.',
+            available: connectionAvailable,
+            connectionAvailable,
+            unavailableReason: connectionAvailable ? null : status.error ?? 'Provider is not connected.',
             profiles: [],
             models,
           };
@@ -156,15 +174,52 @@ export const createProviderSelectionService = (
     },
 
     /**
+     * Resolves the low-token default used before a user saves Generator settings.
+     *
+     * The first available catalog provider is chosen only for a missing setting;
+     * an existing invalid setting is never reconciled across providers.
+     */
+    async resolveDefaultTextCompletionSelection(
+      userId: number,
+    ): Promise<ProviderTextCompletionSelection | null> {
+      const catalog = await this.getPublicSelectionCatalog(userId);
+      for (const entry of catalog.providers) {
+        if (!entry.available) continue;
+        const providerProfileId = isProfileProvider(entry.provider)
+          ? (entry.profiles.find((profile) => profile.isDefault) ?? entry.profiles[0])?.id ?? null
+          : null;
+        if (
+          isProfileProvider(entry.provider)
+          && providerProfileId === null
+          && !entry.connectionAvailable
+        ) continue;
+        const modelOption = entry.models.OPTIONS.find(
+          (option) => option.value === entry.models.DEFAULT,
+        ) ?? entry.models.OPTIONS[0];
+        if (!modelOption) continue;
+        const effortValues = modelOption.effort?.values.map((effort) => effort.value) ?? [];
+        const effort = LOW_TOKEN_EFFORT_ORDER.find((candidate) => effortValues.includes(candidate))
+          ?? modelOption.effort?.default
+          ?? effortValues[0]
+          ?? null;
+        return {
+          provider: entry.provider,
+          providerProfileId,
+          model: modelOption.value,
+          effort,
+        };
+      }
+      return null;
+    },
+
+    /**
      * Validates one full selection (provider + optional profile + model) against
      * the catalog before anything is created or run.
      *
      * Rules:
-     * - Claude/Codex: an active profile owned by the same user and provider is
-     *   required; a null profile id is rejected (legacy Local CLI).
-     * - Cursor/OpenCode: the live connection must be valid and providerProfileId
-     *   must be null — a null profile here is the natural architecture, not a
-     *   legacy state.
+     * - Claude/Codex: a positive id must resolve to an active owned profile; a
+     *   null id uses the authenticated local CLI connection.
+     * - Cursor/OpenCode: the live connection must be valid and profile id null.
      * - The model must exist in that provider's model catalog.
      *
      * Throws AppError (400/401/404) on the first violated rule.
@@ -174,6 +229,7 @@ export const createProviderSelectionService = (
       provider: LLMProvider;
       providerProfileId: number | null;
       model: string;
+      effort?: string | null;
     }): Promise<void> {
       const { userId, provider, providerProfileId, model } = input;
 
@@ -186,22 +242,19 @@ export const createProviderSelectionService = (
 
       if (isProfileProvider(provider)) {
         if (providerProfileId === null) {
-          throw new AppError(
-            `A ${provider === 'claude' ? 'Claude' : 'Codex'} provider profile is required.`,
-            { code: 'PROVIDER_PROFILE_REQUIRED', statusCode: 400 },
+          await requireConnection(provider);
+        } else {
+          const profile = profiles.getProviderProfileForRuntime(
+            userId,
+            provider,
+            providerProfileId,
           );
-        }
-
-        const profile = profiles.getProviderProfileForRuntime(
-          userId,
-          provider,
-          providerProfileId,
-        );
-        if (!profile) {
-          throw new AppError('Provider profile not found or inactive.', {
-            code: 'PROVIDER_PROFILE_NOT_FOUND',
-            statusCode: 404,
-          });
+          if (!profile) {
+            throw new AppError('Provider profile not found or inactive.', {
+              code: 'PROVIDER_PROFILE_NOT_FOUND',
+              statusCode: 404,
+            });
+          }
         }
       } else {
         if (providerProfileId !== null) {
@@ -211,16 +264,10 @@ export const createProviderSelectionService = (
           );
         }
 
-        const status = await getProviderAuthStatus(provider);
-        if (!status.installed || !status.authenticated) {
-          throw new AppError(
-            status.error ?? `Provider "${provider}" is not connected.`,
-            { code: 'PROVIDER_NOT_CONNECTED', statusCode: 400 },
-          );
-        }
+        await requireConnection(provider);
       }
 
-      await this.validateProviderModel(provider, model);
+      await this.validateProviderModel(provider, model, input.effort);
     },
 
     /**
@@ -229,13 +276,39 @@ export const createProviderSelectionService = (
      * Shared by `validateSelection` and any caller that only needs the model half
      * of the contract (e.g. a fork that re-validates the target model).
      */
-    async validateProviderModel(provider: LLMProvider, model: string): Promise<void> {
+    async validateProviderModel(
+      provider: LLMProvider,
+      model: string,
+      effort?: string | null,
+    ): Promise<void> {
       const models: ProviderModelsDefinition = (await getProviderModels(provider)).models;
-      if (!models.OPTIONS.some((option) => option.value === model)) {
+      const modelOption = models.OPTIONS.find((option) => option.value === model);
+      if (!modelOption) {
         throw new AppError(`Model "${model}" is not available for provider "${provider}".`, {
           code: 'MODEL_NOT_AVAILABLE',
           statusCode: 400,
         });
+      }
+      if (effort === undefined) return;
+
+      const effortValues = modelOption.effort?.values.map((entry) => entry.value) ?? [];
+      if (effortValues.length === 0 && effort !== null) {
+        throw new AppError(`Model "${model}" does not support reasoning effort.`, {
+          code: 'EFFORT_UNSUPPORTED',
+          statusCode: 400,
+        });
+      }
+      if (effortValues.length > 0 && effort === null) {
+        throw new AppError(`Reasoning effort is required for model "${model}".`, {
+          code: 'EFFORT_REQUIRED',
+          statusCode: 400,
+        });
+      }
+      if (effort !== null && !effortValues.includes(effort)) {
+        throw new AppError(
+          `Reasoning effort "${effort}" is not available for model "${model}".`,
+          { code: 'EFFORT_NOT_AVAILABLE', statusCode: 400 },
+        );
       }
     },
 
@@ -244,10 +317,8 @@ export const createProviderSelectionService = (
      * run — called by the chat gateway before fork context is consumed and before
      * the run is registered, so an invalid selection costs nothing.
      *
-     * Legacy sessions (Claude/Codex rows with no profile, or a profile that has
-     * since been deactivated or deleted) stay readable and exportable but cannot
-     * be sent on: a clear protocol-style AppError explains why. A disconnected
-     * Cursor/OpenCode is likewise rejected before the runtime is spawned.
+     * Profile-less sessions run only while that provider's local CLI connection
+     * is authenticated. Profile sessions still require an active owned profile.
      */
     async validateSessionExecution(input: {
       userId: number | null;
@@ -283,13 +354,8 @@ export const createProviderSelectionService = (
       }
 
       if (providerProfileId === null) {
-        // Legacy Local CLI session: history stays readable/exportable, but a
-        // direct send is blocked. The user can still fork it onto a valid
-        // provider/profile/model.
-        throw new AppError(
-          'This session was created without a provider profile and can no longer be sent on. Fork it with a valid provider profile to continue.',
-          { code: 'LEGACY_SESSION_PROFILE_REQUIRED', statusCode: 400 },
-        );
+        await requireConnection(provider);
+        return;
       }
 
       if (input.userId === null) {

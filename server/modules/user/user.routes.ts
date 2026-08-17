@@ -23,8 +23,8 @@ export function createUserRouter(service: ReturnType<typeof createUserService>):
 
   router.post('/git-config', async (req, res, next) => {
     try {
-      const body = req.body as { gitName?: unknown; gitEmail?: unknown };
-      res.json(await service.updateGitConfig(readUserId(req), body.gitName, body.gitEmail));
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      res.json(await service.updateGitConfig(readUserId(req), body));
     } catch (error) {
       next(error);
     }

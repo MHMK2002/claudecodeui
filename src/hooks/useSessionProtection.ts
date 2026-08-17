@@ -4,6 +4,8 @@ export interface SessionActivity {
   /** Provider-supplied status line; null renders the default activity label. */
   statusText: string | null;
   canInterrupt: boolean;
+  /** True while the provider is blocked on a question or permission decision. */
+  requiresUserInput: boolean;
   /**
    * When this request was first marked as processing (client clock). Drives
    * the elapsed-time display and the stale `chat_subscribed` idle-ack guard.
@@ -17,12 +19,17 @@ export type SessionActivitySnapshot = {
   sessionId: string;
   statusText?: string | null;
   canInterrupt?: boolean;
+  requiresUserInput?: boolean;
   startedAt?: number;
 };
 
 export type MarkSessionProcessing = (
   sessionId?: string | null,
-  activity?: { statusText?: string | null; canInterrupt?: boolean },
+  activity?: {
+    statusText?: string | null;
+    canInterrupt?: boolean;
+    requiresUserInput?: boolean;
+  },
 ) => void;
 
 export type MarkSessionIdle = (
@@ -50,6 +57,7 @@ const sessionActivityMapsMatch = (
       !rightActivity
       || leftActivity.statusText !== rightActivity.statusText
       || leftActivity.canInterrupt !== rightActivity.canInterrupt
+      || leftActivity.requiresUserInput !== rightActivity.requiresUserInput
       || leftActivity.startedAt !== rightActivity.startedAt
     ) {
       return false;
@@ -63,19 +71,25 @@ const sessionActivityMapsMatch = (
 export function applySessionProcessing(
   previous: ReadonlyMap<string, SessionActivity>,
   sessionId: string,
-  activity: { statusText?: string | null; canInterrupt?: boolean } = {},
+  activity: {
+    statusText?: string | null;
+    canInterrupt?: boolean;
+    requiresUserInput?: boolean;
+  } = {},
   now = Date.now(),
 ): Map<string, SessionActivity> {
   const existing = previous.get(sessionId);
   const next: SessionActivity = {
     statusText: activity.statusText !== undefined ? activity.statusText : existing?.statusText ?? null,
     canInterrupt: activity.canInterrupt ?? existing?.canInterrupt ?? true,
+    requiresUserInput: activity.requiresUserInput ?? existing?.requiresUserInput ?? false,
     startedAt: existing?.startedAt ?? now,
   };
   if (
     existing
     && existing.statusText === next.statusText
     && existing.canInterrupt === next.canInterrupt
+    && existing.requiresUserInput === next.requiresUserInput
   ) {
     return previous as Map<string, SessionActivity>;
   }
@@ -166,6 +180,7 @@ export function useSessionProtection() {
           statusText:
             snapshot.statusText !== undefined ? snapshot.statusText : existing?.statusText ?? null,
           canInterrupt: snapshot.canInterrupt ?? existing?.canInterrupt ?? true,
+          requiresUserInput: snapshot.requiresUserInput ?? existing?.requiresUserInput ?? false,
           startedAt: snapshotStartedAt ?? existing?.startedAt ?? now,
         });
       }

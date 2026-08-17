@@ -245,7 +245,6 @@ export function initializeVoiceSecrets(): Promise<boolean> {
 }
 
 async function persistVoiceConfig(config: VoiceConfig): Promise<void> {
-  writePublicVoiceConfig(config);
   const secretsChanged = config.apiKey !== secureSecrets.apiKey
     || config.sonioxApiKey !== secureSecrets.sonioxApiKey;
   if (secretsChanged) {
@@ -260,7 +259,35 @@ async function persistVoiceConfig(config: VoiceConfig): Promise<void> {
     }
     secureSecrets = readBack;
   }
+  writePublicVoiceConfig(config);
   window.dispatchEvent(new Event(VOICE_CONFIG_SYNC_EVENT));
+}
+
+function mergeVoiceConfig(base: VoiceConfig, patch: Partial<VoiceConfig>): VoiceConfig {
+  return {
+    ...base,
+    ...patch,
+    ...(patch.sttPrompt !== undefined ? { sttPrompt: normalizeSttPrompt(patch.sttPrompt) } : {}),
+    ...(patch.sttLanguages !== undefined
+      ? { sttLanguages: normalizeSttLanguages(patch.sttLanguages) }
+      : {}),
+    ...(patch.sttTerms !== undefined ? { sttTerms: normalizeSttTerms(patch.sttTerms) } : {}),
+    ...(patch.cleanupProviderProfileId !== undefined
+      ? { cleanupProviderProfileId: normalizeCleanupProviderProfileId(patch.cleanupProviderProfileId) }
+      : {}),
+    ...(patch.cleanupModel !== undefined ? { cleanupModel: readCleanupModel(patch.cleanupModel) } : {}),
+    ...(patch.cleanupPrompt !== undefined
+      ? { cleanupPrompt: normalizeCleanupInstructions(patch.cleanupPrompt, DEFAULT_CLEANUP_PROMPT) }
+      : {}),
+  };
+}
+
+/** Commits an explicit Voice draft through the existing secure Desktop path. */
+export async function saveVoiceConfigPatch(patch: Partial<VoiceConfig>): Promise<VoiceConfig> {
+  await initializeVoiceSecrets();
+  const next = mergeVoiceConfig(readVoiceConfig(), patch);
+  await persistVoiceConfig(next);
+  return next;
 }
 
 // Headers the voice proxy reads to target a per-user OpenAI-compatible backend.
@@ -321,22 +348,7 @@ export function useVoiceConfig() {
   }, []);
 
   const update = useCallback((patch: Partial<VoiceConfig>) => {
-      const next: VoiceConfig = {
-        ...configRef.current,
-        ...patch,
-        ...(patch.sttPrompt !== undefined ? { sttPrompt: normalizeSttPrompt(patch.sttPrompt) } : {}),
-        ...(patch.sttLanguages !== undefined
-          ? { sttLanguages: normalizeSttLanguages(patch.sttLanguages) }
-          : {}),
-        ...(patch.sttTerms !== undefined ? { sttTerms: normalizeSttTerms(patch.sttTerms) } : {}),
-        ...(patch.cleanupProviderProfileId !== undefined
-          ? { cleanupProviderProfileId: normalizeCleanupProviderProfileId(patch.cleanupProviderProfileId) }
-          : {}),
-        ...(patch.cleanupModel !== undefined ? { cleanupModel: readCleanupModel(patch.cleanupModel) } : {}),
-        ...(patch.cleanupPrompt !== undefined
-          ? { cleanupPrompt: normalizeCleanupInstructions(patch.cleanupPrompt, DEFAULT_CLEANUP_PROMPT) }
-          : {}),
-      };
+      const next = mergeVoiceConfig(configRef.current, patch);
       configRef.current = next;
       setConfig(next);
       saveSnapshot(next);

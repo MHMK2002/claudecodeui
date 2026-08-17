@@ -13,6 +13,7 @@ const catalog: ProviderSelectionCatalog = {
   providers: [{
     provider: 'claude',
     available: true,
+    connectionAvailable: false,
     unavailableReason: null,
     profiles: [{ id: 4, title: 'Local', isDefault: true }],
     models: { OPTIONS: [{ value: 'sonnet', label: 'Sonnet' }], DEFAULT: 'sonnet' },

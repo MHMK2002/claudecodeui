@@ -14,6 +14,36 @@ function formatToolResultContent(content: unknown): string {
   return toolUseErrorMatch ? toolUseErrorMatch[1] : text;
 }
 
+function getInlineCodexToolResult(msg: NormalizedMessage): {
+  content: string;
+  isError: boolean;
+  toolUseResult?: unknown;
+} | null {
+  if (msg.provider !== 'codex') {
+    return null;
+  }
+
+  const status = msg.status?.trim().toLowerCase().replace(/-/g, '_');
+  if (status === 'running' || status === 'in_progress') {
+    return null;
+  }
+
+  // The Codex runtime forwards tool_use only from SDK item.completed events.
+  // Unlike Claude, that terminal event carries status/output inline and does
+  // not have a separate tool_result row to pair with the tool invocation.
+  const isError = Boolean(msg.error)
+    || (typeof msg.exitCode === 'number' && msg.exitCode !== 0)
+    || status === 'failed'
+    || status === 'error';
+  const content = msg.output ?? msg.result ?? msg.error ?? '';
+
+  return {
+    content: formatToolResultContent(content),
+    isError,
+    toolUseResult: msg.result,
+  };
+}
+
 type ParsedTaskNotification = {
   status: string;
   summary: string;
@@ -172,7 +202,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
               isError: Boolean(tr.isError),
               toolUseResult: (tr as any).toolUseResult,
             }
-          : null;
+          : getInlineCodexToolResult(msg);
 
         converted.push({
           type: 'assistant',

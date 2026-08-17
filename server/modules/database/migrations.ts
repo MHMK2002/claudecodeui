@@ -526,6 +526,17 @@ export const runMigrations = (db: Database) => {
 
     addColumnToTableIfNotExists(db, 'users', userColumnNames, 'git_name', 'TEXT');
     addColumnToTableIfNotExists(db, 'users', userColumnNames, 'git_email', 'TEXT');
+    addColumnToTableIfNotExists(db, 'users', userColumnNames, 'commit_message_provider', 'TEXT');
+    addColumnToTableIfNotExists(
+      db,
+      'users',
+      userColumnNames,
+      'commit_message_provider_profile_id',
+      'INTEGER'
+    );
+    addColumnToTableIfNotExists(db, 'users', userColumnNames, 'commit_message_model', 'TEXT');
+    addColumnToTableIfNotExists(db, 'users', userColumnNames, 'commit_message_effort', 'TEXT');
+    addColumnToTableIfNotExists(db, 'users', userColumnNames, 'commit_message_base_prompt', 'TEXT');
     addColumnToTableIfNotExists(
       db,
       'users',
