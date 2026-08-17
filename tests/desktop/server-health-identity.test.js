@@ -23,6 +23,37 @@ async function reservePort() {
   });
 }
 
+function hasExited(child) {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+async function waitForExit(child, timeoutMs) {
+  if (hasExited(child)) return true;
+
+  return new Promise((resolve) => {
+    const onExit = () => {
+      clearTimeout(timeout);
+      resolve(true);
+    };
+    const timeout = setTimeout(() => {
+      child.off('exit', onExit);
+      resolve(false);
+    }, timeoutMs);
+    timeout.unref();
+    child.once('exit', onExit);
+  });
+}
+
+async function stopChild(child) {
+  if (hasExited(child)) return;
+
+  child.kill('SIGTERM');
+  if (await waitForExit(child, 5_000)) return;
+
+  child.kill('SIGKILL');
+  assert.equal(await waitForExit(child, 5_000), true, 'health server did not exit');
+}
+
 async function readHealthFromServer(t, {
   command,
   args,
@@ -32,7 +63,6 @@ async function readHealthFromServer(t, {
   expectDirectPid = true,
 }) {
   const homeDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'cloudcli-health-home-'));
-  t.after(() => fs.rm(homeDirectory, { recursive: true, force: true }));
   const port = await reservePort();
   let output = '';
   const child = spawn(command, args, {
@@ -50,8 +80,14 @@ async function readHealthFromServer(t, {
   });
   child.stdout.on('data', (chunk) => { output += String(chunk); });
   child.stderr.on('data', (chunk) => { output += String(chunk); });
-  t.after(() => {
-    if (child.exitCode === null) child.kill('SIGTERM');
+  t.after(async () => {
+    await stopChild(child);
+    await fs.rm(homeDirectory, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
   });
 
   const deadline = Date.now() + 20_000;
