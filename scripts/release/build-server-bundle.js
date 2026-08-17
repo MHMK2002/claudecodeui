@@ -237,7 +237,7 @@ await fs.rm(archivePath, { force: true });
 // rejects every link and special entry.
 try {
   await fs.cp(stageDir, archiveStageDir, { recursive: true, dereference: true });
-  await run('tar', ['-czf', archivePath, '-C', archiveStageDir, '.']);
+  await run('tar', ['-czf', archivePath, '-C', archiveStageDir, '.'], { shell: false });
 } finally {
   await fs.rm(archiveStageDir, { recursive: true, force: true });
 }

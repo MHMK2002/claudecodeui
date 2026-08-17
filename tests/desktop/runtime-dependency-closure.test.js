@@ -112,3 +112,14 @@ test('the separate local-server bundle excludes the Electron-only updater', asyn
   );
   assert.match(source, /delete stagedPackageJson\.dependencies\['electron-updater'\]/);
 });
+
+test('server bundle archives Windows drive paths without shell parsing', async () => {
+  const source = await readFile(
+    new URL('../../scripts/release/build-server-bundle.js', import.meta.url),
+    'utf8',
+  );
+  assert.match(
+    source,
+    /await run\('tar', \['-czf', archivePath, '-C', archiveStageDir, '\.'\], \{ shell: false \}\)/,
+  );
+});
