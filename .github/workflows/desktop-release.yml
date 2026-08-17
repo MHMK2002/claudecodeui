@@ -14,6 +14,14 @@ on:
         description: "Exact commit SHA that the tag and every build must use"
         required: true
         type: string
+      release_mode:
+        description: "Signing policy: production credentials or repository-managed internal certificates"
+        required: true
+        default: production
+        type: choice
+        options:
+          - production
+          - internal
 
 permissions:
   contents: read
@@ -37,6 +45,7 @@ jobs:
       sha: ${{ steps.release.outputs.sha }}
       build_id: ${{ steps.release.outputs.build_id }}
       release_date: ${{ steps.release.outputs.release_date }}
+      release_mode: ${{ steps.release.outputs.release_mode }}
     steps:
       - name: Checkout repository history
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -51,12 +60,19 @@ jobs:
         env:
           DISPATCH_TAG: ${{ inputs.tag }}
           DISPATCH_EXPECTED_SHA: ${{ inputs.expected_sha }}
+          DISPATCH_RELEASE_MODE: ${{ inputs.release_mode }}
+          DEFAULT_RELEASE_MODE: ${{ vars.DESKTOP_RELEASE_MODE }}
           REF_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           TAG="${DISPATCH_TAG:-$REF_TAG}"
+          RELEASE_MODE="${DISPATCH_RELEASE_MODE:-${DEFAULT_RELEASE_MODE:-production}}"
           if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Desktop releases require a stable vMAJOR.MINOR.PATCH tag." >&2
+            exit 1
+          fi
+          if [[ "$RELEASE_MODE" != "production" && "$RELEASE_MODE" != "internal" ]]; then
+            echo "Desktop release mode must be production or internal." >&2
             exit 1
           fi
           if [ -n "$DISPATCH_EXPECTED_SHA" ]; then
@@ -90,6 +106,7 @@ jobs:
             echo "sha=$SHA"
             echo "build_id=$VERSION-$SHA"
             echo "release_date=$RELEASE_DATE"
+            echo "release_mode=$RELEASE_MODE"
           } >> "$GITHUB_OUTPUT"
 
       - name: Require successful CI for pinned release commit
@@ -189,10 +206,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
-      - name: Require macOS signing and notarization credentials
+      - name: Require macOS signing credentials
         if: matrix.signing == 'mac'
         shell: bash
         env:
+          RELEASE_MODE: ${{ needs.resolve.outputs.release_mode }}
           CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -202,9 +220,11 @@ jobs:
           set -euo pipefail
           test -n "$CSC_LINK"
           test -n "$CSC_KEY_PASSWORD"
-          test -n "$APPLE_ID"
-          test -n "$APPLE_APP_SPECIFIC_PASSWORD"
-          test -n "$APPLE_TEAM_ID"
+          if [ "$RELEASE_MODE" = "production" ]; then
+            test -n "$APPLE_ID"
+            test -n "$APPLE_APP_SPECIFIC_PASSWORD"
+            test -n "$APPLE_TEAM_ID"
+          fi
 
       - name: Require Windows signing credentials
         if: matrix.signing == 'windows'
@@ -217,12 +237,48 @@ jobs:
           test -n "$CSC_LINK"
           test -n "$CSC_KEY_PASSWORD"
 
+      - name: Trust internal macOS signing certificate
+        if: matrix.signing == 'mac' && needs.resolve.outputs.release_mode == 'internal'
+        shell: bash
+        env:
+          MACOS_CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
+          MACOS_CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          P12_PATH="$RUNNER_TEMP/cloudcli-internal-macos.p12"
+          CERT_PATH="$RUNNER_TEMP/cloudcli-internal-macos.pem"
+          node -e 'require("node:fs").writeFileSync(process.argv[1], Buffer.from(process.env.MACOS_CSC_LINK, "base64"))' "$P12_PATH"
+          openssl pkcs12 -legacy -in "$P12_PATH" -clcerts -nokeys -passin env:MACOS_CSC_KEY_PASSWORD -out "$CERT_PATH"
+          security add-trusted-cert -r trustRoot -p codeSign -k "$HOME/Library/Keychains/login.keychain-db" "$CERT_PATH"
+          rm -f "$P12_PATH" "$CERT_PATH"
+
+      - name: Trust internal Windows signing certificate
+        if: matrix.signing == 'windows' && needs.resolve.outputs.release_mode == 'internal'
+        shell: pwsh
+        env:
+          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'cloudcli-internal-windows.pfx'
+          $cerPath = Join-Path $env:RUNNER_TEMP 'cloudcli-internal-windows.cer'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_CSC_LINK))
+          $password = ConvertTo-SecureString $env:WINDOWS_CSC_KEY_PASSWORD -AsPlainText -Force
+          $certificate = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $password -Exportable
+          if (-not $certificate) { throw 'Internal Windows signing certificate import failed.' }
+          Export-Certificate -Cert $certificate -FilePath $cerPath -Force | Out-Null
+          Import-Certificate -FilePath $cerPath -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
+          Import-Certificate -FilePath $cerPath -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
+          Remove-Item $pfxPath -Force
+
       - name: Build signed desktop distribution
         shell: bash
         env:
           CLOUDCLI_BUILD_ID: ${{ needs.resolve.outputs.build_id }}
           CLOUDCLI_BUNDLE_PLATFORM: ${{ matrix.bundle_platform }}
           CLOUDCLI_BUNDLE_ARCH: ${{ matrix.arch }}
+          CLOUDCLI_RELEASE_MODE: ${{ needs.resolve.outputs.release_mode }}
           CSC_LINK: ${{ matrix.signing == 'mac' && secrets.MACOS_CSC_LINK || matrix.signing == 'windows' && secrets.WINDOWS_CSC_LINK || '' }}
           CSC_KEY_PASSWORD: ${{ matrix.signing == 'mac' && secrets.MACOS_CSC_KEY_PASSWORD || matrix.signing == 'windows' && secrets.WINDOWS_CSC_KEY_PASSWORD || '' }}
           APPLE_ID: ${{ matrix.signing == 'mac' && secrets.APPLE_ID || '' }}
@@ -231,7 +287,7 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: ${{ matrix.signing == 'none' && 'false' || 'true' }}
         run: npm run "desktop:dist:${{ matrix.script }}" -- --${{ matrix.arch }} --publish never
 
-      - name: Verify macOS signature and notarization ticket
+      - name: Verify macOS signature
         if: matrix.signing == 'mac'
         shell: bash
         run: |
@@ -239,6 +295,12 @@ jobs:
           APP_PATH="$(find release/desktop -type d -name '*.app' -print -quit)"
           test -n "$APP_PATH"
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+      - name: Verify macOS notarization ticket
+        if: matrix.signing == 'mac' && needs.resolve.outputs.release_mode == 'production'
+        shell: bash
+        run: |
+          set -euo pipefail
           while IFS= read -r -d '' artifact; do
             xcrun stapler validate "$artifact"
           done < <(find release/desktop -maxdepth 1 -type f -name '*.dmg' -print0)
@@ -398,6 +460,29 @@ jobs:
           name: updater-metadata-merged
           path: updater-metadata
 
+      - name: Add internal trust certificates and installation guide
+        if: needs.resolve.outputs.release_mode == 'internal'
+        shell: bash
+        env:
+          MACOS_CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
+          MACOS_CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
+          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$MACOS_CSC_LINK"
+          test -n "$MACOS_CSC_KEY_PASSWORD"
+          test -n "$WINDOWS_CSC_LINK"
+          test -n "$WINDOWS_CSC_KEY_PASSWORD"
+          printf '%s' "$MACOS_CSC_LINK" | base64 --decode > "$RUNNER_TEMP/cloudcli-internal-macos.p12"
+          printf '%s' "$WINDOWS_CSC_LINK" | base64 --decode > "$RUNNER_TEMP/cloudcli-internal-windows.pfx"
+          openssl pkcs12 -legacy -in "$RUNNER_TEMP/cloudcli-internal-macos.p12" -clcerts -nokeys -passin env:MACOS_CSC_KEY_PASSWORD -out "$RUNNER_TEMP/cloudcli-internal-macos.pem"
+          openssl pkcs12 -legacy -in "$RUNNER_TEMP/cloudcli-internal-windows.pfx" -clcerts -nokeys -passin env:WINDOWS_CSC_KEY_PASSWORD -out "$RUNNER_TEMP/cloudcli-internal-windows.pem"
+          openssl x509 -in "$RUNNER_TEMP/cloudcli-internal-macos.pem" -outform der -out release-assets/cloudcli-internal-macos.cer
+          openssl x509 -in "$RUNNER_TEMP/cloudcli-internal-windows.pem" -outform der -out release-assets/cloudcli-internal-windows.cer
+          cp docs/INTERNAL_DESKTOP_INSTALL.md release-assets/
+          rm -f "$RUNNER_TEMP"/cloudcli-internal-*.p12 "$RUNNER_TEMP"/cloudcli-internal-*.pfx "$RUNNER_TEMP"/cloudcli-internal-*.pem
+
       - name: Verify updater hashes and release completeness
         shell: bash
         env:
@@ -418,6 +503,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.resolve.outputs.tag }}
           SHA: ${{ needs.resolve.outputs.sha }}
+          RELEASE_MODE: ${{ needs.resolve.outputs.release_mode }}
         run: |
           set -euo pipefail
           git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
@@ -428,7 +514,11 @@ jobs:
               exit 1
             }
           else
-            gh release create "$TAG" --verify-tag --draft --title "CloudCLI v${TAG#v}"
+            if [ "$RELEASE_MODE" = "internal" ]; then
+              gh release create "$TAG" --verify-tag --draft --title "CloudCLI v${TAG#v} (Internal Self-Signed)" --notes-file docs/INTERNAL_DESKTOP_INSTALL.md
+            else
+              gh release create "$TAG" --verify-tag --draft --title "CloudCLI v${TAG#v}"
+            fi
           fi
 
           mapfile -t EXISTING_ASSETS < <(gh release view "$TAG" --json assets --jq '.assets[].name')

@@ -14,6 +14,10 @@ const desktopReleaseWorkflow = await readFile(
   new URL('../../.github/workflows/desktop-release.yml', import.meta.url),
   'utf8',
 );
+const desktopStageScript = await readFile(
+  new URL('../../scripts/release/prepare-desktop-app.js', import.meta.url),
+  'utf8',
+);
 const ciGateScript = await readFile(
   new URL('../../scripts/release/require-ci-success.mjs', import.meta.url),
   'utf8',
@@ -103,6 +107,28 @@ test('Desktop Release pins both entry paths and revalidates after a bounded CI w
   for (const checkout of checkoutRefs.slice(1)) {
     assert.match(checkout, /ref: \$\{\{ needs\.resolve\.outputs\.sha \}\}/);
   }
+});
+
+test('internal Desktop releases preserve production signing gates and publish trust material', () => {
+  assert.match(desktopReleaseWorkflow, /release_mode:[\s\S]*type: choice[\s\S]*- production[\s\S]*- internal/);
+  assert.match(desktopReleaseWorkflow, /DEFAULT_RELEASE_MODE: \$\{\{ vars\.DESKTOP_RELEASE_MODE \}\}/);
+  assert.match(desktopReleaseWorkflow, /RELEASE_MODE="\$\{DISPATCH_RELEASE_MODE:-\$\{DEFAULT_RELEASE_MODE:-production\}\}"/);
+  assert.match(desktopReleaseWorkflow, /release_mode=\$RELEASE_MODE/);
+  assert.match(desktopReleaseWorkflow, /CLOUDCLI_RELEASE_MODE: \$\{\{ needs\.resolve\.outputs\.release_mode \}\}/);
+
+  assert.match(desktopReleaseWorkflow, /Require macOS signing credentials[\s\S]*test -n "\$CSC_LINK"[\s\S]*if \[ "\$RELEASE_MODE" = "production" \]/);
+  assert.match(desktopReleaseWorkflow, /Trust internal macOS signing certificate[\s\S]*security add-trusted-cert -r trustRoot -p codeSign/);
+  assert.match(desktopReleaseWorkflow, /Trust internal Windows signing certificate/);
+  assert.match(desktopReleaseWorkflow, /needs\.resolve\.outputs\.release_mode == 'internal'/);
+  assert.match(desktopReleaseWorkflow, /Add internal trust certificates and installation guide/);
+  assert.match(desktopReleaseWorkflow, /cloudcli-internal-macos\.cer/);
+  assert.match(desktopReleaseWorkflow, /cloudcli-internal-windows\.cer/);
+  assert.match(desktopReleaseWorkflow, /INTERNAL_DESKTOP_INSTALL\.md/);
+
+  assert.match(desktopStageScript, /CLOUDCLI_RELEASE_MODE === 'internal'/);
+  assert.match(desktopStageScript, /notarize: false/);
+  assert.match(desktopStageScript, /identity: 'CloudCLI Internal'/);
+  assert.match(releaseWorkflow, /-f "release_mode=production"/);
 });
 
 test('CI gate implementation never writes or embeds its token in output', () => {

@@ -171,4 +171,5 @@ jobs:
           gh workflow run desktop-release.yml \
             --ref "$RELEASE_TAG" \
             -f "tag=$RELEASE_TAG" \
-            -f "expected_sha=$FINAL_SHA"
+            -f "expected_sha=$FINAL_SHA" \
+            -f "release_mode=production"

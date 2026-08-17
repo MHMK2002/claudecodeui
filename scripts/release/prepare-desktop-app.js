@@ -25,6 +25,7 @@ const buildIdentity = await readBuildIdentityFile(canonicalIdentityPath, {
   expectedVersion: packageJson.version,
   source: 'Canonical Desktop staging build identity',
 });
+const isInternalRelease = process.env.CLOUDCLI_RELEASE_MODE === 'internal';
 const [canonicalIdentityBytes, distributionIdentityBytes] = await Promise.all([
   fs.readFile(canonicalIdentityPath),
   fs.readFile(distributionIdentityPath),
@@ -152,7 +153,13 @@ function buildDesktopPackageJson(copiedOptionalDependencies) {
       ],
       protocols: packageJson.build.protocols,
       publish: getGithubPublishConfiguration(),
-      mac: packageJson.build.mac,
+      mac: isInternalRelease
+        ? {
+            ...packageJson.build.mac,
+            notarize: false,
+            identity: 'CloudCLI Internal',
+          }
+        : packageJson.build.mac,
       win: packageJson.build.win,
       linux: packageJson.build.linux,
       nsis: packageJson.build.nsis,
