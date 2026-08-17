@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { ownsTaskRequest } from './taskRequestOwnership';
+import { hasTaskProjectChanged, ownsTaskRequest } from './taskRequestOwnership';
+
+test('task state resets only when the selected project scope changes', () => {
+  assert.equal(hasTaskProjectChanged('project-a', 'project-a'), false);
+  assert.equal(hasTaskProjectChanged('project-a', 'project-b'), true);
+  assert.equal(hasTaskProjectChanged('project-a', null), true);
+  assert.equal(hasTaskProjectChanged(null, 'project-a'), true);
+  assert.equal(hasTaskProjectChanged(null, null), false);
+});
 
 test('task request applies only to the latest generation of the same project', () => {
   assert.equal(ownsTaskRequest(3, 3, 'project-a', 'project-a'), true);

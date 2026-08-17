@@ -13,7 +13,7 @@ import type {
   TaskMasterTask,
   TaskMasterWebSocketMessage,
 } from '../types';
-import { ownsTaskRequest } from './taskRequestOwnership';
+import { hasTaskProjectChanged, ownsTaskRequest } from './taskRequestOwnership';
 
 const TaskMasterContext = createContext<TaskMasterContextValue | null>(null);
 
@@ -177,17 +177,20 @@ export function TaskMasterProvider({ children }: { children: React.ReactNode }) 
     (project: TaskMasterProjectInput) => {
       const normalizedProject = project ? enrichProject(project as TaskMasterProject) : null;
       const nextProjectId = normalizedProject?.projectId ?? null;
-      if (currentProjectIdRef.current !== nextProjectId) {
+      const projectChanged = hasTaskProjectChanged(currentProjectIdRef.current, nextProjectId);
+      if (projectChanged) {
         currentProjectIdRef.current = nextProjectId;
         tasksRequestSeqRef.current += 1;
+
+        // Preserve loaded tasks when the same project is re-synchronized. The
+        // project-id effect will not refetch in that case, so clearing here
+        // would leave the next-task affordance empty until another refresh.
+        setTasks([]);
+        setNextTask(null);
+        setIsLoadingTasks(false);
       }
       setCurrentProjectState(normalizedProject);
       setProjectTaskMaster(normalizedProject?.taskmaster ?? null);
-
-      // Project-scoped task data is reset immediately to avoid stale task rendering.
-      setTasks([]);
-      setNextTask(null);
-      setIsLoadingTasks(false);
       setError(null);
 
       // `projectId` is the DB primary key used for every TaskMaster API call.
