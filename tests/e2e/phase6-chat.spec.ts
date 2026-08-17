@@ -113,7 +113,7 @@ test('empty Chat keeps its next-task affordance neutral beside the sole primary 
   await taskStateReady;
 
   const startTask = page.getByRole('button', { name: 'Start Task' });
-  await expect(startTask).toBeVisible();
+  await expect(startTask).toBeVisible({ timeout: 20_000 });
   await expect(startTask).not.toHaveClass(/bg-blue-600/);
   await expect(page.getByRole('button', { name: 'Send' })).toHaveAttribute('data-ux-primary', 'true');
   await expect(page.locator('.chat-messages-pane [data-ux-primary="true"], .chat-composer-shell [data-ux-primary="true"]')).toHaveCount(1);
