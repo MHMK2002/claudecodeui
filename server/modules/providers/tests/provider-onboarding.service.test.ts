@@ -9,12 +9,16 @@ import type {
 } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
-function publicProfile(provider: ProviderProfileProvider): ProviderProfilePublic {
+function publicProfile(
+  provider: ProviderProfileProvider,
+  title = 'Default Main',
+  baseUrl: string | null = provider === 'codex' ? 'https://api.openai.com/v1' : null,
+): ProviderProfilePublic {
   return {
     id: 7,
     provider,
-    title: 'Default Main',
-    baseUrl: provider === 'codex' ? 'https://api.openai.com/v1' : null,
+    title,
+    baseUrl,
     authType: 'api_key',
     isDefault: true,
     isActive: true,
@@ -24,12 +28,17 @@ function publicProfile(provider: ProviderProfileProvider): ProviderProfilePublic
   };
 }
 
-test('verifies Claude before storing a write-only Default Main profile', async () => {
+test('verifies Claude against a custom Base URL before storing the titled write-only profile', async () => {
   const fetches: Array<{ url: string; init?: RequestInit }> = [];
   const writes: Array<{
     userId: number;
     provider: ProviderProfileProvider;
-    input: { baseUrl: string | null; authType: ProviderProfileAuthType; secretValue: string };
+    input: {
+      title: string;
+      baseUrl: string | null;
+      authType: ProviderProfileAuthType;
+      secretValue: string;
+    };
   }> = [];
   const service = createProviderOnboardingService({
     runtimeMode: 'desktop-local',
@@ -38,9 +47,9 @@ test('verifies Claude before storing a write-only Default Main profile', async (
       return new Response('{}', { status: 200 });
     },
     profiles: {
-      upsertDefaultMainProviderProfile(userId, provider, input) {
+      upsertDefaultProviderProfile(userId, provider, input) {
         writes.push({ userId, provider, input });
-        return publicProfile(provider);
+        return publicProfile(provider, input.title, input.baseUrl);
       },
     },
   });
@@ -49,16 +58,23 @@ test('verifies Claude before storing a write-only Default Main profile', async (
     userId: 12,
     provider: 'claude',
     token: 'sk-ant-api-secret',
+    title: 'Work Gateway',
+    baseUrl: 'https://gateway.example/anthropic/',
   });
 
-  assert.equal(fetches[0]?.url, 'https://api.anthropic.com/v1/models?limit=1');
+  assert.equal(fetches[0]?.url, 'https://gateway.example/anthropic/v1/models?limit=1');
   assert.equal(new Headers(fetches[0]?.init?.headers).get('x-api-key'), 'sk-ant-api-secret');
   assert.deepEqual(writes, [{
     userId: 12,
     provider: 'claude',
-    input: { baseUrl: null, authType: 'api_key', secretValue: 'sk-ant-api-secret' },
+    input: {
+      title: 'Work Gateway',
+      baseUrl: 'https://gateway.example/anthropic',
+      authType: 'api_key',
+      secretValue: 'sk-ant-api-secret',
+    },
   }]);
-  assert.equal(profile.title, 'Default Main');
+  assert.equal(profile.title, 'Work Gateway');
   assert.equal('secretValue' in profile, false);
 });
 
@@ -72,18 +88,25 @@ test('uses the official Codex API profile after bearer verification', async () =
       return new Response('{}', { status: 200 });
     },
     profiles: {
-      upsertDefaultMainProviderProfile(userId, provider, input) {
+      upsertDefaultProviderProfile(userId, provider, input) {
         write = { userId, provider, input };
         return publicProfile(provider);
       },
     },
   });
 
-  await service.connectToken({ userId: 3, provider: 'codex', token: 'codex-secret' });
+  await service.connectToken({
+    userId: 3,
+    provider: 'codex',
+    token: 'codex-secret',
+    title: '',
+    baseUrl: null,
+  });
   assert.deepEqual(write, {
     userId: 3,
     provider: 'codex',
     input: {
+      title: 'Default Main',
       baseUrl: 'https://api.openai.com/v1',
       authType: 'api_key',
       secretValue: 'codex-secret',
@@ -97,7 +120,7 @@ test('invalid and unavailable verification never writes a profile or echoes the 
     runtimeMode: 'desktop-local',
     fetchFn,
     profiles: {
-      upsertDefaultMainProviderProfile() {
+      upsertDefaultProviderProfile() {
         writes += 1;
         return publicProfile('claude');
       },
@@ -138,7 +161,7 @@ test('rejects token onboarding outside Desktop local without verification or per
       return new Response('{}', { status: 200 });
     },
     profiles: {
-      upsertDefaultMainProviderProfile() {
+      upsertDefaultProviderProfile() {
         writes += 1;
         return publicProfile('claude');
       },

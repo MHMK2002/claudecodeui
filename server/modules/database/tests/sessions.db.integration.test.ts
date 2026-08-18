@@ -193,3 +193,27 @@ test('repository reads normalize SQLite UTC timestamps to ISO strings', async ()
     assert.match(row?.updated_at ?? '', /^\d{4}-\d{2}-\d{2}T/);
   });
 });
+
+test('provider profile binding is atomic and never overwrites an established session binding', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createSession('external-session', 'claude', '/workspace/demo-project');
+
+    assert.equal(
+      sessionsDb.bindProviderProfileIfUnassigned('external-session', 'claude', 41),
+      41,
+    );
+    assert.equal(
+      sessionsDb.bindProviderProfileIfUnassigned('external-session', 'claude', 99),
+      41,
+    );
+    assert.equal(
+      sessionsDb.bindProviderProfileIfUnassigned('external-session', 'codex', 72),
+      null,
+    );
+    assert.equal(sessionsDb.getSessionById('external-session')?.provider_profile_id, 41);
+    assert.equal(
+      sessionsDb.getSessionById('external-session')?.provider_session_id,
+      'external-session',
+    );
+  });
+});

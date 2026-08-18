@@ -3,6 +3,7 @@ import {
   Check,
   CheckCircle2,
   ChevronLeft,
+  ChevronDown,
   Eye,
   EyeOff,
   KeyRound,
@@ -127,6 +128,9 @@ export default function DesktopFirstRunSetup() {
   const [connectMethod, setConnectMethod] = useState<'interactive' | 'token'>('interactive');
   const [showTerminal, setShowTerminal] = useState(false);
   const [showToken, setShowToken] = useState(false);
+  const [agentTitle, setAgentTitle] = useState('Default Main');
+  const [baseUrl, setBaseUrl] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const providerTokenRef = useRef<HTMLInputElement>(null);
   const [hasProviderToken, setHasProviderToken] = useState(false);
   const [connectBusy, setConnectBusy] = useState(false);
@@ -219,6 +223,9 @@ export default function DesktopFirstRunSetup() {
     setConnectMethod('interactive');
     setHasProviderToken(false);
     setShowToken(false);
+    setAgentTitle('Default Main');
+    setBaseUrl('');
+    setShowAdvanced(false);
     setConnectError(null);
     setShowTerminal(false);
     setStep('connect');
@@ -238,6 +245,7 @@ export default function DesktopFirstRunSetup() {
     provider: LLMProvider,
     method: 'interactive' | 'token',
     profileId: number | null,
+    providerTitle?: string,
   ) => {
     if (profileId !== null) {
       markDefaultProviderSelectionPendingCatalog(provider, profileId);
@@ -248,7 +256,7 @@ export default function DesktopFirstRunSetup() {
     invalidateProviderSelectionCatalog();
     setHasProviderToken(false);
     setShowToken(false);
-    setProviderOutcome({ status: 'connected', provider, method });
+    setProviderOutcome({ status: 'connected', provider, method, providerTitle });
     setStep('voice');
   };
 
@@ -260,7 +268,14 @@ export default function DesktopFirstRunSetup() {
     try {
       const response = await authenticatedFetch(
         `/api/providers/${selectedProvider}/onboarding-token`,
-        { method: 'POST', body: JSON.stringify({ token }) },
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            token,
+            title: agentTitle.trim(),
+            baseUrl: baseUrl.trim(),
+          }),
+        },
       );
       const payload = await response.json().catch(() => null) as ProviderTokenResponse | null;
       const profile = payload?.data?.profile;
@@ -269,7 +284,7 @@ export default function DesktopFirstRunSetup() {
       }
       if (providerTokenRef.current) providerTokenRef.current.value = '';
       setHasProviderToken(false);
-      finishProviderConnection(selectedProvider, 'token', profile.id);
+      finishProviderConnection(selectedProvider, 'token', profile.id, profile.title);
       window.dispatchEvent(new CustomEvent(`${selectedProvider}-provider-profiles-updated`, {
         detail: { preferredProfileId: profile.id },
       }));
@@ -458,8 +473,52 @@ export default function DesktopFirstRunSetup() {
               <p className="font-medium text-foreground">Encrypted provider profile</p>
             </div>
             <p className="text-sm text-muted-foreground">
-              After verification this is stored in the existing encrypted profile vault as <strong className="text-foreground">Default Main</strong>.
+              After verification this is stored in the existing encrypted profile vault with the title you choose.
             </p>
+            <label htmlFor="desktop-provider-agent-title" className="block space-y-1">
+              <span className="text-sm font-medium text-foreground">Agent Title</span>
+              <input
+                id="desktop-provider-agent-title"
+                value={agentTitle}
+                onChange={(event) => {
+                  setAgentTitle(event.target.value);
+                  setConnectError(null);
+                }}
+                className={fieldClass}
+                placeholder="Default Main"
+                autoComplete="off"
+              />
+            </label>
+            <div className="rounded-lg border border-border/70 bg-muted/20">
+              <button
+                type="button"
+                className="flex min-h-11 w-full items-center justify-between px-3 text-left text-sm font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-expanded={showAdvanced}
+                onClick={() => setShowAdvanced((value) => !value)}
+              >
+                <span>Advanced</span>
+                <ChevronDown className={`h-4 w-4 transition-transform motion-reduce:transition-none ${showAdvanced ? 'rotate-180' : ''}`} aria-hidden="true" />
+              </button>
+              {showAdvanced && (
+                <div className="border-t border-border/70 p-3">
+                  <label htmlFor="desktop-provider-base-url" className="block space-y-1">
+                    <span className="text-sm font-medium text-foreground">Base URL <span className="font-normal text-muted-foreground">(optional)</span></span>
+                    <input
+                      id="desktop-provider-base-url"
+                      value={baseUrl}
+                      onChange={(event) => {
+                        setBaseUrl(event.target.value);
+                        setConnectError(null);
+                      }}
+                      className={fieldClass}
+                      placeholder={selectedProvider === 'codex' ? 'https://openrouter.ai/api/v1' : 'https://openrouter.ai/api/anthropic'}
+                      inputMode="url"
+                      autoComplete="url"
+                    />
+                  </label>
+                </div>
+              )}
+            </div>
             <div className="block space-y-1">
               <label htmlFor="desktop-provider-token" className="text-sm font-medium text-foreground">Provider token</label>
               <span className="relative block">
@@ -696,7 +755,7 @@ export default function DesktopFirstRunSetup() {
             <p className="font-medium text-foreground">Provider</p>
             <p className="mt-1 text-sm text-muted-foreground">
               {providerOutcome.status === 'connected'
-                ? `${PROVIDER_LABELS[providerOutcome.provider]} connected with ${providerOutcome.method === 'token' ? 'Default Main' : 'the local CLI'}.`
+                ? `${PROVIDER_LABELS[providerOutcome.provider]} connected with ${providerOutcome.method === 'token' ? (providerOutcome.providerTitle || 'Default Main') : 'the local CLI'}.`
                 : 'Skipped — choose a provider when you need one.'}
             </p>
           </div>

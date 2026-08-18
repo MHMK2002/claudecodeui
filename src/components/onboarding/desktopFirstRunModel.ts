@@ -4,7 +4,12 @@ import type { LLMProvider } from '../../types/app';
 export type DesktopFirstRunStep = 'provider' | 'connect' | 'voice' | 'summary';
 export type ProviderSetupOutcome =
   | { status: 'skipped' }
-  | { status: 'connected'; provider: LLMProvider; method: 'interactive' | 'token' };
+  | {
+      status: 'connected';
+      provider: LLMProvider;
+      method: 'interactive' | 'token';
+      providerTitle?: string;
+    };
 export type VoiceSetupOutcome = 'skipped' | 'configured' | 'ready';
 
 export const DESKTOP_FIRST_RUN_STEPS: DesktopFirstRunStep[] = [

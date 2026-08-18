@@ -87,6 +87,21 @@
     "directories": {
       "output": "release/desktop"
     },
+    "electronLanguages": [
+      "en-US",
+      "fr",
+      "es",
+      "ko",
+      "zh-CN",
+      "zh_CN",
+      "zh-TW",
+      "zh_TW",
+      "ja",
+      "ru",
+      "de",
+      "tr",
+      "it"
+    ],
     "extraMetadata": {
       "main": "electron/main.js"
     },
@@ -281,10 +296,6 @@
   "lint-staged": {
     "src/**/*.{ts,tsx,js,jsx}": "eslint",
     "server/**/*.{js,ts}": "eslint"
-  },
-  "optionalDependencies": {
-    "@nut-tree-fork/nut-js": "^4.2.6",
-    "screenshot-desktop": "^1.15.4"
   },
   "volta": {
     "node": "22.22.3"

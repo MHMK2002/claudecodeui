@@ -291,10 +291,15 @@ export const providerProfilesDb = {
     ) as CodexProviderProfilePublic;
   },
 
-  upsertDefaultMainProviderProfile(
+  /**
+   * Persists the verified first-run token as the provider's active default.
+   * Consumers: provider-onboarding.service.ts and its repository tests.
+   */
+  upsertDefaultProviderProfile(
     userId: number,
     provider: ProviderProfileProvider,
     input: {
+      title: string;
       baseUrl: string | null;
       authType: ProviderProfileAuthType;
       secretValue: string;
@@ -307,11 +312,17 @@ export const providerProfilesDb = {
         .prepare(
           `SELECT id
            FROM provider_profiles
-           WHERE user_id = ? AND provider = ? AND title = ?
-           ORDER BY id ASC
+           WHERE user_id = ? AND provider = ? AND title IN (?, ?)
+           ORDER BY CASE WHEN title = ? THEN 0 ELSE 1 END, id ASC
            LIMIT 1`,
         )
-        .get(userId, provider, DEFAULT_MAIN_PROFILE_TITLE) as { id: number } | undefined;
+        .get(
+          userId,
+          provider,
+          input.title,
+          DEFAULT_MAIN_PROFILE_TITLE,
+          input.title,
+        ) as { id: number } | undefined;
 
       db.prepare(
         'UPDATE provider_profiles SET is_default = 0, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND provider = ?',
@@ -320,10 +331,11 @@ export const providerProfilesDb = {
       if (existing) {
         db.prepare(
           `UPDATE provider_profiles
-           SET base_url = ?, auth_type = ?, secret_value = ?, is_default = 1,
+           SET title = ?, base_url = ?, auth_type = ?, secret_value = ?, is_default = 1,
                is_active = 1, updated_at = CURRENT_TIMESTAMP
            WHERE id = ? AND user_id = ? AND provider = ?`,
         ).run(
+          input.title,
           input.baseUrl,
           input.authType,
           encryptedSecret,
@@ -342,7 +354,7 @@ export const providerProfilesDb = {
       ).run(
         userId,
         provider,
-        DEFAULT_MAIN_PROFILE_TITLE,
+        input.title,
         input.baseUrl,
         input.authType,
         encryptedSecret,
@@ -352,7 +364,7 @@ export const providerProfilesDb = {
 
     const profileId = upsert();
     const row = fetchProfileRow(userId, profileId, provider);
-    if (!row) throw new Error('Default Main provider profile could not be loaded.');
+    if (!row) throw new Error('Default provider profile could not be loaded.');
     return toPublicProfile(row);
   },
 

@@ -1,5 +1,7 @@
 import { BrowserView } from 'electron';
 
+import { buildLocalStartupHtml } from './startupPage.js';
+
 const TARGET_LOAD_TIMEOUT_MS = 20000;
 
 function escapeHtml(value) {
@@ -28,56 +30,6 @@ function buildPlaceholderHtml(title, message, logs = []) {
     `<div class="box"><span class="dot"></span><span>${escapeHtml(message || `Opening ${title}...`)}</span></div>`,
     logHtml,
     '</div>',
-  ].join('');
-}
-
-const LOCAL_STARTUP_STEPS = [
-  { id: 'starting-local-server', label: 'Starting local server' },
-  { id: 'checking-compatibility', label: 'Checking compatibility' },
-  { id: 'opening-workspace', label: 'Opening workspace' },
-];
-
-function buildLocalStartupHtml(title, stage, logs = []) {
-  const activeIndex = Math.max(
-    0,
-    LOCAL_STARTUP_STEPS.findIndex((step) => step.id === stage),
-  );
-  const steps = LOCAL_STARTUP_STEPS.map((step, index) => {
-    const state = index < activeIndex ? 'complete' : index === activeIndex ? 'current' : 'pending';
-    const status = state === 'complete' ? 'Complete' : state === 'current' ? 'In progress' : 'Waiting';
-    return `<li class="${state}"${state === 'current' ? ' aria-current="step"' : ''}>`
-      + `<span class="marker" aria-hidden="true">${state === 'complete' ? '✓' : index + 1}</span>`
-      + `<span class="step-copy"><strong>${escapeHtml(step.label)}</strong><small>${status}</small></span>`
-      + '</li>';
-  }).join('');
-  const logHtml = logs.length
-    ? `<pre>${logs.map(escapeHtml).join('\n')}</pre>`
-    : '<pre>Waiting for process output...</pre>';
-  return [
-    '<!doctype html><meta charset="utf-8">',
-    '<style>',
-    'html,body{margin:0;height:100%;background:#0a0a0a;color:#fafafa;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}',
-    'body{padding:28px;overflow:hidden}',
-    '.shell{height:100%;display:flex;flex-direction:column;gap:18px}',
-    'h1{margin:0;font-size:18px;line-height:1.3}',
-    '.stages{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:0;padding:0;list-style:none}',
-    '.stages li{display:flex;align-items:center;gap:10px;border:1px solid GrayText;border-radius:10px;padding:12px;color:GrayText}',
-    '.stages li.current{border-color:Highlight;color:CanvasText;background:ButtonFace}',
-    '.stages li.complete{color:CanvasText}',
-    '.marker{display:grid;width:26px;height:26px;flex:0 0 auto;place-items:center;border-radius:999px;background:ButtonFace;font-size:12px;font-weight:700}',
-    '.current .marker{background:Highlight;color:HighlightText}',
-    '.complete .marker{background:Mark;color:MarkText}',
-    '.step-copy{min-width:0;display:flex;flex-direction:column;gap:2px}',
-    '.step-copy strong{font-size:13px}',
-    '.step-copy small{font-size:11px;color:GrayText}',
-    'pre{margin:0;flex:1;overflow:auto;border:1px solid GrayText;border-radius:10px;background:Canvas;color:CanvasText;padding:14px;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;white-space:pre-wrap;user-select:text}',
-    '@media(max-width:640px){body{padding:16px}.stages{grid-template-columns:1fr}.stages li{padding:10px}}',
-    '</style>',
-    '<main class="shell">',
-    `<h1 role="status" aria-live="polite">Opening ${escapeHtml(title)}</h1>`,
-    `<ol class="stages" aria-label="Workspace startup progress">${steps}</ol>`,
-    logHtml,
-    '</main>',
   ].join('');
 }
 
@@ -326,7 +278,7 @@ export class ViewHost {
     const view = this.getOrCreateTabView(tabId);
     if (view.__cloudcliLoadingUrl) return;
     this.attach(view);
-    const html = buildLocalStartupHtml(target.name || this.appName, stage, logs);
+    const html = buildLocalStartupHtml(this.appName, target.name || this.appName, stage);
     if (view.__cloudcliStartupHtml === html) return;
     await view.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
     view.__cloudcliStartupHtml = html;

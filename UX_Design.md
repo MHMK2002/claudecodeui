@@ -122,7 +122,8 @@ The MCTA rules are release-blocking UX defects for changed surfaces.
 - [x] Only a fresh internal Desktop principal sees the optional Provider → Connect → Soniox Voice → Summary dialog; upgraded users do not.
 - [x] Close, Escape, and `Set up later` permanently dismiss the optional first-run dialog; unconfirmed Provider and Voice drafts remain unchanged.
 - [x] Every provider supports interactive sign-in; only Claude and Codex additionally offer token setup.
-- [x] A verified Claude or Codex token is stored in the existing encrypted provider vault as the active default profile titled exactly `Default Main`.
+- [x] A verified Claude or Codex token is stored in the existing encrypted provider vault as the active default profile; first-run Token setup exposes an Agent Title defaulting to `Default Main` and an optional Base URL under Advanced.
+- [x] First-run Base URLs accept normalized HTTP(S) endpoints, preserve the user's draft on validation or verification failure, and use the provider-specific models endpoint for verification.
 - [x] Soniox testing uses an unpersisted secure draft; only `Save and continue` commits Voice settings.
 - [x] Navigation with more than seven destinations is grouped.
 
@@ -174,6 +175,7 @@ The MCTA rules are release-blocking UX defects for changed surfaces.
 - [x] One menu provides Markdown, HTML, PDF, and ZIP.
 - [x] Export and other failures render inline feedback, never `window.alert`.
 - [x] Session title truncates with tooltip and reserves action width.
+- [x] External Claude/Codex sessions without a stored profile binding continue with the matching local CLI when authenticated, otherwise bind the same user's active default profile for that provider without changing the provider-native session id.
 - [x] Delayed session loading shows a skeleton.
 - [x] Streaming/activity text drives inference status.
 - [x] `Send` is replaced by `Stop` while inference runs.
@@ -250,6 +252,7 @@ The MCTA rules are release-blocking UX defects for changed surfaces.
 - [x] Missing microphone and denied permission have recovery.
 - [x] Secrets are masked and stored in secure storage; legacy localStorage secrets are removed only after successful read-back.
 - [x] Profile/model failures are visible.
+- [x] Agents Settings selects the sole authenticated provider after status loading; manual selection wins, and zero or multiple authenticated providers retain the existing Claude default.
 
 ### Report Issue
 

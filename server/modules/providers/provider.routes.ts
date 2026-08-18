@@ -28,7 +28,13 @@ import type {
   ProviderSkillCreateInput,
   UpsertProviderMcpServerInput,
 } from '@/shared/types.js';
-import { AppError, asyncHandler, createApiSuccessResponse, readAuthenticatedUserId } from '@/shared/utils.js';
+import {
+  AppError,
+  asyncHandler,
+  createApiSuccessResponse,
+  normalizeProviderBaseUrl,
+  readAuthenticatedUserId,
+} from '@/shared/utils.js';
 
 const router = express.Router();
 
@@ -264,22 +270,7 @@ const parseProviderProfileBaseUrl = (value: string | undefined): string | null |
   if (value === undefined) {
     return undefined;
   }
-  if (!value) {
-    return null;
-  }
-
-  try {
-    const url = new URL(value);
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-      throw new Error('Unsupported protocol.');
-    }
-    return url.toString().replace(/\/$/, '');
-  } catch {
-    throw new AppError('baseUrl must be a valid http(s) URL.', {
-      code: 'INVALID_PROVIDER_PROFILE_BASE_URL',
-      statusCode: 400,
-    });
-  }
+  return normalizeProviderBaseUrl(value);
 };
 
 const readProviderProfileSecret = (body: Record<string, unknown>): string | undefined => (
@@ -679,10 +670,15 @@ router.post(
       req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {},
       'token',
     );
+    const body = req.body && typeof req.body === 'object'
+      ? req.body as Record<string, unknown>
+      : {};
     const profile = await providerOnboardingService.connectToken({
       userId: readAuthenticatedUserId(req),
       provider,
       token: token ?? '',
+      title: readOptionalBodyString(body, 'title') ?? '',
+      baseUrl: parseProviderProfileBaseUrl(readOptionalBodyString(body, 'baseUrl')) ?? null,
     });
     res.json(createApiSuccessResponse({ provider, profile }));
   }),

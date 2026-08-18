@@ -105,6 +105,12 @@ function createHarness(): Harness {
     },
     sessions: {
       getSessionById: (sessionId) => sessions.get(sessionId) ?? null,
+      bindProviderProfileIfUnassigned: (sessionId, provider, profileId) => {
+        const session = sessions.get(sessionId);
+        if (!session || session.provider !== provider) return null;
+        if (session.provider_profile_id === null) session.provider_profile_id = profileId;
+        return session.provider_profile_id;
+      },
     },
   });
 
@@ -306,7 +312,9 @@ test('validateSelection rejects a model outside the provider catalog and a missi
 });
 
 test('validateSessionExecution gates a profile-less Claude session on live CLI auth', async () => {
-  const { service, sessions, authStates } = createHarness();
+  const { service, sessions, authStates, profilesByProvider, runtimeProfiles } = createHarness();
+  profilesByProvider.claude = [];
+  runtimeProfiles.claude = [];
   sessions.set('legacy', { provider: 'claude', provider_profile_id: null });
 
   await assert.rejects(
@@ -315,6 +323,19 @@ test('validateSessionExecution gates a profile-less Claude session on live CLI a
   );
   authStates.claude = { installed: true, authenticated: true };
   await service.validateSessionExecution({ userId: 1, sessionId: 'legacy' });
+});
+
+test('validateSessionExecution binds the same-provider default profile when an external session has no local CLI auth', async () => {
+  const { service, sessions } = createHarness();
+  sessions.set('external-codex', { provider: 'codex', provider_profile_id: null });
+
+  const providerProfileId = await service.validateSessionExecution({
+    userId: 1,
+    sessionId: 'external-codex',
+  });
+
+  assert.equal(providerProfileId, 1);
+  assert.equal(sessions.get('external-codex')?.provider_profile_id, 1);
 });
 
 test('validateSessionExecution blocks a session whose profile was deactivated and requires a user', async () => {

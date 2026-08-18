@@ -133,6 +133,7 @@ function buildDesktopPackageJson(copiedOptionalDependencies) {
       directories: {
         output: '../../release/desktop',
       },
+      electronLanguages: packageJson.build.electronLanguages,
       extraMetadata: {
         main: 'electron/main.js',
       },

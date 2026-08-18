@@ -110,6 +110,13 @@ const INTAKE_READ_ONLY_TOOLS_SETTINGS = {
 type ChatWebSocketDependencies = {
   /** Central dispatcher for every provider SDK/CLI runtime. */
   runtime: ProviderRuntimeGateway;
+  /** Selection validator, injectable for deterministic gateway contract tests. */
+  selection?: {
+    validateSessionExecution(input: {
+      userId: number | null;
+      sessionId: string;
+    }): Promise<number | null>;
+  };
 };
 
 /**
@@ -238,8 +245,11 @@ export async function handleChatSend(
   // Cursor/OpenCode all stop here with a clear protocol error — the fork
   // context is not consumed, no run is started, and the runtime is never
   // spawned.
+  let resolvedProviderProfileId: number | null = session.provider_profile_id
+    ? Number(session.provider_profile_id)
+    : null;
   try {
-    await providerSelectionService.validateSessionExecution({
+    resolvedProviderProfileId = await (dependencies.selection ?? providerSelectionService).validateSessionExecution({
       userId: readNumericUserId(userId),
       sessionId,
     });
@@ -255,14 +265,14 @@ export async function handleChatSend(
   }
 
   let providerProfile: AnyRecord | null = null;
-  if (isProfileProvider(provider) && session.provider_profile_id) {
+  if (isProfileProvider(provider) && resolvedProviderProfileId !== null) {
     // validateSessionExecution already proved this lookup succeeds and the
     // user is authenticated; re-reading here only fetches the runtime payload
     // (secret included) for the provider adapters.
     providerProfile = providerProfilesDb.getProviderProfileForRuntime(
       readNumericUserId(userId) as number,
       provider,
-      Number(session.provider_profile_id),
+      resolvedProviderProfileId,
     );
   }
 

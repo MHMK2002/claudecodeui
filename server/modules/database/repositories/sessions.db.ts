@@ -327,6 +327,30 @@ export const sessionsDb = {
   },
 
   /**
+   * Binds one imported session to a same-provider profile only while its
+   * profile column is still NULL. The compare-and-set update makes concurrent
+   * resume attempts converge on one durable binding without replacing an
+   * explicit selection.
+   */
+  bindProviderProfileIfUnassigned(
+    sessionId: string,
+    provider: string,
+    providerProfileId: number,
+  ): number | null {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE sessions
+       SET provider_profile_id = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE session_id = ? AND provider = ? AND provider_profile_id IS NULL`,
+    ).run(providerProfileId, sessionId, provider);
+
+    const row = db
+      .prepare('SELECT provider_profile_id FROM sessions WHERE session_id = ? AND provider = ? LIMIT 1')
+      .get(sessionId, provider) as { provider_profile_id: number | null } | undefined;
+    return row?.provider_profile_id ?? null;
+  },
+
+  /**
    * Records the provider-native session id for one app-allocated session.
    *
    * If the filesystem watcher indexed the provider transcript before this

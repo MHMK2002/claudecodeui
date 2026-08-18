@@ -26,6 +26,7 @@ import type {
   NormalizedMessage,
   ProviderCurrentActiveModel,
   ProviderModelsDefinition,
+  ProviderProfileProvider,
   ProviderSkillSource,
   RuntimeMode,
   WorkspacePathValidationResult,
@@ -772,6 +773,63 @@ export function buildDefaultProviderCurrentActiveModel(
   return {
     model: models.DEFAULT,
   };
+}
+
+// ---------------------------
+//----------------- PROVIDER PROFILE ENDPOINT UTILITIES ------------
+/**
+ * Normalizes the optional HTTP(S) Base URL shared by Provider routes and
+ * first-run onboarding. Empty values mean "use the provider default"; valid
+ * URLs keep their path prefix and lose only trailing separators so callers
+ * can append provider API paths deterministically.
+ */
+export function normalizeProviderBaseUrl(value: string | null | undefined): string | null {
+  const candidate = typeof value === 'string' ? value.trim() : '';
+  if (!candidate) return null;
+
+  try {
+    const url = new URL(candidate);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      throw new Error('Unsupported protocol.');
+    }
+    url.pathname = url.pathname.replace(/\/+$/, '');
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    throw new AppError('baseUrl must be a valid http(s) URL.', {
+      code: 'INVALID_PROVIDER_PROFILE_BASE_URL',
+      statusCode: 400,
+    });
+  }
+}
+
+/**
+ * Builds the read-only models endpoint used to verify a first-run token.
+ * Provider-specific suffix matching preserves custom gateway path prefixes
+ * while avoiding doubled `/v1` or `/models` segments.
+ */
+export function buildProviderTokenVerificationUrl(
+  provider: ProviderProfileProvider,
+  baseUrl: string | null,
+): string {
+  if (!baseUrl) {
+    return provider === 'codex'
+      ? 'https://api.openai.com/v1/models'
+      : 'https://api.anthropic.com/v1/models?limit=1';
+  }
+
+  const normalizedBaseUrl = normalizeProviderBaseUrl(baseUrl) as string;
+  const url = new URL(`${normalizedBaseUrl}/`);
+  const segments = url.pathname.split('/').filter(Boolean);
+  const lastSegment = segments.at(-1)?.toLowerCase();
+  if (lastSegment !== 'models') {
+    if (provider === 'claude' && lastSegment !== 'v1') segments.push('v1');
+    segments.push('models');
+  }
+  url.pathname = `/${segments.join('/')}`;
+  if (provider === 'claude') url.searchParams.set('limit', '1');
+  return url.toString();
 }
 
 // ---------------------------

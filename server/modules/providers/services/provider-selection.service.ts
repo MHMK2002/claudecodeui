@@ -51,6 +51,11 @@ type ProviderSelectionServiceDependencies = {
       provider_profile_id: number | null;
       model?: string | null;
     } | null;
+    bindProviderProfileIfUnassigned(
+      sessionId: string,
+      provider: ProviderProfileProvider,
+      providerProfileId: number,
+    ): number | null;
   };
 };
 
@@ -323,7 +328,7 @@ export const createProviderSelectionService = (
     async validateSessionExecution(input: {
       userId: number | null;
       sessionId: string;
-    }): Promise<void> {
+    }): Promise<number | null> {
       const session = sessions.getSessionById(input.sessionId);
       if (!session) {
         throw new AppError(`Session "${input.sessionId}" was not found.`, {
@@ -350,12 +355,58 @@ export const createProviderSelectionService = (
             { code: 'PROVIDER_NOT_CONNECTED', statusCode: 400 },
           );
         }
-        return;
+        return null;
       }
 
       if (providerProfileId === null) {
-        await requireConnection(provider);
-        return;
+        const status = await readConnectionStatus(provider);
+        if (status.installed && status.authenticated) {
+          return null;
+        }
+        if (input.userId === null) {
+          throw new AppError(
+            `A signed-in user is required to use a stored ${provider} provider profile.`,
+            { code: 'PROVIDER_PROFILE_AUTH_REQUIRED', statusCode: 401 },
+          );
+        }
+
+        const activeProfiles = profiles
+          .listProviderProfiles(input.userId, provider)
+          .filter((profile) => profile.isActive);
+        const fallbackProfile = activeProfiles.find((profile) => profile.isDefault)
+          ?? activeProfiles[0]
+          ?? null;
+        if (!fallbackProfile) {
+          throw new AppError(
+            status.error
+              ?? `Connect ${provider === 'claude' ? 'Claude' : 'Codex'} or add an active provider profile.`,
+            { code: 'PROVIDER_NOT_CONNECTED', statusCode: 400 },
+          );
+        }
+
+        const boundProfileId = sessions.bindProviderProfileIfUnassigned(
+          input.sessionId,
+          provider,
+          fallbackProfile.id,
+        );
+        if (boundProfileId === null) {
+          throw new AppError(`Session "${input.sessionId}" was not found.`, {
+            code: 'SESSION_NOT_FOUND',
+            statusCode: 404,
+          });
+        }
+        const boundProfile = profiles.getProviderProfileForRuntime(
+          input.userId,
+          provider,
+          boundProfileId,
+        );
+        if (!boundProfile) {
+          throw new AppError(
+            'The provider profile for this session was not found or is inactive.',
+            { code: 'PROVIDER_PROFILE_NOT_FOUND', statusCode: 404 },
+          );
+        }
+        return boundProfileId;
       }
 
       if (input.userId === null) {
@@ -376,6 +427,7 @@ export const createProviderSelectionService = (
           { code: 'PROVIDER_PROFILE_NOT_FOUND', statusCode: 404 },
         );
       }
+      return providerProfileId;
     },
 
     /**

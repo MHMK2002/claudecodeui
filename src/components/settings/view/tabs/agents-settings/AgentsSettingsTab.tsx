@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { AgentCategory, AgentProvider } from '../../../types/types';
 
@@ -6,6 +6,7 @@ import type { AgentContext, AgentsSettingsTabProps } from './types';
 import AgentCategoryContentSection from './sections/AgentCategoryContentSection';
 import AgentCategoryTabsSection from './sections/AgentCategoryTabsSection';
 import AgentSelectorSection from './sections/AgentSelectorSection';
+import { resolveInitialAgentSelection } from './agentSelection';
 
 export default function AgentsSettingsTab({
   providerAuthStatus,
@@ -19,6 +20,7 @@ export default function AgentsSettingsTab({
   projects,
 }: AgentsSettingsTabProps) {
   const [selectedAgent, setSelectedAgent] = useState<AgentProvider>('claude');
+  const hasManualSelectionRef = useRef(false);
   const [selectedCategory, setSelectedCategory] = useState<AgentCategory>('account');
   const visibleCategories = useMemo<AgentCategory[]>(() => (
     selectedAgent === 'opencode'
@@ -29,6 +31,14 @@ export default function AgentsSettingsTab({
   const visibleAgents = useMemo<AgentProvider[]>(() => {
     return ['claude', 'cursor', 'codex', 'opencode'];
   }, []);
+
+  useEffect(() => {
+    setSelectedAgent((current) => resolveInitialAgentSelection(
+      providerAuthStatus,
+      current,
+      hasManualSelectionRef.current,
+    ));
+  }, [providerAuthStatus]);
 
   const agentContextById = useMemo<Record<AgentProvider, AgentContext>>(() => ({
     claude: {
@@ -66,7 +76,10 @@ export default function AgentsSettingsTab({
       <AgentSelectorSection
         agents={visibleAgents}
         selectedAgent={selectedAgent}
-        onSelectAgent={setSelectedAgent}
+        onSelectAgent={(nextAgent) => {
+          hasManualSelectionRef.current = true;
+          setSelectedAgent(nextAgent);
+        }}
         agentContextById={agentContextById}
       />
 

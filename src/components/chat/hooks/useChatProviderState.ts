@@ -21,6 +21,7 @@ import {
   isDefaultProviderSelectionPendingCatalog,
   PROVIDER_SELECTION_PREFERENCE_EVENT,
 } from '../../../shared/providerSelectionCatalog';
+import { getSessionProviderProfileId } from '../utils/sessionProviderProfile';
 
 const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
   claude: 'default',
@@ -695,7 +696,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   // the session's provider — mirroring how the composer's own pick persists —
   // but the open session's state itself only tracks its metadata.
   const openSessionProvider = selectedSession?.__provider ?? null;
-  const openSessionProfileId = selectedSession?.__providerProfileId ?? null;
+  const openSessionProfileId = getSessionProviderProfileId(selectedSession);
 
   useEffect(() => {
     if (!openSessionProvider || openSessionProvider === provider) {
@@ -717,14 +718,14 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     }
 
     if (openSessionProvider === 'claude') {
-      if (openSessionProfileId != null && openSessionProfileId !== selectedClaudeProfileId) {
+      if (openSessionProfileId !== undefined && openSessionProfileId !== selectedClaudeProfileId) {
         setSelectedClaudeProfileId(openSessionProfileId);
       }
       return;
     }
 
     if (openSessionProvider === 'codex') {
-      if (openSessionProfileId != null && openSessionProfileId !== selectedCodexProfileId) {
+      if (openSessionProfileId !== undefined && openSessionProfileId !== selectedCodexProfileId) {
         setSelectedCodexProfileId(openSessionProfileId);
       }
     }

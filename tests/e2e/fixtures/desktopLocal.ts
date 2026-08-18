@@ -164,7 +164,12 @@ export async function installDesktopLocalMocks(
   const tasksMode = options.tasksMode ?? 'disabled';
   const updateAvailable = options.updateAvailable ?? false;
   let onboardingCompleted = options.firstRun !== true;
-  let onboardingProfile: { provider: 'claude' | 'codex'; id: number } | null = null;
+  let onboardingProfile: {
+    provider: 'claude' | 'codex';
+    id: number;
+    title: string;
+    baseUrl: string | null;
+  } | null = null;
   let delayedInitialCodexProfile = false;
   const historyDelayMs = options.historyDelayMs ?? 0;
   const validZipBody = await createValidZipBody();
@@ -315,7 +320,7 @@ export async function installDesktopLocalMocks(
                     unavailableReason: null,
                     profiles: [{
                       id: savedProfile.id,
-                      title: 'Default Main',
+                      title: savedProfile.title,
                       isDefault: true,
                     }],
                   }
@@ -345,7 +350,13 @@ export async function installDesktopLocalMocks(
         }, 503);
         return;
       }
-      onboardingProfile = { provider, id: 9 };
+      const requestBody = route.request().postDataJSON() as { title?: string; baseUrl?: string } | null;
+      onboardingProfile = {
+        provider,
+        id: 9,
+        title: requestBody?.title?.trim() || 'Default Main',
+        baseUrl: requestBody?.baseUrl?.trim() || (provider === 'codex' ? 'https://api.openai.com/v1' : null),
+      };
       await json(route, {
         success: true,
         data: {
@@ -353,8 +364,8 @@ export async function installDesktopLocalMocks(
           profile: {
             id: 9,
             provider,
-            title: 'Default Main',
-            baseUrl: provider === 'codex' ? 'https://api.openai.com/v1' : null,
+            title: onboardingProfile.title,
+            baseUrl: onboardingProfile.baseUrl,
             authType: 'api_key',
             isDefault: true,
             isActive: true,
@@ -477,8 +488,8 @@ export async function installDesktopLocalMocks(
         ? [{
             id: savedProfileAtRequest.id,
             provider,
-            title: 'Default Main',
-            baseUrl: provider === 'codex' ? 'https://api.openai.com/v1' : null,
+            title: savedProfileAtRequest.title,
+            baseUrl: savedProfileAtRequest.baseUrl,
             authType: 'api_key',
             isDefault: true,
             isActive: true,

@@ -5,7 +5,12 @@ import type {
   ProviderProfilePublic,
   RuntimeMode,
 } from '@/shared/types.js';
-import { AppError, RUNTIME_MODE } from '@/shared/utils.js';
+import {
+  AppError,
+  buildProviderTokenVerificationUrl,
+  normalizeProviderBaseUrl,
+  RUNTIME_MODE,
+} from '@/shared/utils.js';
 
 const VERIFY_TIMEOUT_MS = 10_000;
 
@@ -14,10 +19,11 @@ type ProviderOnboardingDependencies = {
   runtimeMode?: RuntimeMode;
   timeoutMs?: number;
   profiles?: {
-    upsertDefaultMainProviderProfile(
+    upsertDefaultProviderProfile(
       userId: number,
       provider: ProviderProfileProvider,
       input: {
+        title: string;
         baseUrl: string | null;
         authType: ProviderProfileAuthType;
         secretValue: string;
@@ -29,16 +35,18 @@ type ProviderOnboardingDependencies = {
 function verificationRequest(
   provider: ProviderProfileProvider,
   token: string,
+  baseUrl: string | null,
 ): {
   url: string;
   headers: Record<string, string>;
   profile: { baseUrl: string | null; authType: ProviderProfileAuthType };
 } {
   if (provider === 'codex') {
+    const effectiveBaseUrl = baseUrl ?? 'https://api.openai.com/v1';
     return {
-      url: 'https://api.openai.com/v1/models',
+      url: buildProviderTokenVerificationUrl(provider, effectiveBaseUrl),
       headers: { Authorization: `Bearer ${token}` },
-      profile: { baseUrl: 'https://api.openai.com/v1', authType: 'api_key' },
+      profile: { baseUrl: effectiveBaseUrl, authType: 'api_key' },
     };
   }
 
@@ -46,7 +54,7 @@ function verificationRequest(
     ? 'api_key'
     : 'auth_token';
   return {
-    url: 'https://api.anthropic.com/v1/models?limit=1',
+    url: buildProviderTokenVerificationUrl(provider, baseUrl),
     headers: {
       'anthropic-version': '2023-06-01',
       ...(authType === 'api_key'
@@ -56,7 +64,7 @@ function verificationRequest(
             'anthropic-beta': 'oauth-2025-04-20',
           }),
     },
-    profile: { baseUrl: null, authType },
+    profile: { baseUrl, authType },
   };
 }
 
@@ -77,6 +85,8 @@ export function createProviderOnboardingService(
       userId: number;
       provider: ProviderProfileProvider;
       token: string;
+      title?: string;
+      baseUrl?: string | null;
     }): Promise<ProviderProfilePublic> {
       if (runtimeMode !== 'desktop-local') {
         throw new AppError('First-run provider token setup is available only in Desktop local mode.', {
@@ -92,7 +102,9 @@ export function createProviderOnboardingService(
         });
       }
 
-      const request = verificationRequest(input.provider, token);
+      const title = input.title?.trim() || 'Default Main';
+      const baseUrl = normalizeProviderBaseUrl(input.baseUrl);
+      const request = verificationRequest(input.provider, token, baseUrl);
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
@@ -123,7 +135,8 @@ export function createProviderOnboardingService(
         clearTimeout(timer);
       }
 
-      return profiles.upsertDefaultMainProviderProfile(input.userId, input.provider, {
+      return profiles.upsertDefaultProviderProfile(input.userId, input.provider, {
+        title,
         ...request.profile,
         secretValue: token,
       });

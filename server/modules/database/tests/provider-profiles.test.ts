@@ -104,7 +104,7 @@ test('Codex provider profiles can be stored for app-created sessions', async () 
   });
 });
 
-test('Default Main upsert is encrypted, idempotent, active, and the sole default', async () => {
+test('onboarding profile upsert renames Default Main and remains encrypted, idempotent, active, and the sole default', async () => {
   await withIsolatedDatabase((userId) => {
     providerProfilesDb.createClaudeProfile(userId, {
       title: 'Existing',
@@ -114,19 +114,22 @@ test('Default Main upsert is encrypted, idempotent, active, and the sole default
       isDefault: true,
     });
 
-    const first = providerProfilesDb.upsertDefaultMainProviderProfile(userId, 'claude', {
+    const first = providerProfilesDb.upsertDefaultProviderProfile(userId, 'claude', {
+      title: 'Work Gateway',
       baseUrl: null,
       authType: 'api_key',
       secretValue: 'first-secret',
     });
-    const second = providerProfilesDb.upsertDefaultMainProviderProfile(userId, 'claude', {
-      baseUrl: null,
+    const second = providerProfilesDb.upsertDefaultProviderProfile(userId, 'claude', {
+      title: 'Work Gateway',
+      baseUrl: 'https://gateway.example/anthropic',
       authType: 'api_key',
       secretValue: 'rotated-secret',
     });
 
     assert.equal(first.id, second.id);
-    assert.equal(second.title, 'Default Main');
+    assert.equal(second.title, 'Work Gateway');
+    assert.equal(second.baseUrl, 'https://gateway.example/anthropic');
     assert.equal(second.isDefault, true);
     assert.equal(second.isActive, true);
     assert.equal(providerProfilesDb.listClaudeProfiles(userId).length, 2);

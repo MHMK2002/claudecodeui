@@ -169,12 +169,22 @@ test('packaged embedded archive starts with the same immutable health identity',
     return;
   }
   const rootDir = path.resolve(fileURLToPath(new URL('../..', import.meta.url)));
+  const desktopOutput = path.join(rootDir, 'release', 'desktop', 'mac-arm64');
+  let appBundle = null;
+  try {
+    appBundle = (await fs.readdir(desktopOutput))
+      .find((name) => name.endsWith('.app'));
+  } catch {
+    t.skip('Build the macOS arm64 package before running the packaged-runtime smoke.');
+    return;
+  }
+  if (!appBundle) {
+    t.skip('Build the macOS arm64 package before running the packaged-runtime smoke.');
+    return;
+  }
   const resourcesRoot = path.join(
-    rootDir,
-    'release',
-    'desktop',
-    'mac-arm64',
-    'CloudCLI.app',
+    desktopOutput,
+    appBundle,
     'Contents',
     'Resources',
   );
@@ -197,10 +207,16 @@ test('packaged embedded archive starts with the same immutable health identity',
   const packagedIdentity = JSON.parse(
     await fs.readFile(path.join(resourcesRoot, 'app', 'dist', 'build-identity.json'), 'utf8'),
   );
+  const rootManifest = JSON.parse(
+    await fs.readFile(path.join(rootDir, 'package.json'), 'utf8'),
+  );
+  const packagedExecutable = rootManifest.build?.executableName;
+  assert.equal(typeof packagedExecutable, 'string');
+  assert.ok(packagedExecutable);
   assert.deepEqual(identity, packagedIdentity);
 
   await readHealthFromServer(t, {
-    command: path.join(resourcesRoot, '..', 'MacOS', 'CloudCLI'),
+    command: path.join(resourcesRoot, '..', 'MacOS', packagedExecutable),
     args: [path.join(extractRoot, 'dist-server', 'server', 'index.js')],
     cwd: extractRoot,
     identity,

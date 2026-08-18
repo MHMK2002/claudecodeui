@@ -8,6 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { copyRuntimeDependencyClosure } from '../../scripts/release/runtime-dependency-closure.js';
 
 const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
+const repositoryPackageJson = JSON.parse(
+  await readFile(path.join(repositoryRoot, 'package.json'), 'utf8'),
+);
 
 async function writePackage(directory, manifest) {
   await mkdir(directory, { recursive: true });
@@ -80,18 +83,15 @@ test('installed electron-updater runtime closure is self-contained', async () =>
     const copied = await copyRuntimeDependencyClosure({
       rootDir: repositoryRoot,
       stageDir,
-      packageNames: ['electron-updater', 'ws', '@nut-tree-fork/nut-js', 'screenshot-desktop'],
+      packageNames: ['electron-updater', 'ws'],
     });
     const copiedNames = new Set(copied.map((entry) => entry.name));
     for (const packageName of [
       'electron-updater',
       'builder-util-runtime',
-      'clipboardy',
       'fs-extra',
-      'jimp',
       'js-yaml',
       'semver',
-      'temp',
       'ws',
     ]) {
       assert.equal(copiedNames.has(packageName), true, `${packageName} was not staged`);
@@ -102,6 +102,45 @@ test('installed electron-updater runtime closure is self-contained', async () =>
     );
   } finally {
     await rm(stageDir, { recursive: true, force: true });
+  }
+});
+
+test('desktop packaging excludes unused screenshot and automation dependencies', () => {
+  for (const dependencyGroup of ['dependencies', 'optionalDependencies', 'devDependencies']) {
+    for (const packageName of ['@nut-tree-fork/nut-js', 'screenshot-desktop']) {
+      assert.equal(
+        repositoryPackageJson[dependencyGroup]?.[packageName],
+        undefined,
+        `${packageName} must not return to ${dependencyGroup}`,
+      );
+    }
+  }
+});
+
+test('desktop packaging keeps every supported UI language across Electron resource names', async () => {
+  const expectedAppLocaleMapping = {
+    en: ['en-US'],
+    fr: ['fr'],
+    es: ['es'],
+    ko: ['ko'],
+    'zh-CN': ['zh-CN', 'zh_CN'],
+    'zh-TW': ['zh-TW', 'zh_TW'],
+    ja: ['ja'],
+    ru: ['ru'],
+    de: ['de'],
+    tr: ['tr'],
+    it: ['it'],
+  };
+  const expectedElectronLocales = Object.values(expectedAppLocaleMapping).flat();
+  assert.deepEqual(repositoryPackageJson.build.electronLanguages, expectedElectronLocales);
+
+  const stagingSource = await readFile(
+    new URL('../../scripts/release/prepare-desktop-app.js', import.meta.url),
+    'utf8',
+  );
+  assert.match(stagingSource, /electronLanguages: packageJson\.build\.electronLanguages/);
+  for (const locale of expectedElectronLocales) {
+    assert.ok(repositoryPackageJson.build.electronLanguages.includes(locale), `${locale} is missing`);
   }
 });
 

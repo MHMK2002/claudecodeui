@@ -149,3 +149,46 @@ test('chat.send still reaches the runtime for a session with a valid active prof
     assert.equal(row.fork_context_consumed, 1);
   });
 });
+
+test('chat.send uses a resolved fallback profile while retaining the external provider session identity', { concurrency: false }, async () => {
+  await withIsolatedDatabase(async () => {
+    const user = userDb.createUser('external-session-tester', 'irrelevant-hash');
+    const profile = providerProfilesDb.createCodexProfile(Number(user.id), {
+      title: 'Local Codex',
+      baseUrl: 'https://api.openai.com/v1',
+      secretValue: 'codex-local-secret',
+      isDefault: true,
+    });
+    sessionsDb.createSession(
+      'codex-native-external',
+      'codex',
+      '/workspace/external',
+      'External Codex',
+    );
+
+    const runs: AnyRecord[] = [];
+    const sent: SentFrame[] = [];
+    await handleChatSend(
+      createFakeSocket(sent),
+      Number(user.id),
+      { sessionId: 'codex-native-external', content: 'continue here' } as AnyRecord,
+      {
+        selection: {
+          validateSessionExecution: async () => profile.id,
+        },
+        runtime: {
+          ...runtimeThatMustNotBeReached,
+          run: async (_provider, _command, options) => {
+            runs.push(options);
+            return undefined;
+          },
+        },
+      },
+    );
+
+    assert.deepEqual(sent.filter((frame) => frame.kind === 'protocol_error'), []);
+    assert.equal(runs.length, 1);
+    assert.equal((runs[0]?.codexProviderProfile as { id?: number })?.id, profile.id);
+    assert.equal(sessionsDb.getSessionById('codex-native-external')?.provider_session_id, 'codex-native-external');
+  });
+});

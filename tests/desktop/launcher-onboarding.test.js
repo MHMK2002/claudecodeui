@@ -8,6 +8,7 @@ const [
   launcherCss,
   mainSource,
   viewHostSource,
+  startupPageSource,
   desktopWindowSource,
   tabSwitcherSource,
 ] =
@@ -16,6 +17,7 @@ const [
     readFile(new URL('../../electron/launcher/launcher.css', import.meta.url), 'utf8'),
     readFile(new URL('../../electron/main.js', import.meta.url), 'utf8'),
     readFile(new URL('../../electron/viewHost.js', import.meta.url), 'utf8'),
+    readFile(new URL('../../electron/startupPage.js', import.meta.url), 'utf8'),
     readFile(new URL('../../electron/desktopWindow.js', import.meta.url), 'utf8'),
     readFile(
       new URL(
@@ -101,7 +103,7 @@ test('workspace startup renders the three truthful stages in order', () => {
   ];
   let previousLabelIndex = -1;
   for (const label of labels) {
-    const index = viewHostSource.indexOf(label);
+    const index = startupPageSource.indexOf(label);
     assert.ok(index > previousLabelIndex, `${label} must follow the previous startup stage`);
     previousLabelIndex = index;
   }
@@ -120,8 +122,9 @@ test('workspace startup renders the three truthful stages in order', () => {
     assert.ok(index > previousCallIndex, `${call} must follow the previous stage`);
     previousCallIndex = index;
   }
-  assert.match(viewHostSource, /aria-live="polite"/);
-  assert.match(viewHostSource, /@media\(max-width:640px\)/);
+  assert.match(startupPageSource, /aria-live="polite"/);
+  assert.match(startupPageSource, /@media\(max-width:640px\)/);
+  assert.match(startupPageSource, /prefers-reduced-motion:reduce/);
   assert.match(launcherCss, /@media \(max-width: 760px\)[\s\S]*min-height: 44px/);
   assert.match(launcherCss, /button:focus-visible,[\s\S]*var\(--brand-2\)/);
   assert.doesNotMatch(launcherCss, /var\(--(?:accent|tx1)\)/);

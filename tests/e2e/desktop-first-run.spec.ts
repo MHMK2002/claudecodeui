@@ -160,6 +160,29 @@ test('token setup is offered only for Claude and Codex and saves Default Main', 
   }))).toEqual({ provider: 'claude', profile: '9' });
 });
 
+test('token setup accepts a custom Agent Title and an Advanced Base URL', async ({ page }) => {
+  await installDesktopLocalMocks(page, { firstRun: true });
+  await page.goto('/');
+
+  const dialog = page.getByRole('dialog', { name: 'First-run setup' });
+  await dialog.getByRole('radio', { name: /Claude/ }).click();
+  await dialog.getByRole('button', { name: 'Continue' }).click();
+  await dialog.getByRole('tab', { name: 'Use token' }).click();
+
+  const title = dialog.getByRole('textbox', { name: 'Agent Title', exact: true });
+  const baseUrl = dialog.getByRole('textbox', { name: /Base URL/ });
+  await expect(title).toHaveValue('Default Main');
+  await expect(baseUrl).toHaveCount(0);
+  await title.fill('Work Gateway');
+  await dialog.getByRole('button', { name: 'Advanced' }).click();
+  await baseUrl.fill('https://gateway.example/anthropic/v1');
+  await dialog.getByRole('textbox', { name: 'Provider token', exact: true }).fill('test-claude-token');
+  await dialog.getByRole('button', { name: 'Verify & connect' }).click();
+  await dialog.getByRole('button', { name: 'Skip Voice' }).click();
+
+  await expect(dialog.getByText('Claude connected with Work Gateway.')).toBeVisible();
+});
+
 test('Cursor connect step has no token method', async ({ page }) => {
   await installDesktopLocalMocks(page, { firstRun: true });
   await page.goto('/');
